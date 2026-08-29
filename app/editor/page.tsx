@@ -434,6 +434,21 @@ async function silhouette(src: string, color = DARK, opacity = 255) {
   }
   return c.toDataURL();
 }
+async function smoothVectorCutout(src: string, color: string) {
+  const img = await getImage(src), longest = Math.max(img.naturalWidth, img.naturalHeight), supersample = clamp(1800 / Math.max(longest, 1), 2, 6), pad = Math.ceil(supersample * 3), mask = document.createElement("canvas"), traced = document.createElement("canvas");
+  mask.width = Math.max(1, Math.round(img.naturalWidth * supersample)); mask.height = Math.max(1, Math.round(img.naturalHeight * supersample));
+  const mx = mask.getContext("2d")!; mx.imageSmoothingEnabled = true; mx.imageSmoothingQuality = "high"; mx.filter = `blur(${Math.max(.45, supersample * .18)}px)`; mx.drawImage(img, 0, 0, mask.width, mask.height); mx.filter = "none";
+  const pixels = mx.getImageData(0, 0, mask.width, mask.height); traced.width = mask.width + pad * 2; traced.height = mask.height + pad * 2;
+  const tx = traced.getContext("2d")!; tx.fillStyle = "#fff"; tx.fillRect(0, 0, traced.width, traced.height); const binary = tx.createImageData(mask.width, mask.height);
+  for (let i = 0; i < pixels.data.length; i += 4) { const solid = pixels.data[i + 3] >= 128; binary.data[i] = binary.data[i + 1] = binary.data[i + 2] = solid ? 0 : 255; binary.data[i + 3] = 255; }
+  tx.putImageData(binary, pad, pad);
+  const paths = traceCanvas(traced, { turnpolicy: "minority", turdsize: Math.max(2, Math.round(supersample * supersample * .45)), alphamax: .82, optcurve: true, opttolerance: .32 });
+  if (!paths.length) throw new Error("The cutout contour is empty");
+  const doc = new DOMParser().parseFromString(getSVG(paths, 1, "fill"), "image/svg+xml"), root = doc.documentElement;
+  root.setAttribute("width", String(traced.width)); root.setAttribute("height", String(traced.height)); root.setAttribute("viewBox", `0 0 ${traced.width} ${traced.height}`); root.setAttribute("preserveAspectRatio", "none");
+  root.querySelectorAll("path").forEach((path) => { path.setAttribute("fill", color); path.setAttribute("fill-rule", "evenodd"); path.setAttribute("stroke", "#141715"); path.setAttribute("stroke-width", "1.15"); path.setAttribute("vector-effect", "non-scaling-stroke"); path.setAttribute("paint-order", "stroke fill"); });
+  return `data:image/svg+xml,${encodeURIComponent(new XMLSerializer().serializeToString(root))}`;
+}
 async function renderCutoutEdit(editor: CutoutEditor, applyCrop = false) {
   const img = await getImage(editor.source), c = document.createElement("canvas");
   c.width = img.naturalWidth; c.height = img.naturalHeight;
@@ -1358,12 +1373,11 @@ export default function Home() {
     setWorking(true);
     try {
       const color = COLORS[Math.floor(Math.random() * 21)],
-        t = await trimTransparent(
-          await silhouette(await removeBg(one.src), color, 255),
-        ),
+        t = await trimTransparent(await silhouette(await removeBg(one.src), color, 255)),
+        vectorSrc = await smoothVectorCutout(t.src, color),
         next = {
           ...one,
-          src: t.src,
+          src: vectorSrc,
           x: one.x + one.w * t.left,
           y: one.y + one.h * t.top,
           w: one.w * t.width,
@@ -1382,7 +1396,7 @@ export default function Home() {
         steps: [...one.steps, step],
         activeStep: one.steps.length,
       }));
-      setNotice("Cutout created and ready for SVG export");
+      setNotice("Smooth vector Cutout created and ready for SVG export");
     } finally {
       setWorking(false);
     }
@@ -1971,7 +1985,7 @@ export default function Home() {
           </span>
           <div>
             <b>Better Cricut Editor</b>
-            <small>Personal workspace · v33</small>
+            <small>Personal workspace · v34</small>
           </div>
         </div>
         <input
