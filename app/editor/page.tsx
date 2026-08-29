@@ -1374,10 +1374,9 @@ export default function Home() {
     try {
       const color = COLORS[Math.floor(Math.random() * 21)],
         t = await trimTransparent(await silhouette(await removeBg(one.src), color, 255)),
-        vectorSrc = await smoothVectorCutout(t.src, color),
         next = {
           ...one,
-          src: vectorSrc,
+          src: t.src,
           x: one.x + one.w * t.left,
           y: one.y + one.h * t.top,
           w: one.w * t.width,
@@ -1396,10 +1395,21 @@ export default function Home() {
         steps: [...one.steps, step],
         activeStep: one.steps.length,
       }));
-      setNotice("Smooth vector Cutout created and ready for SVG export");
+      setNotice("Cutout created and ready for SVG export");
     } finally {
       setWorking(false);
     }
+  };
+  const smoothCutoutV1 = async () => {
+    if (!one || ["vector", "stroke", "acetate"].includes(one.kind)) return;
+    setBgMenuOpen(false); setWorking(true);
+    try {
+      const refined = await refineBackground(one.src, 46, [], 12, 0), trimmed = await trimTransparent(refined), color = COLORS[Math.floor(Math.random() * 21)], solid = await silhouette(trimmed.src, color, 255), vectorSrc = await smoothVectorCutout(solid, color),
+        noBgLayer: Layer = { ...one, src: trimmed.src, x: one.x + one.w * trimmed.left, y: one.y + one.h * trimmed.top, w: one.w * trimmed.width, h: one.h * trimmed.height, kind: "nobg" },
+        finalLayer: Layer = { ...noBgLayer, name: `${one.name.replace(/_(NoBG|Cutout|SmoothCutout)$/i, "")}_SmoothCutout`, src: vectorSrc, color, kind: "vector" };
+      const removeStep: LayerStep = { id: uid(), type: "remove-bg", label: "Remove Background", snapshot: snapshot(noBgLayer) }, cutoutStep: LayerStep = { id: uid(), type: "cutout", label: "Smooth Cutout v1", snapshot: snapshot(finalLayer) };
+      mutate(one.id, () => ({ ...finalLayer, steps: [...one.steps, removeStep, cutoutStep], activeStep: one.steps.length + 1 })); setNotice("Smooth Cutout v1 created");
+    } catch (error) { setNotice(`Smooth Cutout could not be created: ${error instanceof Error ? error.message : "Unknown error"}`); } finally { setWorking(false); }
   };
   const applyColor = async (color: string) => {
     if (!vectorsOnly) return;
@@ -1985,7 +1995,7 @@ export default function Home() {
           </span>
           <div>
             <b>Better Cricut Editor</b>
-            <small>Personal workspace · v34</small>
+            <small>Personal workspace · v35</small>
           </div>
         </div>
         <input
@@ -2001,7 +2011,7 @@ export default function Home() {
           <div className="wrap remove-bg-control">
             <button type="button" className="remove-bg-main" onClick={()=>void quickBackground()}><Sparkles />Remove Background</button>
             <button type="button" className="remove-bg-chevron" onClick={(e)=>{e.preventDefault();e.stopPropagation();if(!one){setNotice("Select one image for Advanced Background Removal");return}setBgMenuOpen(v=>!v)}} aria-label="Background removal options"><ChevronDown /></button>
-            {bgMenuOpen&&<div className="pop bg-options"><button onClick={()=>{setBgMenuOpen(false);noBackground()}}>Advanced Background Removal</button></div>}
+            {bgMenuOpen&&<div className="pop bg-options"><button onClick={()=>{setBgMenuOpen(false);noBackground()}}>Advanced Background Removal</button><button disabled={!one || ["vector","stroke","acetate"].includes(one.kind)} onClick={()=>void smoothCutoutV1()}>Smooth Cutout v1</button></div>}
           </div>
           <button
             disabled={!one || ["vector", "stroke"].includes(one.kind)}

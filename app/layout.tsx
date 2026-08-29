@@ -27,6 +27,7 @@ import "./v25.css";
 import "./v26.css";
 import "./v28.css";
 import "./v33.css";
+import "./v35.css";
 const inter = Inter({ variable: "--font-inter", subsets: ["latin"] });
 export const metadata: Metadata = {
   title: "Better Cricut Editor",
