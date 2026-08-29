@@ -1,0 +1,14 @@
+.remove-bg-control{display:flex!important;align-items:center;gap:4px}
+.remove-bg-control>.remove-bg-main,.remove-bg-control>.remove-bg-chevron{border:0!important;border-radius:8px!important;background:transparent!important;color:#414844!important}
+.remove-bg-control>.remove-bg-main{height:40px!important;padding:0 10px!important;display:flex;align-items:center;gap:7px;font-size:12px;font-weight:650}
+.remove-bg-control>.remove-bg-chevron{width:26px!important;height:32px!important;padding:0!important;display:grid!important;place-items:center!important}
+.remove-bg-control>.remove-bg-main:hover:not(:disabled),.remove-bg-control>.remove-bg-chevron:hover:not(:disabled){background:#e5f5f7!important;color:#277f8c!important}
+.remove-bg-control>.remove-bg-main:disabled,.remove-bg-control>.remove-bg-chevron:disabled{opacity:.35!important;cursor:not-allowed!important}
+.remove-bg-control .bg-options{left:0!important}
+.left-tools{padding:11px 10px!important}
+.left-tools>button,.custom-shape-wrap>button{width:100%!important}
+.left-future{margin-top:auto;display:flex;flex-direction:column;align-items:stretch;gap:5px;padding-top:8px;border-top:1px solid var(--line)}
+.left-future>button{border:0;background:transparent;color:#9ba29e;min-height:53px;border-radius:9px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:4px}
+.left-future svg{width:17px;height:17px}.left-future small{font-size:7px;white-space:nowrap}
+.left-account{min-height:66px!important}.profile-placeholder{width:31px;height:31px;border-radius:50%;display:grid;place-items:center;background:#edf1ef;border:1px solid #d9dfdc}.profile-placeholder svg{width:16px;height:16px}
+.future-account{display:none!important}

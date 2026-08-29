@@ -1,0 +1,99 @@
+.undo-button {
+  height: 40px;
+  border: 0;
+  background: #fff;
+  color: #515a55;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 9px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 700;
+}
+.undo-button:hover {
+  background: #f0f5f2;
+}
+.undo-button svg {
+  width: 15px;
+}
+.object {
+  pointer-events: none;
+}
+.selection-box {
+  pointer-events: none;
+}
+.selection-box .handle,
+.selection-box .rotate-handle,
+.selection-box .float-menu {
+  pointer-events: auto;
+}
+.vector-shape,
+.object.vector-shape.picked {
+  filter: none;
+}
+.safe > span {
+  top: -16px !important;
+  left: 0 !important;
+  background: #fff;
+  padding: 1px 4px;
+}
+.size-row label {
+  font-size: 12px;
+  font-weight: 700;
+}
+.size-row input {
+  font-size: 12px;
+  width: 62px;
+}
+.side-tool-title b {
+  font-size: 14px;
+}
+.side-tool-title small {
+  font-size: 9px;
+}
+.card {
+  grid-template-columns: 25px 50px minmax(0, 1fr) 18px 18px;
+}
+.drag-grip {
+  width: 17px;
+  height: 20px;
+  color: #9aa29e;
+  cursor: grab;
+}
+.drag-grip:active {
+  cursor: grabbing;
+}
+.info input[readonly] {
+  cursor: default;
+  pointer-events: none;
+}
+.info input:not([readonly]) {
+  background: #fff;
+  outline: 1px solid #85cdb4;
+}
+.object.acetate,
+.object.acetate.picked {
+  filter: none;
+}
+.object.acetate img {
+  opacity: 0.3 !important;
+}
+.canvas {
+  background-position: 0 0;
+}
+.selection-box > .measure {
+  transform: translateX(-50%);
+}
+.selection-box > .float-menu {
+  transform: translateX(-50%);
+}
+.selection-box > .rotate-handle {
+  transform: none;
+}
+@media (max-width: 1450px) {
+  .undo-button {
+    font-size: 0;
+    padding: 0 7px;
+  }
+}

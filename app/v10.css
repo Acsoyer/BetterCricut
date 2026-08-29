@@ -1,0 +1,50 @@
+.stage {
+  padding-left: 240px;
+  padding-right: 240px;
+  padding-top: 140px;
+  padding-bottom: 180px;
+}
+.card {
+  grid-template-rows: auto auto;
+}
+.layer-styles {
+  grid-column: 2 / 6;
+  padding: 7px 0 1px 9px;
+  border-left: 1px solid #d7dfda;
+}
+.style-step {
+  height: 27px;
+  display: grid;
+  grid-template-columns: 22px 1fr 24px;
+  align-items: center;
+  color: #4d5651;
+  font-size: 9px;
+  border-radius: 6px;
+}
+.style-step:hover {
+  background: #eef3f0;
+}
+.style-step.step-off {
+  opacity: 0.38;
+}
+.step-eye,
+.step-remove {
+  border: 0;
+  background: transparent;
+  display: grid;
+  place-items: center;
+  color: #6f7973;
+}
+.step-eye svg {
+  width: 12px;
+  height: 12px;
+}
+.step-remove {
+  font-size: 15px;
+}
+.style-step span {
+  cursor: pointer;
+}
+.finalize-tool {
+  opacity: 1;
+}

@@ -1,0 +1,4 @@
+.main-actions .remove-bg-control{position:relative!important;z-index:80!important;pointer-events:auto!important}
+.main-actions .remove-bg-main,.main-actions .remove-bg-chevron{position:relative!important;z-index:81!important;pointer-events:auto!important;opacity:1!important;cursor:pointer!important}
+.main-actions .remove-bg-main:hover,.main-actions .remove-bg-chevron:hover{background:#dff3f6!important;color:#236f7a!important}
+.main-actions .remove-bg-main:active,.main-actions .remove-bg-chevron:active{background:#ccecf0!important;transform:translateY(1px)}

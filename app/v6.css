@@ -1,0 +1,42 @@
+.palette {
+  width: 257px;
+  grid-template-columns: repeat(7, 25px);
+}
+
+.fill-gaps-row {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+}
+
+.fill-gaps-row label {
+  display: grid;
+  grid-template-columns: 1fr 74px 24px;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.fill-gaps-row input {
+  width: 74px;
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 0 7px;
+}
+
+.fill-gaps-row small {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.permanent-tools {
+  min-height: 218px;
+}
+
+.object.acetate img {
+  opacity: 0.72 !important;
+}

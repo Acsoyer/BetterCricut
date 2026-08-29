@@ -1,0 +1,4 @@
+.cut-image-wrap{transform-origin:center center;transition:transform .12s ease-out}
+.cutout-preview{overflow:hidden!important}
+.cutout-preview .bg-zoom-controls{z-index:12}
+.crop-guide{outline:1px solid rgba(13,159,113,.25)}

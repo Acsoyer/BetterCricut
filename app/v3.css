@@ -1,0 +1,244 @@
+.topbar {
+  gap: 12px;
+}
+.topbar > .add-new {
+  border: 0;
+  background: #eaf8f2;
+  color: var(--dark);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 40px;
+  padding: 0 12px;
+  border-radius: 9px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.topbar > .add-new svg {
+  width: 16px;
+}
+.toolbar-divider {
+  width: 1px;
+  height: 28px;
+  background: var(--line);
+  flex: none;
+}
+.toolbar-divider.inner {
+  margin: 0 3px;
+}
+.topbar nav {
+  justify-content: center;
+}
+.topbar nav > .color-slot {
+  order: initial;
+}
+.board > .ruler {
+  display: none;
+}
+.viewport-rulers {
+  position: fixed;
+  left: 0;
+  top: 76px;
+  width: calc(100vw - 310px);
+  height: calc(100vh - 76px);
+  z-index: 35;
+  pointer-events: none;
+  color: #65706a;
+  font-size: 8px;
+}
+.viewport-corner {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 30px;
+  height: 30px;
+  background: #f7f8f7;
+  border-right: 1px solid #cbd2ce;
+  border-bottom: 1px solid #cbd2ce;
+}
+.viewport-ruler-x {
+  position: absolute;
+  left: 30px;
+  right: 0;
+  top: 0;
+  height: 30px;
+  background: #f7f8f7;
+  border-bottom: 1px solid #cbd2ce;
+  overflow: hidden;
+}
+.viewport-ruler-y {
+  position: absolute;
+  left: 0;
+  top: 30px;
+  bottom: 0;
+  width: 30px;
+  background: #f7f8f7;
+  border-right: 1px solid #cbd2ce;
+  overflow: hidden;
+}
+.viewport-ruler-x i,
+.viewport-ruler-y i {
+  position: absolute;
+  font-style: normal;
+}
+.viewport-ruler-x i {
+  top: 16px;
+  height: 14px;
+  border-left: 1px solid #909a94;
+}
+.viewport-ruler-x span {
+  position: absolute;
+  left: 3px;
+  top: -14px;
+}
+.viewport-ruler-y i {
+  left: 16px;
+  width: 14px;
+  border-top: 1px solid #909a94;
+}
+.viewport-ruler-y span {
+  position: absolute;
+  top: 2px;
+  left: -13px;
+}
+.side-tool {
+  min-height: 89px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  background: #f5f7f6;
+  color: #949b97;
+  opacity: 0.65;
+}
+.side-tool.enabled {
+  background: #fff;
+  color: var(--ink);
+  opacity: 1;
+}
+.side-tool-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.side-tool-title b {
+  font-size: 12px;
+}
+.side-tool-title small {
+  font-size: 8px;
+  color: var(--muted);
+}
+.size-row,
+.stroke-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.size-row label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 9px;
+}
+.size-row input,
+.stroke-row input {
+  width: 54px;
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px;
+}
+.side-chain {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: #fff;
+  display: grid;
+  place-items: center;
+}
+.side-chain svg {
+  width: 12px;
+}
+.stroke-row span {
+  font-size: 9px;
+  color: var(--muted);
+}
+.stroke-row button {
+  margin-left: auto;
+  height: 30px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--green);
+  color: #fff;
+  padding: 0 14px;
+  font-size: 9px;
+  font-weight: 800;
+}
+.stroke-row button:disabled {
+  opacity: 0.35;
+}
+.card {
+  grid-template-columns: 25px 50px 1fr 22px;
+  cursor: grab;
+}
+.card:active {
+  cursor: grabbing;
+}
+.vector-shape {
+  filter: drop-shadow(0.45px 0 #111) drop-shadow(-0.45px 0 #111)
+    drop-shadow(0 0.45px #111) drop-shadow(0 -0.45px #111);
+}
+.object:not(.vector-shape).picked {
+  filter: none;
+}
+.object.acetate,
+.object.acetate.picked {
+  filter: drop-shadow(1.5px 0 0 #fff9) drop-shadow(-1.5px 0 0 #18231d55)
+    drop-shadow(0 1.5px 0 #18231d45);
+  opacity: 1;
+}
+.object.acetate img {
+  filter: none !important;
+  opacity: 0.3 !important;
+}
+.object.acetate:after {
+  display: none !important;
+}
+.selection-box > .measure {
+  transform: translateX(-50%) rotate(calc(-1 * var(--rotation)));
+}
+.selection-box > .float-menu {
+  transform: translateX(-50%) rotate(calc(-1 * var(--rotation)));
+}
+.selection-box > .rotate-handle {
+  transform: rotate(calc(-1 * var(--rotation)));
+}
+.float-menu button[title] {
+  position: relative;
+}
+.float-menu button[title]:hover:after {
+  content: attr(title);
+  position: absolute;
+  bottom: calc(100% + 7px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #26312b;
+  color: #fff;
+  font-size: 8px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.aside-head {
+  height: 72px;
+}
+@media (max-width: 1450px) {
+  .viewport-rulers {
+    width: calc(100vw - 285px);
+  }
+  .topbar > .add-new {
+    font-size: 10px;
+    padding: 0 8px;
+  }
+}

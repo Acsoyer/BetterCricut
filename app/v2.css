@@ -1,0 +1,230 @@
+.stroke-top {
+  display: flex;
+  align-items: center;
+  height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  margin-left: 3px;
+  overflow: hidden;
+  background: #fff;
+}
+.stroke-top input {
+  width: 54px;
+  border: 0;
+  padding: 6px 4px 6px 8px;
+  font-size: 10px;
+}
+.stroke-top span {
+  font-size: 9px;
+  color: var(--muted);
+  padding-right: 5px;
+}
+.stroke-top button {
+  height: 100%;
+  border: 0;
+  background: var(--green);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 800;
+  padding: 0 9px;
+}
+.align-menu {
+  left: 0;
+  width: 206px;
+  padding: 7px;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 5px;
+}
+.align-menu button {
+  border: 1px solid var(--line);
+  background: #fff;
+  border-radius: 7px;
+  padding: 8px 4px;
+  font-size: 8px;
+  text-transform: capitalize;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.align-menu button:hover {
+  border-color: #8fd5bd;
+  background: #eff9f5;
+}
+.align-menu svg {
+  width: 16px;
+}
+.color-current:before {
+  content: "";
+  width: 15px;
+  height: 15px;
+  border-radius: 4px;
+  background: var(--swatch);
+  border: 1px solid #111;
+  box-shadow: inset 0 0 0 1px #fff7;
+}
+.palette {
+  left: 0;
+  width: 176px;
+  padding: 10px;
+  display: grid;
+  grid-template-columns: repeat(5, 24px);
+  gap: 8px;
+}
+.palette button {
+  width: 24px !important;
+  height: 24px !important;
+  padding: 0 !important;
+  border: 1px solid #222 !important;
+  border-radius: 6px !important;
+  box-shadow: inset 0 0 0 1px #fff8;
+}
+.canvas.mm-grid {
+  background-image:
+    linear-gradient(#e8ebe9 1px, transparent 1px),
+    linear-gradient(90deg, #e8ebe9 1px, transparent 1px);
+}
+.object.picked {
+  filter: drop-shadow(0.35px 0 #111) drop-shadow(-0.35px 0 #111)
+    drop-shadow(0 0.35px #111) drop-shadow(0 -0.35px #111);
+}
+.object.acetate img {
+  filter: drop-shadow(2px 3px 2px #16251d55) drop-shadow(-1px -1px 0 #ffffff)
+    contrast(1.25);
+  opacity: 0.86;
+}
+.object.acetate:after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    125deg,
+    #fff8 0%,
+    transparent 28%,
+    #fff2 46%,
+    transparent 63%,
+    #15271e20 100%
+  );
+  mix-blend-mode: screen;
+}
+.selection-box {
+  position: absolute;
+  outline: 1.5px solid var(--green);
+  touch-action: none;
+  cursor: move;
+}
+.selection-box .measure {
+  z-index: 8;
+}
+.measure.below {
+  bottom: auto;
+  top: calc(100% + 13px);
+}
+.selection-box .handle {
+  width: var(--handle);
+  height: var(--handle);
+}
+.selection-box .h-n,
+.selection-box .h-s {
+  width: calc(var(--handle) * 2);
+}
+.selection-box .h-e,
+.selection-box .h-w {
+  height: calc(var(--handle) * 2);
+}
+.rotate-handle {
+  position: absolute;
+  left: calc(100% + 7px);
+  top: -22px;
+  width: 22px;
+  height: 22px;
+  border: 1px solid #0d9f71;
+  background: #fff;
+  color: var(--green);
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  cursor: grab;
+}
+.rotate-handle:active {
+  cursor: grabbing;
+}
+.rotate-handle svg {
+  width: 12px;
+}
+.float-menu {
+  position: absolute;
+  left: 50%;
+  top: calc(100% + 14px);
+  transform: translateX(-50%);
+  display: flex;
+  background: #fff;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  box-shadow: 0 6px 20px #24302930;
+  z-index: 7;
+  white-space: nowrap;
+}
+.float-menu.lower {
+  top: calc(100% + 52px);
+}
+.float-menu button {
+  position: relative;
+  width: 30px;
+  height: 29px;
+  border: 0;
+  background: #fff;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+}
+.float-menu button:hover {
+  background: #edf6f2;
+  color: var(--green);
+}
+.float-menu button:disabled {
+  opacity: 0.3;
+}
+.float-menu svg {
+  width: 14px;
+}
+.float-menu button:nth-child(2) svg:last-child {
+  position: absolute;
+  width: 8px;
+  right: 3px;
+  bottom: 3px;
+}
+.aside-head > div:last-child {
+  display: flex;
+  gap: 5px;
+}
+.aside-head button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.card.active {
+  box-shadow: inset 3px 0 var(--green);
+}
+@media (max-width: 1450px) {
+  .topbar {
+    gap: 10px;
+    padding: 0 12px;
+  }
+  .topbar nav > button,
+  .topbar nav > .wrap > button {
+    padding: 0 7px;
+    font-size: 10px;
+  }
+  .brand {
+    min-width: 150px;
+  }
+  .stroke-top input {
+    width: 45px;
+  }
+  .workspace {
+    grid-template-columns: minmax(0, 1fr) 285px;
+  }
+}

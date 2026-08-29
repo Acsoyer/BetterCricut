@@ -1,0 +1,51 @@
+.topbar {
+  position: relative;
+}
+.topbar .main-actions {
+  position: absolute;
+  left: 0;
+  right: 310px;
+  top: 12px;
+  max-width: none;
+  justify-content: center;
+  pointer-events: none;
+}
+.topbar .main-actions > button {
+  pointer-events: auto;
+}
+.finalize-tool {
+  padding: 13px 14px 14px;
+  border-bottom: 1px solid var(--line);
+  background: #fbfcfb;
+}
+.disabled-panel {
+  opacity: 0.38;
+}
+.disabled-panel input,
+.disabled-panel button {
+  cursor: not-allowed;
+}
+.finalize-tool .fill-gaps-row {
+  padding-right: 96px;
+}
+.finalize-tool .gap-apply {
+  width: 91px;
+  padding: 0 6px;
+}
+.make-permanent {
+  width: 100%;
+  height: 34px;
+  margin-top: 10px;
+  border: 0;
+  border-radius: 8px;
+  background: #26332d;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+}
+.make-permanent:disabled {
+  opacity: 0.35;
+}
+.permanent-tools {
+  min-height: 154px;
+}

@@ -1,0 +1,16 @@
+/* The measured Fit dimensions must win over legacy auto-size rules. */
+.bg-image-wrap,.cut-image-wrap{
+  width:var(--fit-w)!important;
+  height:var(--fit-h)!important;
+  max-width:none!important;
+  max-height:none!important;
+  flex:0 0 auto!important;
+}
+.bg-image-wrap>img,.cut-image-wrap>img{
+  width:100%!important;
+  height:100%!important;
+  max-width:none!important;
+  max-height:none!important;
+  object-fit:fill!important;
+}
+.bg-preview,.cutout-preview{contain:layout paint;overflow:hidden!important}

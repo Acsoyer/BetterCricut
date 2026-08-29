@@ -1,0 +1,127 @@
+.topbar {
+  height: 64px;
+}
+.topbar .main-actions {
+  justify-content: center;
+}
+.sub-toolbar {
+  height: 44px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 310px 0 22px;
+  background: #fafbfa;
+  border-bottom: 1px solid var(--line);
+  z-index: 46;
+}
+.sub-toolbar > button,
+.sub-toolbar .wrap > button {
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  padding: 0 11px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #414844;
+}
+.sub-toolbar button:hover:not(:disabled) {
+  background: #edf3ef;
+}
+.sub-toolbar button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.sub-toolbar svg {
+  width: 15px;
+  height: 15px;
+}
+.sub-toolbar .pop {
+  top: 38px;
+}
+.main-actions {
+  max-width: 620px;
+}
+.side-cutout {
+  margin: 14px 14px 0;
+  min-height: 42px;
+  border: 0;
+  border-radius: 9px;
+  background: var(--green);
+  color: white;
+  font-size: 12px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.side-cutout:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.side-cutout svg {
+  width: 16px;
+}
+.palette {
+  width: 270px;
+  padding: 12px;
+  gap: 9px;
+  background: #f5f1e9;
+  grid-template-columns: repeat(7, 25px);
+}
+.palette button {
+  border: 1px solid rgba(30, 35, 32, 0.13) !important;
+  box-shadow: 0 1px 2px #20282018;
+}
+.palette button[style*="FFFFFF"] {
+  border-color: #b9b6af !important;
+}
+.align-menu {
+  width: 286px;
+  grid-template-columns: repeat(2, 1fr);
+  padding: 7px;
+  gap: 6px;
+}
+.align-menu button {
+  min-height: 36px;
+  justify-content: flex-start;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 0 10px;
+}
+.fill-gaps-row {
+  position: relative;
+  padding-right: 68px;
+}
+.fill-gaps-row label {
+  grid-template-columns: 1fr 62px 22px;
+}
+.fill-gaps-row .gap-apply {
+  position: absolute;
+  right: 0;
+  top: 10px;
+  height: 30px;
+  border: 0;
+  border-radius: 7px;
+  padding: 0 10px;
+  background: var(--green);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+}
+.object.vector-shape.gap-source img {
+  filter: none !important;
+}
+.object.acetate img {
+  opacity: 0.5 !important;
+}
+.workspace {
+  min-height: 0;
+}

@@ -1,0 +1,74 @@
+.palette {
+  width: 184px;
+  grid-template-columns: repeat(5, 25px);
+  gap: 8px;
+}
+.palette button {
+  width: 25px !important;
+  height: 25px !important;
+}
+.object.vector-shape:not(.acetate) img {
+  filter: drop-shadow(1px 0 0 #171717) drop-shadow(-1px 0 0 #171717)
+    drop-shadow(0 1px 0 #171717) drop-shadow(0 -1px 0 #171717);
+}
+.object.acetate,
+.object.acetate.picked {
+  filter: drop-shadow(-1px -1px 0 rgba(255, 255, 255, 0.9))
+    drop-shadow(1px 1px 0 rgba(24, 28, 31, 0.7))
+    drop-shadow(-2px 1px 1px rgba(255, 255, 255, 0.45))
+    drop-shadow(2px -1px 1px rgba(29, 34, 38, 0.5)) !important;
+}
+.object.acetate img {
+  opacity: 1 !important;
+}
+.permanent-tools {
+  min-height: 154px;
+  opacity: 1;
+}
+.tool-separator {
+  height: 1px;
+  background: var(--line);
+  margin: 12px -14px;
+}
+.side-tool-title {
+  margin-bottom: 7px;
+}
+.card.dragging {
+  opacity: 0.28;
+  transform: scale(0.97);
+  border: 1px dashed var(--green);
+}
+.card {
+  transition:
+    transform 0.12s ease,
+    opacity 0.12s ease,
+    margin 0.12s ease;
+}
+.info input[readonly] {
+  pointer-events: auto !important;
+  cursor: text;
+}
+.marquee {
+  position: absolute;
+  border: 1px solid #0d9f71;
+  background: rgba(13, 159, 113, 0.12);
+  z-index: 100;
+  pointer-events: none;
+}
+.align-menu {
+  width: 216px;
+  grid-template-columns: repeat(3, 1fr);
+}
+.align-menu button {
+  min-height: 48px;
+}
+.canvas {
+  background-color: #fff;
+}
+.safe > span {
+  color: #b87a7a;
+}
+.selection-box .handle {
+  min-width: 11px;
+  min-height: 11px;
+}
