@@ -43,7 +43,11 @@ import {
   User,
   FolderOpen,
   Image as ImageIcon,
+  LogOut,
+  X,
 } from "lucide-react";
+import type { Session } from "@supabase/supabase-js";
+import { supabase } from "../lib/supabase";
 import { getSVG, traceCanvas } from "@cadit-app/potrace-ts";
 import {
   faStar,faHeart,faArrowRight,faBolt,faBurst,faCloud,faMoon,faSun,faDiamond,
@@ -145,6 +149,7 @@ type Layer = {
   activeStep: number;
   acetateOn: boolean;
 };
+type SavedProject = { id: string; name: string; updated_at: string; data: { layers: Layer[]; landscape: boolean; safeMargin: number } };
 type Drag = {
   mode: string;
   sx: number;
@@ -707,7 +712,10 @@ export default function Home() {
     [cutCursor, setCutCursor] = useState<{x:number;y:number;visible:boolean}>({x:0,y:0,visible:false}),
     [imageEditor,setImageEditor]=useState<ImageEditor|null>(null),
     [imageEditorSize,setImageEditorSize]=useState({w:0,h:0}),
-    [rulerOrigin, setRulerOrigin] = useState({ x: 0, y: 0 });
+    [rulerOrigin, setRulerOrigin] = useState({ x: 0, y: 0 }),
+    [session, setSession] = useState<Session | null>(null), [projects, setProjects] = useState<SavedProject[]>([]),
+    [projectsOpen, setProjectsOpen] = useState(false), [accountOpen, setAccountOpen] = useState(false),
+    [currentProjectId, setCurrentProjectId] = useState<string | null>(null), [projectName, setProjectName] = useState("Untitled Project");
   const fileRef = useRef<HTMLInputElement>(null),
     stageRef = useRef<HTMLDivElement>(null),
     canvasRef = useRef<HTMLDivElement>(null),
@@ -742,6 +750,11 @@ export default function Home() {
       picked.every((l) => ["stroke", "vector"].includes(l.kind));
   const mutate = (id: string, fn: (l: Layer) => Layer) =>
     setLayers((v) => v.map((l) => (l.id === id ? fn(l) : l)));
+  const refreshProjects = async () => { const { data, error } = await supabase.from("projects").select("id,name,updated_at,data").order("updated_at", { ascending: false }); if (error) { setNotice("Projects could not be loaded"); return; } setProjects((data || []) as SavedProject[]); };
+  const saveProject = async () => { if (!session?.user) return setNotice("Sign in to save a project"); setWorking(true); const payload = { name: projectName.trim() || "Untitled Project", data: { layers, landscape, safeMargin }, user_id: session.user.id, updated_at: new Date().toISOString() }; const query = currentProjectId ? supabase.from("projects").update(payload).eq("id", currentProjectId).select("id,name,updated_at,data").single() : supabase.from("projects").insert(payload).select("id,name,updated_at,data").single(); const { data, error } = await query; setWorking(false); if (error || !data) return setNotice("Project could not be saved"); setCurrentProjectId(data.id); setProjectName(data.name); await refreshProjects(); setNotice("Project saved"); };
+  const openProject = (project: SavedProject) => { setLayers(project.data.layers || []); setLandscape(Boolean(project.data.landscape)); setSafeMargin(project.data.safeMargin ?? 1); setSelected([]); setCurrentProjectId(project.id); setProjectName(project.name); history.current = []; setProjectsOpen(false); setNotice(`${project.name} opened`); };
+  const deleteProject = async (id: string) => { const { error } = await supabase.from("projects").delete().eq("id", id); if (error) return setNotice("Project could not be deleted"); if (currentProjectId === id) { setCurrentProjectId(null); setProjectName("Untitled Project"); } await refreshProjects(); setNotice("Project deleted"); };
+  useEffect(() => { void supabase.auth.getSession().then(({ data }) => { setSession(data.session); if (data.session) void refreshProjects(); }); const { data } = supabase.auth.onAuthStateChange((_event, next) => { setSession(next); if (next) void refreshProjects(); else setProjects([]); }); return () => data.subscription.unsubscribe(); }, []);
   useEffect(() => {
     if (!bgEditor) return;
     let cancelled = false;
@@ -1958,7 +1971,7 @@ export default function Home() {
           </span>
           <div>
             <b>Better Cricut Editor</b>
-            <small>Personal workspace · v32</small>
+            <small>Personal workspace · v33</small>
           </div>
         </div>
         <input
@@ -2100,7 +2113,7 @@ export default function Home() {
           <Sparkles /> Bake Cutout
         </button>
         </div>
-        <button className="save-project" disabled title="Project saving will be added later">
+        <button className="save-project" onClick={() => void saveProject()} title="Save this project">
           <Download /> Save Project
         </button>
       </div>
@@ -2114,8 +2127,8 @@ export default function Home() {
             {shapeOpen&&<div className="custom-shapes-menu">{CUSTOM_SHAPES.map(([name,icon])=>{const [w,h,,,path]=icon.icon;return <button key={name} title={name} onClick={()=>{setShapeTool(name);setShapeOpen(false)}}><svg viewBox={`0 0 ${w} ${h}`}>{Array.isArray(path)?path.map((d,i)=><path key={i} d={d}/>):<path d={path}/>}</svg><span>{name}</span></button>})}</div>}
           </div>
           <div className="left-future">
-            <button disabled className="left-projects"><FolderOpen/><small>My Projects</small></button>
-            <button disabled className="left-account"><span className="profile-placeholder"><User/></span><small>My Account</small></button>
+            <button className="left-projects" onClick={() => { setProjectsOpen(true); setAccountOpen(false); void refreshProjects(); }}><FolderOpen/><small>My Projects</small></button>
+            <button className="left-account" onClick={() => { setAccountOpen(true); setProjectsOpen(false); }}><span className="profile-placeholder"><User/></span><small>My Account</small></button>
           </div>
         </div>
         <div className="stage" ref={stageRef} onScroll={updateRulers} onPointerDown={stageDown}>
@@ -2576,6 +2589,8 @@ export default function Home() {
           </footer>
         </aside>
       </section>
+      {projectsOpen && <div className="project-modal" role="dialog" aria-modal="true" aria-label="My Projects"><div className="project-dialog"><header><div><b>My Projects</b><small>{projects.length} saved {projects.length === 1 ? "project" : "projects"}</small></div><button onClick={() => setProjectsOpen(false)} aria-label="Close"><X/></button></header><div className="project-name-row"><label>Current project</label><input value={projectName} maxLength={80} onChange={(e) => setProjectName(e.target.value)} /><button onClick={() => void saveProject()}>Save</button></div><div className="project-list">{projects.length ? projects.map(project => <article key={project.id} className={project.id === currentProjectId ? "current" : ""}><button className="project-open" onClick={() => openProject(project)}><FolderOpen/><span><b>{project.name}</b><small>Updated {new Date(project.updated_at).toLocaleString()}</small></span></button><button className="project-delete" onClick={() => void deleteProject(project.id)} title="Delete project"><Trash2/></button></article>) : <div className="projects-empty"><FolderOpen/><b>No saved projects yet</b><span>Save your current canvas to see it here.</span></div>}</div></div></div>}
+      {accountOpen && <div className="account-panel" role="dialog" aria-label="My Account"><button className="account-close" onClick={() => setAccountOpen(false)} aria-label="Close"><X/></button><span className="account-avatar"><User/></span><b>My Account</b><small>Signed in as</small><p>{session?.user.email || "Unknown account"}</p><div className="account-stat"><FolderOpen/><span><b>{projects.length}</b><small>Saved projects</small></span></div><button className="sign-out" onClick={() => void supabase.auth.signOut()}><LogOut/> Sign Out</button></div>}
       {notice && <div className="toast">{notice}</div>}
       {imageEditor&&(()=>{const target=layers.find(l=>l.id===imageEditor.layerId);return <div className="bg-modal image-edit-modal" role="dialog" aria-modal="true" aria-label="Image editor">
         <div className="bg-dialog"><header><div><b>Edit Image</b><small>Crop and increase raster resolution without altering the design geometry.</small></div><button onClick={()=>setImageEditor(null)}>×</button></header>
