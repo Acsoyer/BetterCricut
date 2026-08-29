@@ -1958,7 +1958,7 @@ export default function Home() {
           </span>
           <div>
             <b>Better Cricut Editor</b>
-            <small>Personal workspace · v31</small>
+            <small>Personal workspace · v32</small>
           </div>
         </div>
         <input

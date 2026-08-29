@@ -37,8 +37,7 @@ export default function LandingPage() {
 
   useEffect(() => {
     if (session) return;
-    const clientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
-    if (!clientId) return;
+    const clientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || "769733103078-1ifg8p2nqdfsukf0m3as9ilcfggcte2j.apps.googleusercontent.com";
     const setupGoogle = () => {
       if (!window.google || !googleButton.current) return;
       window.google.accounts.id.initialize({
