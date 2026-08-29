@@ -48,6 +48,7 @@ import {
 } from "lucide-react";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
+import ImageTracer from "imagetracerjs";
 import { getSVG, traceCanvas } from "@cadit-app/potrace-ts";
 import {
   faStar,faHeart,faArrowRight,faBolt,faBurst,faCloud,faMoon,faSun,faDiamond,
@@ -447,6 +448,17 @@ async function smoothVectorCutout(src: string, color: string) {
   const doc = new DOMParser().parseFromString(getSVG(paths, 1, "fill"), "image/svg+xml"), root = doc.documentElement;
   root.setAttribute("width", String(traced.width)); root.setAttribute("height", String(traced.height)); root.setAttribute("viewBox", `0 0 ${traced.width} ${traced.height}`); root.setAttribute("preserveAspectRatio", "none");
   root.querySelectorAll("path").forEach((path) => { path.setAttribute("fill", color); path.setAttribute("fill-rule", "evenodd"); path.setAttribute("stroke", "#141715"); path.setAttribute("stroke-width", "1.15"); path.setAttribute("vector-effect", "non-scaling-stroke"); path.setAttribute("paint-order", "stroke fill"); });
+  return `data:image/svg+xml,${encodeURIComponent(new XMLSerializer().serializeToString(root))}`;
+}
+async function imageTracerPaperCutout(src: string, color: string) {
+  const img = await getImage(src), longest = Math.max(img.naturalWidth, img.naturalHeight), scale = clamp(1600 / Math.max(longest, 1), 2, 5), canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(img.naturalWidth * scale)); canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+  const context = canvas.getContext("2d", { willReadFrequently: true })!; context.imageSmoothingEnabled = true; context.imageSmoothingQuality = "high"; context.drawImage(img, 0, 0, canvas.width, canvas.height);
+  const rgba = context.getImageData(0, 0, canvas.width, canvas.height);
+  for (let i = 0; i < rgba.data.length; i += 4) { const alpha = rgba.data[i + 3] >= 128 ? 255 : 0; rgba.data[i] = rgba.data[i + 1] = rgba.data[i + 2] = 0; rgba.data[i + 3] = alpha; }
+  const tracedSvg = ImageTracer.imagedataToSVG(rgba, { colorsampling: 0, numberofcolors: 2, pal: [{ r: 0, g: 0, b: 0, a: 0 }, { r: 0, g: 0, b: 0, a: 255 }], ltres: 2.25, qtres: 1.15, pathomit: Math.max(4, Math.round(scale * 2)), rightangleenhance: true, linefilter: true, blurradius: 2, blurdelta: 48, strokewidth: 0, roundcoords: 2, viewbox: true, desc: false });
+  const doc = new DOMParser().parseFromString(tracedSvg, "image/svg+xml"), root = doc.documentElement; root.setAttribute("preserveAspectRatio", "none");
+  root.querySelectorAll("path").forEach((path) => { if (Number(path.getAttribute("opacity") || "1") < .01) { path.remove(); return; } path.setAttribute("fill", color); path.setAttribute("stroke", "#141715"); path.setAttribute("stroke-width", "1.1"); path.setAttribute("fill-rule", "evenodd"); path.setAttribute("vector-effect", "non-scaling-stroke"); path.setAttribute("paint-order", "stroke fill"); });
   return `data:image/svg+xml,${encodeURIComponent(new XMLSerializer().serializeToString(root))}`;
 }
 async function renderCutoutEdit(editor: CutoutEditor, applyCrop = false) {
@@ -1404,11 +1416,11 @@ export default function Home() {
     if (!one || ["vector", "stroke", "acetate"].includes(one.kind)) return;
     setBgMenuOpen(false); setWorking(true);
     try {
-      const refined = await refineBackground(one.src, 46, [], 12, 0), trimmed = await trimTransparent(refined), color = COLORS[Math.floor(Math.random() * 21)], solid = await silhouette(trimmed.src, color, 255), vectorSrc = await smoothVectorCutout(solid, color),
+      const refined = await refineBackground(one.src, 46, [], 12, 0), trimmed = await trimTransparent(refined), color = COLORS[Math.floor(Math.random() * 21)], solid = await silhouette(trimmed.src, color, 255), vectorSrc = await imageTracerPaperCutout(solid, color),
         noBgLayer: Layer = { ...one, src: trimmed.src, x: one.x + one.w * trimmed.left, y: one.y + one.h * trimmed.top, w: one.w * trimmed.width, h: one.h * trimmed.height, kind: "nobg" },
         finalLayer: Layer = { ...noBgLayer, name: `${one.name.replace(/_(NoBG|Cutout|SmoothCutout)$/i, "")}_SmoothCutout`, src: vectorSrc, color, kind: "vector" };
-      const removeStep: LayerStep = { id: uid(), type: "remove-bg", label: "Remove Background", snapshot: snapshot(noBgLayer) }, cutoutStep: LayerStep = { id: uid(), type: "cutout", label: "Smooth Cutout v1", snapshot: snapshot(finalLayer) };
-      mutate(one.id, () => ({ ...finalLayer, steps: [...one.steps, removeStep, cutoutStep], activeStep: one.steps.length + 1 })); setNotice("Smooth Cutout v1 created");
+      const removeStep: LayerStep = { id: uid(), type: "remove-bg", label: "Remove Background", snapshot: snapshot(noBgLayer) }, cutoutStep: LayerStep = { id: uid(), type: "cutout", label: "Smooth Cutout v2", snapshot: snapshot(finalLayer) };
+      mutate(one.id, () => ({ ...finalLayer, steps: [...one.steps, removeStep, cutoutStep], activeStep: one.steps.length + 1 })); setNotice("Smooth Cutout v2 created with ImageTracerJS");
     } catch (error) { setNotice(`Smooth Cutout could not be created: ${error instanceof Error ? error.message : "Unknown error"}`); } finally { setWorking(false); }
   };
   const applyColor = async (color: string) => {
@@ -1995,7 +2007,7 @@ export default function Home() {
           </span>
           <div>
             <b>Better Cricut Editor</b>
-            <small>Personal workspace · v35</small>
+            <small>Personal workspace · v36</small>
           </div>
         </div>
         <input
@@ -2011,7 +2023,7 @@ export default function Home() {
           <div className="wrap remove-bg-control">
             <button type="button" className="remove-bg-main" onClick={()=>void quickBackground()}><Sparkles />Remove Background</button>
             <button type="button" className="remove-bg-chevron" onClick={(e)=>{e.preventDefault();e.stopPropagation();if(!one){setNotice("Select one image for Advanced Background Removal");return}setBgMenuOpen(v=>!v)}} aria-label="Background removal options"><ChevronDown /></button>
-            {bgMenuOpen&&<div className="pop bg-options"><button onClick={()=>{setBgMenuOpen(false);noBackground()}}>Advanced Background Removal</button><button disabled={!one || ["vector","stroke","acetate"].includes(one.kind)} onClick={()=>void smoothCutoutV1()}>Smooth Cutout v1</button></div>}
+            {bgMenuOpen&&<div className="pop bg-options"><button onClick={()=>{setBgMenuOpen(false);noBackground()}}>Advanced Background Removal</button><button disabled={!one || ["vector","stroke","acetate"].includes(one.kind)} onClick={()=>void smoothCutoutV1()}>Smooth Cutout v2</button></div>}
           </div>
           <button
             disabled={!one || ["vector", "stroke"].includes(one.kind)}
