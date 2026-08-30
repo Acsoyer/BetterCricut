@@ -521,7 +521,6 @@ async function vTracerCutout(src: string, color: string) {
       const reportedComplete = count > 0 && (doc.getElementById("progressregion") as HTMLElement | null)?.style.display === "none";
       const settled = count > 0 && now - lastChange > 900;
       if (reportedComplete || settled) resolve();
-      else if (now - started > 180000) reject(new Error("VTracer could not finish this image within three minutes"));
       else window.setTimeout(check, 80);
     };
     check();
@@ -2903,7 +2902,7 @@ export default function Home() {
         <div className="working">
           <div />
           <b>{vTracerStartedAt === null ? "WORKING" : "CREATING SMOOTH CUTOUT"}</b>
-          <span>{vTracerStartedAt === null ? "Processing your design…" : `VTracer is processing locally · ${String(Math.floor(vTracerElapsed / 60)).padStart(2, "0")}:${String(vTracerElapsed % 60).padStart(2, "0")} / 03:00`}</span>
+          <span>{vTracerStartedAt === null ? "Processing your design…" : `VTracer is processing locally · ${String(Math.floor(vTracerElapsed / 60)).padStart(2, "0")}:${String(vTracerElapsed % 60).padStart(2, "0")} · No time limit`}</span>
         </div>
       )}
     </main>
