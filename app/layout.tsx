@@ -31,8 +31,7 @@ import "./v35.css";
 const inter = Inter({ variable: "--font-inter", subsets: ["latin"] });
 export const metadata: Metadata = {
   title: "Better Cricut Editor",
-  description:
-    "A private A4 design workspace for Cricut-ready SVG, PNG and PDF exports.",
+  description: "Turn AI-generated artwork into clean, correctly sized Cricut cutouts, cake toppers, SVGs, PNGs and printable designs—without Photoshop or Illustrator.",
 };
 export default function RootLayout({
   children,
