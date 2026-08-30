@@ -490,7 +490,7 @@ function getVTracerFrame() {
   return vTracerFramePromise;
 }
 async function vTracerCutout(src: string, color: string) {
-  const img = await getImage(src), longest = Math.max(img.naturalWidth, img.naturalHeight), scale = clamp(1800 / Math.max(longest, 1), 2, 6), canvas = document.createElement("canvas");
+  const img = await getImage(src), longest = Math.max(img.naturalWidth, img.naturalHeight), scale = clamp(1100 / Math.max(longest, 1), 1, 3), canvas = document.createElement("canvas");
   canvas.width = Math.max(1, Math.round(img.naturalWidth * scale)); canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
   const context = canvas.getContext("2d", { willReadFrequently: true })!;
   context.imageSmoothingEnabled = true; context.imageSmoothingQuality = "high"; context.drawImage(img, 0, 0, canvas.width, canvas.height);
@@ -514,10 +514,15 @@ async function vTracerCutout(src: string, color: string) {
   while (svg.firstChild) svg.removeChild(svg.firstChild);
   const transfer = new DataTransfer(); transfer.items.add(new File([blob], "cutout-mask.png", { type: "image/png" })); input.files = transfer.files; input.dispatchEvent(new Event("change", { bubbles: true }));
   await new Promise<void>((resolve, reject) => {
-    const started = performance.now();
+    const started = performance.now(); let previousCount = 0, lastChange = started;
     const check = () => {
-      const complete = svg.querySelectorAll("path").length > 0 && (doc.getElementById("progressregion") as HTMLElement | null)?.style.display === "none";
-      if (complete) resolve(); else if (performance.now() - started > 60000) reject(new Error("VTracer timed out")); else window.setTimeout(check, 40);
+      const now = performance.now(), count = svg.querySelectorAll("path").length;
+      if (count !== previousCount) { previousCount = count; lastChange = now; }
+      const reportedComplete = count > 0 && (doc.getElementById("progressregion") as HTMLElement | null)?.style.display === "none";
+      const settled = count > 0 && now - lastChange > 900;
+      if (reportedComplete || settled) resolve();
+      else if (now - started > 180000) reject(new Error("VTracer could not finish this image within three minutes"));
+      else window.setTimeout(check, 80);
     };
     check();
   });
