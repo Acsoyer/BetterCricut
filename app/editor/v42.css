@@ -1,0 +1,71 @@
+.canvas.grid-off {
+  background-image: none !important;
+}
+
+/* Preserve useful panning room around the page even at low zoom levels. */
+.stage {
+  padding: 34vh 38vw 38vh !important;
+}
+
+.refine-quick-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.refine-quick-tools button,
+.refine-quick-tools label,
+.erase-color-row button {
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: #39423d;
+  padding: 0 10px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.refine-quick-tools label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.erase-color-row {
+  display: grid;
+  grid-template-columns: 34px 1fr auto;
+  align-items: center;
+  gap: 7px;
+  margin: 8px 0 10px;
+}
+
+.erase-color-row input[type="color"] {
+  width: 34px;
+  height: 31px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f7f4ec;
+}
+
+.edit-brush-stroke.smooth {
+  stroke: #2d9cdb !important;
+  stroke-opacity: .72 !important;
+}
+
+.cut-tool-smooth {
+  cursor: crosshair;
+}
+
+.topbar button.active {
+  color: var(--dark);
+  background: #e8f7f8;
+}
+
+@media (max-width: 780px) {
+  .stage {
+    padding: 26vh 32vw 32vh !important;
+  }
+}

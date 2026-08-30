@@ -26,6 +26,7 @@ import {
   FileImage,
   ImagePlus,
   GripVertical,
+  Grid3X3,
   Link as LinkIcon,
   Link2Off,
   Maximize2,
@@ -185,9 +186,11 @@ type BgEditor = {
   panY: number;
   speckles: number;
   edgeRefine: number;
+  eraseColor: string | null;
+  colorSensitivity: number;
 };
 type ImageEditor = { layerId:string; source:string; crop:{left:number;top:number;right:number;bottom:number}; upscale:1|2|3 };
-type EditTool = "bridge" | "erase" | "lasso" | "rectangle";
+type EditTool = "bridge" | "erase" | "lasso" | "rectangle" | "smooth";
 type EditStroke = { id: string; tool: EditTool; brush: number; points: { x: number; y: number }[] };
 type CutoutEditor = {
   layerId: string;
@@ -198,6 +201,8 @@ type CutoutEditor = {
   strokes: EditStroke[];
   crop: { left: number; top: number; right: number; bottom: number };
   zoom: number;
+  panX: number;
+  panY: number;
 };
 const uid = () => Math.random().toString(36).slice(2, 10),
   clean = (n: string) => n.replace(/\.[^/.]+$/, "") || "Layer",
@@ -298,6 +303,8 @@ async function refineBackground(
   strokes: BgStroke[],
   speckles = 0,
   edgeRefine = 0,
+  eraseColor: string | null = null,
+  colorSensitivity = 30,
 ) {
   const base = await getImage(await removeBg(src, tolerance)),
     original = await getImage(src),
@@ -316,6 +323,13 @@ async function refineBackground(
     sourceData = source.data,
     floodSeen = new Uint16Array(c.width * c.height),
     floodQueue = new Int32Array(c.width * c.height);
+  if (eraseColor) {
+    const rgb = eraseColor.match(/[a-f\d]{2}/gi)?.map((part) => parseInt(part, 16));
+    if (rgb?.length === 3) for (let q = 0; q < result.data.length; q += 4) {
+      const distance = Math.hypot(sourceData[q] - rgb[0], sourceData[q + 1] - rgb[1], sourceData[q + 2] - rgb[2]);
+      if (distance <= colorSensitivity * 2.2) result.data[q + 3] = 0;
+    }
+  }
   let floodGeneration = 0;
   const floodKeep = (seedX: number, seedY: number) => {
     const startX = clamp(Math.round(seedX), 0, c.width - 1),
@@ -499,6 +513,7 @@ async function renderCutoutEdit(editor: CutoutEditor, applyCrop = false) {
   const x = c.getContext("2d")!; x.drawImage(img, 0, 0);
   for (const stroke of editor.strokes) {
     if (!stroke.points.length) continue;
+    if (stroke.tool === "smooth") continue;
     x.save(); x.lineCap = "round"; x.lineJoin = "round";
     x.lineWidth = Math.max(2, stroke.brush / 100 * Math.min(c.width, c.height));
     if (stroke.tool === "bridge") { x.globalCompositeOperation = "source-over"; x.strokeStyle = editor.color; x.fillStyle = editor.color; }
@@ -514,6 +529,24 @@ async function renderCutoutEdit(editor: CutoutEditor, applyCrop = false) {
     else if (stroke.points.length === 1) { const p = stroke.points[0]; x.arc(p.x*c.width,p.y*c.height,x.lineWidth/2,0,Math.PI*2); x.fill(); }
     else x.stroke();
     x.restore();
+  }
+  for (const stroke of editor.strokes.filter((item) => item.tool === "smooth" && item.points.length)) {
+    const mask = document.createElement("canvas"), softened = document.createElement("canvas");
+    mask.width = softened.width = c.width; mask.height = softened.height = c.height;
+    const maskContext = mask.getContext("2d")!, softContext = softened.getContext("2d")!;
+    maskContext.lineCap = "round"; maskContext.lineJoin = "round"; maskContext.strokeStyle = "#fff";
+    maskContext.lineWidth = Math.max(4, stroke.brush / 100 * Math.min(c.width, c.height));
+    maskContext.beginPath(); maskContext.moveTo(stroke.points[0].x * c.width, stroke.points[0].y * c.height);
+    for (const point of stroke.points.slice(1)) maskContext.lineTo(point.x * c.width, point.y * c.height);
+    if (stroke.points.length === 1) maskContext.lineTo(stroke.points[0].x * c.width + .01, stroke.points[0].y * c.height);
+    maskContext.stroke();
+    softContext.filter = `blur(${Math.max(1.2, maskContext.lineWidth * .045)}px)`; softContext.drawImage(c, 0, 0); softContext.filter = "none";
+    const current = x.getImageData(0, 0, c.width, c.height), blurred = softContext.getImageData(0, 0, c.width, c.height), selected = maskContext.getImageData(0, 0, c.width, c.height);
+    for (let q = 0; q < current.data.length; q += 4) if (selected.data[q + 3] > 20) {
+      const alpha = blurred.data[q + 3] >= 128 ? 255 : 0;
+      current.data[q] = parseInt(editor.color.slice(1, 3), 16); current.data[q + 1] = parseInt(editor.color.slice(3, 5), 16); current.data[q + 2] = parseInt(editor.color.slice(5, 7), 16); current.data[q + 3] = alpha;
+    }
+    x.putImageData(current, 0, 0);
   }
   if (!applyCrop) return { src: c.toDataURL(), left: 0, top: 0, width: 1, height: 1 };
   const l = clamp(editor.crop.left / 100, 0, .9), t = clamp(editor.crop.top / 100, 0, .9),
@@ -749,6 +782,7 @@ export default function Home() {
     [landscape, setLandscape] = useState(false),
     [safeMargin, setSafeMargin] = useState(1),
     [safeOpen, setSafeOpen] = useState(false),
+    [gridVisible, setGridVisible] = useState(true),
     [bgMenuOpen, setBgMenuOpen] = useState(false),
     [shapeOpen, setShapeOpen] = useState(false),
     [shapeTool, setShapeTool] = useState<string | null>(null),
@@ -792,6 +826,7 @@ export default function Home() {
     bgDrawing = useRef<string | null>(null),
     bgPanDrag = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null),
     cutDrawing = useRef<string | null>(null),
+    cutPanDrag = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null),
     bgPreviewRef = useRef<HTMLDivElement>(null),
     cutPreviewRef = useRef<HTMLDivElement>(null),
     cropDrag = useRef<{mode:string;x:number;y:number;crop:CutoutEditor["crop"];rect:DOMRect}|null>(null),
@@ -857,6 +892,8 @@ export default function Home() {
         bgEditor.strokes,
         bgEditor.speckles,
         bgEditor.edgeRefine,
+        bgEditor.eraseColor,
+        bgEditor.colorSensitivity,
       ).then((src) => {
         if (!cancelled) {
           setBgPreview(src);
@@ -868,7 +905,7 @@ export default function Home() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [bgEditor?.source, bgEditor?.sensitivity, bgEditor?.strokes, bgEditor?.speckles, bgEditor?.edgeRefine]);
+  }, [bgEditor?.source, bgEditor?.sensitivity, bgEditor?.strokes, bgEditor?.speckles, bgEditor?.edgeRefine, bgEditor?.eraseColor, bgEditor?.colorSensitivity]);
   useEffect(() => {
     if (!cutEditor) return;
     let cancelled = false;
@@ -937,7 +974,7 @@ export default function Home() {
       if ((e.ctrlKey || e.metaKey) && ["+", "=", "-", "0"].includes(e.key)) {
         e.preventDefault();
         setZoom((z) =>
-          e.key === "0" ? 1 : clamp(z + (e.key === "-" ? -0.1 : 0.1), 0.8, 2.5),
+          e.key === "0" ? 1 : clamp(z + (e.key === "-" ? -0.1 : 0.1), 0.8, 4),
         );
         return;
       }
@@ -962,7 +999,7 @@ export default function Home() {
     const stopBrowserZoom = (e: WheelEvent) => {
       if (!e.ctrlKey) return;
       e.preventDefault();
-      setZoom((z) => clamp(z + (e.deltaY < 0 ? 0.1 : -0.1), 0.8, 2.5));
+      setZoom((z) => clamp(z + (e.deltaY < 0 ? 0.1 : -0.1), 0.8, 4));
     };
     window.addEventListener("wheel", stopBrowserZoom, { passive: false });
     return () => window.removeEventListener("wheel", stopBrowserZoom);
@@ -1054,6 +1091,8 @@ export default function Home() {
       panY: 0,
       speckles: 0,
       edgeRefine: 0,
+      eraseColor: null,
+      colorSensitivity: 30,
     });
   };
   const quickBackground = async (chosen?:Layer|null) => {
@@ -1070,7 +1109,7 @@ export default function Home() {
     setWorking(true);
     try {
       const refined = !bgRendering && bgPreview ? bgPreview : await refineBackground(
-        bgEditor.source, bgEditor.sensitivity, bgEditor.strokes, bgEditor.speckles, bgEditor.edgeRefine,
+        bgEditor.source, bgEditor.sensitivity, bgEditor.strokes, bgEditor.speckles, bgEditor.edgeRefine, bgEditor.eraseColor, bgEditor.colorSensitivity,
       );
       const t = await trimTransparent(refined);
       const next = {
@@ -1154,11 +1193,27 @@ export default function Home() {
     setBgEditor({ ...bgEditor, panX: p.panX + e.clientX - p.x, panY: p.panY + e.clientY - p.y });
   };
   const endBackgroundPan = () => { bgPanDrag.current = null; };
+  const zoomCutout = (e: RWheel<HTMLDivElement>) => {
+    e.preventDefault(); e.stopPropagation();
+    if (!cutEditor) return;
+    setCutEditor({ ...cutEditor, zoom: clamp(cutEditor.zoom * (e.deltaY < 0 ? 1.12 : .89), .5, 4) });
+  };
+  const startCutoutPan = (e: RPointer<HTMLDivElement>) => {
+    if (!cutEditor || e.button !== 1) return;
+    e.preventDefault(); e.stopPropagation(); e.currentTarget.setPointerCapture(e.pointerId);
+    cutPanDrag.current = { x: e.clientX, y: e.clientY, panX: cutEditor.panX, panY: cutEditor.panY };
+  };
+  const moveCutoutPan = (e: RPointer<HTMLDivElement>) => {
+    if (!cutEditor || !cutPanDrag.current) return;
+    const start = cutPanDrag.current;
+    setCutEditor({ ...cutEditor, panX: start.panX + e.clientX - start.x, panY: start.panY + e.clientY - start.y });
+  };
+  const endCutoutPan = () => { cutPanDrag.current = null; };
   const openCutoutEditor = () => {
     if (!one || !["vector", "stroke"].includes(one.kind)) return;
     setCutPreview(one.src);
     setCutImageSize({ w: 0, h: 0 });
-    setCutEditor({ layerId: one.id, source: one.src, color: one.color, tool: "bridge", brush: 3, strokes: [], crop: { left: 0, top: 0, right: 0, bottom: 0 }, zoom: 1 });
+    setCutEditor({ layerId: one.id, source: one.src, color: one.color, tool: "bridge", brush: 3, strokes: [], crop: { left: 0, top: 0, right: 0, bottom: 0 }, zoom: 1, panX: 0, panY: 0 });
   };
   const cutPoint = (e: RPointer<HTMLImageElement>) => {
     const r = e.currentTarget.getBoundingClientRect();
@@ -2083,7 +2138,7 @@ export default function Home() {
           </span>
           <div>
             <b>Better Cricut Editor</b>
-            <small>Personal workspace · v36</small>
+            <small>Personal workspace · v42</small>
           </div>
         </div>
         <input
@@ -2099,11 +2154,11 @@ export default function Home() {
           <div className="wrap remove-bg-control">
             <button type="button" className="remove-bg-main" onClick={()=>void quickBackground()}><Sparkles />Remove Background</button>
             <button type="button" className="remove-bg-chevron" onClick={(e)=>{e.preventDefault();e.stopPropagation();if(!one){setNotice("Select one image for Advanced Background Removal");return}setBgMenuOpen(v=>!v)}} aria-label="Background removal options"><ChevronDown /></button>
-            {bgMenuOpen&&<div className="pop bg-options"><button onClick={()=>{setBgMenuOpen(false);noBackground()}}>Advanced Background Removal</button><button disabled={!one || ["vector","stroke","acetate"].includes(one.kind)} onClick={()=>void smoothCutoutV1()}>Smooth Cutout v3</button></div>}
+            {bgMenuOpen&&<div className="pop bg-options"><button onClick={()=>{setBgMenuOpen(false);noBackground()}}>Advanced Background Removal</button></div>}
           </div>
           <button
-            disabled={!one || ["vector", "stroke"].includes(one.kind)}
-            onClick={cutout}
+            disabled={!one || ["vector", "stroke", "acetate"].includes(one.kind)}
+            onClick={() => void smoothCutoutV1()}
           >
             <Scissors />
             Make Cutout
@@ -2166,6 +2221,7 @@ export default function Home() {
             </div>
           )}
         </div>
+        <button className={gridVisible ? "active" : ""} onClick={() => setGridVisible((value) => !value)} title="Show or hide the page grid"><Grid3X3 /> Grid</button>
         <button className="sub-undo" onClick={undo} title="Undo (Ctrl+Z)"><Undo2 /> Undo</button>
         </div>
         <div className="sub-center">
@@ -2262,11 +2318,11 @@ export default function Home() {
             </div>
           </div>
           <div className="zoom">
-            <button onClick={() => setZoom((v) => clamp(v - 0.1, 0.8, 2.5))}>
+            <button onClick={() => setZoom((v) => clamp(v - 0.1, 0.8, 4))}>
               <ZoomOut />
             </button>
             <span>{Math.round(zoom * 100)}%</span>
-            <button onClick={() => setZoom((v) => clamp(v + 0.1, 0.8, 2.5))}>
+            <button onClick={() => setZoom((v) => clamp(v + 0.1, 0.8, 4))}>
               <ZoomIn />
             </button>
             <button onClick={centerDocument} title="Center document">
@@ -2293,7 +2349,7 @@ export default function Home() {
             </div>
             <div
               ref={canvasRef}
-              className={`canvas ${zoom > 1.5 ? "mm-grid" : ""}`}
+              className={`canvas ${zoom > 1.5 ? "mm-grid" : ""} ${gridVisible ? "" : "grid-off"}`}
               onPointerDown={canvasDown}
               style={{
                 left: 42,
@@ -2720,8 +2776,8 @@ export default function Home() {
           <div className="bg-dialog" onPointerDown={(e)=>e.stopPropagation()}>
             <header><div><b>Edit Cutout</b><small>Crop, remove pieces, erase details or create bridges.</small></div><button onClick={()=>setCutEditor(null)}>×</button></header>
             <div className="bg-editor-body">
-              <div className="bg-preview cutout-preview" ref={cutPreviewRef}>
-                {cutPreview && <div className="cut-image-wrap" style={{"--fit-w":cutImageSize.w?`${cutImageSize.w}px`:"auto","--fit-h":cutImageSize.h?`${cutImageSize.h}px`:"auto",transform:`scale(${cutEditor.zoom})`} as React.CSSProperties}>
+              <div className="bg-preview cutout-preview" ref={cutPreviewRef} onWheel={zoomCutout} onPointerDown={startCutoutPan} onPointerMove={moveCutoutPan} onPointerUp={endCutoutPan} onPointerCancel={endCutoutPan}>
+                {cutPreview && <div className="cut-image-wrap" style={{"--fit-w":cutImageSize.w?`${cutImageSize.w}px`:"auto","--fit-h":cutImageSize.h?`${cutImageSize.h}px`:"auto",transform:`translate(${cutEditor.panX}px,${cutEditor.panY}px) scale(${cutEditor.zoom})`} as React.CSSProperties}>
                   <img className={`cut-tool-${cutEditor.tool}`} src={cutPreview} alt="Cutout edit preview" draggable={false} onLoad={e=>setCutImageSize(fitEditorImage(e.currentTarget,cutPreviewRef.current))} onPointerDown={startCutEdit} onPointerMove={moveCutEdit} onPointerUp={endCutEdit} onPointerCancel={endCutEdit} onPointerEnter={()=>setCutCursor(v=>({...v,visible:true}))} onPointerLeave={()=>setCutCursor(v=>({...v,visible:false}))}/>
                   <svg className="cut-edit-overlay" viewBox="0 0 100 100" preserveAspectRatio="none">
                     {cutEditor.strokes.filter(s=>s.id===cutActiveStroke).map(s=>{
@@ -2730,23 +2786,23 @@ export default function Home() {
                       if(s.tool==="lasso")return <polyline key={s.id} points={pts} className="eraser-selection lasso-selection"/>;
                       return <polyline key={s.id} points={pts} className={`edit-brush-stroke ${s.tool}`} style={{strokeWidth:s.brush}}/>;
                     })}
-                    {cutCursor.visible&&["bridge","erase"].includes(cutEditor.tool)&&<circle cx={cutCursor.x*100} cy={cutCursor.y*100} r={cutEditor.brush/2} className="cut-brush-cursor"/>}
+                    {cutCursor.visible&&["bridge","erase","smooth"].includes(cutEditor.tool)&&<circle cx={cutCursor.x*100} cy={cutCursor.y*100} r={cutEditor.brush/2} className="cut-brush-cursor"/>}
                   </svg>
                   <div className="crop-guide" style={{left:`${cutEditor.crop.left}%`,top:`${cutEditor.crop.top}%`,right:`${cutEditor.crop.right}%`,bottom:`${cutEditor.crop.bottom}%`}}>
                     {["nw","n","ne","e","se","s","sw","w"].map(h=><button key={h} className={`crop-handle crop-${h}`} onPointerDown={e=>startCropDrag(e,h)} onPointerMove={moveCropDrag} onPointerUp={endCropDrag} onPointerCancel={endCropDrag}/>) }
                   </div>
                 </div>}
                 <div className="bg-zoom-controls">
-                  <button onClick={()=>setCutEditor({...cutEditor,zoom:clamp(cutEditor.zoom/1.2,.5,5)})}>−</button>
+                  <button onClick={()=>setCutEditor({...cutEditor,zoom:clamp(cutEditor.zoom/1.2,.5,4)})}>−</button>
                   <span>{Math.round(cutEditor.zoom*100)}%</span>
-                  <button onClick={()=>setCutEditor({...cutEditor,zoom:clamp(cutEditor.zoom*1.2,.5,5)})}>+</button>
-                  <button onClick={()=>setCutEditor({...cutEditor,zoom:1})}>Fit</button>
+                  <button onClick={()=>setCutEditor({...cutEditor,zoom:clamp(cutEditor.zoom*1.2,.5,4)})}>+</button>
+                  <button onClick={()=>setCutEditor({...cutEditor,zoom:1,panX:0,panY:0})}>Fit</button>
                 </div>
               </div>
               <aside className="bg-controls cutout-controls">
                 <section><label>Edit Tool</label><div className="edit-tool-grid">
-                  {(["bridge","erase","lasso","rectangle"] as EditTool[]).map((tool)=><button key={tool} className={cutEditor.tool===tool?"active":""} onClick={()=>setCutEditor({...cutEditor,tool})}>{tool==="lasso"?"Lasso Eraser":tool==="rectangle"?"Rectangle Eraser":tool[0].toUpperCase()+tool.slice(1)}</button>)}
-                </div><small>Bridge adds material. Erase separates parts. Lasso and Rectangle remove the outlined area.</small></section>
+                  {(["bridge","erase","smooth","lasso","rectangle"] as EditTool[]).map((tool)=><button key={tool} className={cutEditor.tool===tool?"active":""} onClick={()=>setCutEditor({...cutEditor,tool})}>{tool==="smooth"?"Fix the Edges":tool==="lasso"?"Lasso Eraser":tool==="rectangle"?"Rectangle Eraser":tool[0].toUpperCase()+tool.slice(1)}</button>)}
+                </div><small>Fix the Edges smooths only the brushed contour. Its start and end preserve the surrounding trajectory.</small></section>
                 <section><label>Brush Size <b>{cutEditor.brush}%</b></label><input type="range" min="1" max="15" value={cutEditor.brush} onChange={(e)=>setCutEditor({...cutEditor,brush:+e.target.value})}/></section>
                 <section><label>Crop Canvas</label><small>Drag the crop frame from any edge or corner. Up to 90% can be removed from a side.</small></section>
                 <div className="bg-history-actions"><button disabled={!cutEditor.strokes.length} onClick={()=>setCutEditor({...cutEditor,strokes:cutEditor.strokes.slice(0,-1)})}>Undo Edit</button><button disabled={!cutEditor.strokes.length} onClick={()=>setCutEditor({...cutEditor,strokes:[]})}>Reset Edits</button></div>
@@ -2764,6 +2820,11 @@ export default function Home() {
               <div>
                 <b>Refine Background Removal</b>
                 <small>Mark areas to remove or protect before applying.</small>
+              </div>
+              <div className="refine-quick-tools">
+                <button disabled={!bgEditor.strokes.length} onClick={() => setBgEditor({ ...bgEditor, strokes: bgEditor.strokes.slice(0, -1) })}>Undo</button>
+                <button disabled={!bgEditor.strokes.length} onClick={() => setBgEditor({ ...bgEditor, strokes: [] })}>Reset</button>
+                <label><input type="checkbox" checked={bgEditor.alphaView} onChange={(e) => setBgEditor({ ...bgEditor, alphaView: e.target.checked })}/> Alpha</label>
               </div>
               <button aria-label="Close" onClick={() => setBgEditor(null)}>×</button>
             </header>
@@ -2834,6 +2895,17 @@ export default function Home() {
                   <small>Higher values remove a wider range of background colors.</small>
                 </section>
                 <section>
+                  <label>Erase Color</label>
+                  <div className="erase-color-row">
+                    <input type="color" value={bgEditor.eraseColor || "#ffffff"} onChange={(e)=>setBgEditor({...bgEditor,eraseColor:e.target.value})}/>
+                    <button onClick={async()=>{const Picker=(window as unknown as {EyeDropper?:new()=>{open:()=>Promise<{sRGBHex:string}>}}).EyeDropper;if(!Picker)return setNotice("Use the color swatch in this browser");try{const picked=await new Picker().open();setBgEditor({...bgEditor,eraseColor:picked.sRGBHex})}catch{}}}>Pick from Image</button>
+                    <button disabled={!bgEditor.eraseColor} onClick={()=>setBgEditor({...bgEditor,eraseColor:null})}>Clear</button>
+                  </div>
+                  <label>Color Sensitivity <b>{bgEditor.colorSensitivity}</b></label>
+                  <input type="range" min="0" max="100" value={bgEditor.colorSensitivity} onChange={(e)=>setBgEditor({...bgEditor,colorSensitivity:+e.target.value})}/>
+                  <small>Removes pixels close to the selected color throughout the image.</small>
+                </section>
+                <section>
                   <label>Edge Refinement <b>{bgEditor.edgeRefine > 0 ? "+" : ""}{bgEditor.edgeRefine} px</b></label>
                   <input type="range" min="-12" max="12" step="1" value={bgEditor.edgeRefine} onChange={(e)=>setBgEditor({...bgEditor,edgeRefine:+e.target.value})}/>
                   <small>Positive values contract the edge to remove pale halos. Negative values recover pixels removed by an aggressive cut.</small>
@@ -2843,14 +2915,6 @@ export default function Home() {
                   <input type="range" min="0" max="1000" step="5" value={bgEditor.speckles} onChange={(e) => setBgEditor({ ...bgEditor, speckles: +e.target.value })} />
                   <small>Fills enclosed transparent speckles up to this pixel area. Set to 0 to restore them.</small>
                 </section>
-                <label className="alpha-toggle">
-                  <input type="checkbox" checked={bgEditor.alphaView} onChange={(e) => setBgEditor({ ...bgEditor, alphaView: e.target.checked })} />
-                  Alpha Preview
-                </label>
-                <div className="bg-history-actions">
-                  <button disabled={!bgEditor.strokes.length} onClick={() => setBgEditor({ ...bgEditor, strokes: bgEditor.strokes.slice(0, -1) })}>Undo Stroke</button>
-                  <button disabled={!bgEditor.strokes.length} onClick={() => setBgEditor({ ...bgEditor, strokes: [] })}>Reset Marks</button>
-                </div>
                 <p>Small isolated islands are removed automatically. The final mask contains no semi-transparent pixels.</p>
               </aside>
             </div>
