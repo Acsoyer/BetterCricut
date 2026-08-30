@@ -775,6 +775,8 @@ export default function Home() {
     [alignOpen, setAlignOpen] = useState(false),
     [colorOpen, setColorOpen] = useState(false),
     [working, setWorking] = useState(false),
+    [vTracerStartedAt, setVTracerStartedAt] = useState<number | null>(null),
+    [vTracerElapsed, setVTracerElapsed] = useState(0),
     [notice, setNotice] = useState(""),
     [drag, setDrag] = useState<Drag>(null),
     [cycle, setCycle] = useState({ key: "", index: 0 }),
@@ -929,9 +931,16 @@ export default function Home() {
   }, [layers]);
   useEffect(() => {
     if (!notice) return;
-    const timer = window.setTimeout(() => setNotice(""), 5000);
+    const timer = window.setTimeout(() => setNotice(""), /VTracer|Smooth Cutout/i.test(notice) ? 15000 : 5000);
     return () => window.clearTimeout(timer);
   }, [notice]);
+  useEffect(() => {
+    if (vTracerStartedAt === null) { setVTracerElapsed(0); return; }
+    const update = () => setVTracerElapsed(Math.floor((Date.now() - vTracerStartedAt) / 1000));
+    update();
+    const timer = window.setInterval(update, 1000);
+    return () => window.clearInterval(timer);
+  }, [vTracerStartedAt]);
   const undo = () => {
     const previous = history.current.pop();
     if (!previous) return;
@@ -1514,7 +1523,7 @@ export default function Home() {
   };
   const smoothCutoutV1 = async () => {
     if (!one || ["vector", "stroke", "acetate"].includes(one.kind)) return;
-    setBgMenuOpen(false); setWorking(true);
+    setBgMenuOpen(false); setVTracerStartedAt(Date.now()); setWorking(true);
     try {
       const refined = await refineBackground(one.src, 46, [], 12, 0), trimmed = await trimTransparent(refined),
         color = COLORS[Math.floor(Math.random() * 21)], solid = await silhouette(trimmed.src, color, 255),
@@ -1526,7 +1535,7 @@ export default function Home() {
       mutate(one.id, () => ({ ...finalLayer, steps: [...one.steps, removeStep, cutoutStep], activeStep: one.steps.length + 1 }));
       setNotice("Smooth Cutout v3 created with VTracer");
     } catch (error) { setNotice(`Smooth Cutout could not be created: ${error instanceof Error ? error.message : "Unknown error"}`); }
-    finally { setWorking(false); }
+    finally { setWorking(false); setVTracerStartedAt(null); }
   };
   const applyColor = async (color: string) => {
     if (!vectorsOnly) return;
@@ -2893,8 +2902,8 @@ export default function Home() {
       {working && (
         <div className="working">
           <div />
-          <b>WORKING</b>
-          <span>Processing your design…</span>
+          <b>{vTracerStartedAt === null ? "WORKING" : "CREATING SMOOTH CUTOUT"}</b>
+          <span>{vTracerStartedAt === null ? "Processing your design…" : `VTracer is processing locally · ${String(Math.floor(vTracerElapsed / 60)).padStart(2, "0")}:${String(vTracerElapsed % 60).padStart(2, "0")} / 03:00`}</span>
         </div>
       )}
     </main>
