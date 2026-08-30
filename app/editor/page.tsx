@@ -96,7 +96,7 @@ const CUSTOM_SHAPES = [
   ["Tag",faTag],["Bookmark",faBookmark],["Pin",faLocationPin],["Bubble",faComment],["Puzzle",faPuzzlePiece],
 ] as const;
 const nativeShapeSvg = (viewBox:string, body:string, color:string) =>
-  `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1600" viewBox="${viewBox}" preserveAspectRatio="none" fill="${color}" stroke="#141715" stroke-width="2" stroke-linejoin="round" style="paint-order:stroke fill">${body}</svg>`)}`;
+  `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1600" viewBox="${viewBox}" preserveAspectRatio="none" fill="${color}" stroke="#141715" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" shape-rendering="geometricPrecision" style="paint-order:stroke fill">${body}</svg>`)}`;
 const shapeSource = (name:string,color:string) => {
   if(name==="circle") return nativeShapeSvg("-3 -3 106 106",`<ellipse cx="50" cy="50" rx="49" ry="49"/>`,color);
   if(name==="rectangle") return nativeShapeSvg("-3 -3 106 106",`<rect x="1" y="1" width="98" height="98"/>`,color);
@@ -453,6 +453,28 @@ async function silhouette(src: string, color = DARK, opacity = 255) {
   }
   return c.toDataURL();
 }
+
+async function marqueeTouchesVisiblePixels(layer: Layer, area: { x: number; y: number; w: number; h: number }) {
+  const img = await getImage(layer.src), limit = 280;
+  const ratio = Math.min(1, limit / Math.max(img.naturalWidth, img.naturalHeight));
+  const c = document.createElement("canvas");
+  c.width = Math.max(1, Math.round(img.naturalWidth * ratio));
+  c.height = Math.max(1, Math.round(img.naturalHeight * ratio));
+  const context = c.getContext("2d", { willReadFrequently: true })!;
+  context.drawImage(img, 0, 0, c.width, c.height);
+  const pixels = context.getImageData(0, 0, c.width, c.height).data;
+  const radians = (layer.rotation * Math.PI) / 180, cos = Math.cos(radians), sin = Math.sin(radians);
+  const centerX = layer.x + layer.w / 2, centerY = layer.y + layer.h / 2;
+  for (let py = 0; py < c.height; py++) for (let px = 0; px < c.width; px++) {
+    if (pixels[(py * c.width + px) * 4 + 3] < 96) continue;
+    const localX = layer.x + ((px + .5) / c.width) * layer.w;
+    const localY = layer.y + ((py + .5) / c.height) * layer.h;
+    const dx = localX - centerX, dy = localY - centerY;
+    const worldX = centerX + dx * cos - dy * sin, worldY = centerY + dx * sin + dy * cos;
+    if (worldX >= area.x && worldX <= area.x + area.w && worldY >= area.y && worldY <= area.y + area.h) return true;
+  }
+  return false;
+}
 async function smoothVectorCutout(src: string, color: string) {
   const img = await getImage(src), longest = Math.max(img.naturalWidth, img.naturalHeight),
     supersample = clamp(1800 / Math.max(longest, 1), 2, 6), pad = Math.ceil(supersample * 3),
@@ -477,7 +499,8 @@ async function smoothVectorCutout(src: string, color: string) {
   const doc = new DOMParser().parseFromString(getSVG(paths, 1, "fill"), "image/svg+xml"), root = doc.documentElement;
   root.setAttribute("width", String(traced.width)); root.setAttribute("height", String(traced.height));
   root.setAttribute("viewBox", `0 0 ${traced.width} ${traced.height}`); root.setAttribute("preserveAspectRatio", "none");
-  root.querySelectorAll("path").forEach((path) => { path.setAttribute("fill", color); path.setAttribute("fill-rule", "evenodd"); path.setAttribute("stroke", "#141715"); path.setAttribute("stroke-width", "1.15"); path.setAttribute("vector-effect", "non-scaling-stroke"); path.setAttribute("paint-order", "stroke fill"); });
+  root.setAttribute("shape-rendering", "geometricPrecision");
+  root.querySelectorAll("path").forEach((path) => { path.setAttribute("fill", color); path.setAttribute("fill-rule", "evenodd"); path.setAttribute("stroke", "#141715"); path.setAttribute("stroke-width", "1.15"); path.setAttribute("stroke-linecap", "round"); path.setAttribute("stroke-linejoin", "round"); path.setAttribute("vector-effect", "non-scaling-stroke"); path.setAttribute("paint-order", "stroke fill"); });
   return `data:image/svg+xml,${encodeURIComponent(new XMLSerializer().serializeToString(root))}`;
 }
 async function vTracerCutout(src: string, color: string) {
@@ -504,7 +527,8 @@ async function vTracerCutout(src: string, color: string) {
   if (output.tagName.toLowerCase() !== "svg" || output.querySelector("parsererror")) throw new Error("VTracer returned an invalid SVG");
   const outputWidth = Number(output.getAttribute("width")) || canvas.width, outputHeight = Number(output.getAttribute("height")) || canvas.height;
   output.setAttribute("preserveAspectRatio", "none"); output.setAttribute("viewBox", `0 0 ${outputWidth} ${outputHeight}`);
-  output.querySelectorAll("path").forEach((path) => { path.setAttribute("fill", color); path.setAttribute("stroke", "#141715"); path.setAttribute("stroke-width", "1.1"); path.setAttribute("vector-effect", "non-scaling-stroke"); path.setAttribute("paint-order", "stroke fill"); });
+  output.setAttribute("shape-rendering", "geometricPrecision");
+  output.querySelectorAll("path").forEach((path) => { path.setAttribute("fill", color); path.setAttribute("stroke", "#141715"); path.setAttribute("stroke-width", "1.1"); path.setAttribute("stroke-linecap", "round"); path.setAttribute("stroke-linejoin", "round"); path.setAttribute("vector-effect", "non-scaling-stroke"); path.setAttribute("paint-order", "stroke fill"); });
   return `data:image/svg+xml,${encodeURIComponent(new XMLSerializer().serializeToString(output))}`;
 }
 async function renderCutoutEdit(editor: CutoutEditor, applyCrop = false) {
@@ -864,7 +888,7 @@ export default function Home() {
     const { data, error } = await query;
     setWorking(false);
     if (error || !data) return setNotice("Project could not be saved");
-    setCurrentProjectId(data.id); setProjectName(data.name); await refreshProjects(); setNotice("Project saved");
+    setCurrentProjectId(data.id); setProjectName(data.name); await refreshProjects(); setProjectsOpen(false); setNotice("Project saved");
   };
   const openProject = (project: SavedProject) => {
     setLayers(project.data.layers || []); setLandscape(Boolean(project.data.landscape)); setSafeMargin(project.data.safeMargin ?? 1);
@@ -1806,20 +1830,12 @@ export default function Home() {
   };
   const endPointer = async () => {
     if (marquee && marquee.w > 0.05 && marquee.h > 0.05) {
-      setSelected(
-        layers
-          .filter((l) => {
-            const b = rotatedBounds(l);
-            return (
-              l.visible &&
-              b.x < marquee.x + marquee.w &&
-              b.x + b.w > marquee.x &&
-              b.y < marquee.y + marquee.h &&
-              b.y + b.h > marquee.y
-            );
-          })
-          .map((l) => l.id),
-      );
+      const candidates = layers.filter((l) => {
+        const b = rotatedBounds(l);
+        return l.visible && b.x < marquee.x + marquee.w && b.x + b.w > marquee.x && b.y < marquee.y + marquee.h && b.y + b.h > marquee.y;
+      });
+      const hits = await Promise.all(candidates.map(async (layer) => (await marqueeTouchesVisiblePixels(layer, marquee)) ? layer.id : null));
+      setSelected(hits.filter((id): id is string => Boolean(id)));
     }
     if (drag?.mode === "rotate") {
       const rotatedIds = new Set(drag.start.map((l) => l.id));
@@ -2138,7 +2154,7 @@ export default function Home() {
           </span>
           <div>
             <b>Better Cricut Editor</b>
-            <small>Personal workspace · v42</small>
+            <small>Personal workspace · v43</small>
           </div>
         </div>
         <input
@@ -2281,7 +2297,7 @@ export default function Home() {
           <Sparkles /> Bake Cutout
         </button>
         </div>
-        <button className="save-project" onClick={() => void saveProject()} title="Save this project">
+        <button className="save-project" onClick={() => setProjectsOpen(true)} title="Name and save this project">
           <Download /> Save Project
         </button>
       </div>
@@ -2759,7 +2775,7 @@ export default function Home() {
       </section>
       {projectsOpen && <div className="project-modal" role="dialog" aria-modal="true" aria-label="My Projects"><div className="project-dialog">
         <header><div><b>My Projects</b><small>{projects.length} saved {projects.length === 1 ? "project" : "projects"}</small></div><button onClick={() => setProjectsOpen(false)} aria-label="Close"><X/></button></header>
-        <div className="project-name-row"><label>Current project</label><input value={projectName} maxLength={80} onChange={(e) => setProjectName(e.target.value)} /><button onClick={() => void saveProject()}>Save</button></div>
+        <div className="project-name-row"><label>Project name</label><input autoFocus value={projectName} maxLength={80} onFocus={(e)=>e.currentTarget.select()} onChange={(e) => setProjectName(e.target.value)} /><button onClick={() => void saveProject()}>Save Project</button></div>
         <div className="project-list">{projects.length ? projects.map(project => <article key={project.id} className={project.id === currentProjectId ? "current" : ""}><button className="project-open" onClick={() => openProject(project)}><FolderOpen/><span><b>{project.name}</b><small>Updated {new Date(project.updated_at).toLocaleString()}</small></span></button><button className="project-delete" onClick={() => void deleteProject(project.id)} title="Delete project"><Trash2/></button></article>) : <div className="projects-empty"><FolderOpen/><b>No saved projects yet</b><span>Save your current canvas to see it here.</span></div>}</div>
       </div></div>}
       {accountOpen && <div className="account-panel" role="dialog" aria-label="My Account"><button className="account-close" onClick={() => setAccountOpen(false)} aria-label="Close"><X/></button><span className="account-avatar"><User/></span><b>My Account</b><small>Signed in as</small><p>{session?.user.email || "Unknown account"}</p><div className="account-stat"><FolderOpen/><span><b>{projects.length}</b><small>Saved projects</small></span></div><button className="sign-out" onClick={() => void supabase.auth.signOut()}><LogOut/> Sign Out</button></div>}
