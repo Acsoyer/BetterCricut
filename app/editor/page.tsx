@@ -48,7 +48,6 @@ import {
 } from "lucide-react";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
-import ImageTracer from "imagetracerjs";
 import { getSVG, traceCanvas } from "@cadit-app/potrace-ts";
 import {
   faStar,faHeart,faArrowRight,faBolt,faBurst,faCloud,faMoon,faSun,faDiamond,
@@ -150,7 +149,12 @@ type Layer = {
   activeStep: number;
   acetateOn: boolean;
 };
-type SavedProject = { id: string; name: string; updated_at: string; data: { layers: Layer[]; landscape: boolean; safeMargin: number } };
+type SavedProject = {
+  id: string;
+  name: string;
+  updated_at: string;
+  data: { layers: Layer[]; landscape: boolean; safeMargin: number };
+};
 type Drag = {
   mode: string;
   sx: number;
@@ -436,30 +440,91 @@ async function silhouette(src: string, color = DARK, opacity = 255) {
   return c.toDataURL();
 }
 async function smoothVectorCutout(src: string, color: string) {
-  const img = await getImage(src), longest = Math.max(img.naturalWidth, img.naturalHeight), supersample = clamp(1800 / Math.max(longest, 1), 2, 6), pad = Math.ceil(supersample * 3), mask = document.createElement("canvas"), traced = document.createElement("canvas");
-  mask.width = Math.max(1, Math.round(img.naturalWidth * supersample)); mask.height = Math.max(1, Math.round(img.naturalHeight * supersample));
-  const mx = mask.getContext("2d")!; mx.imageSmoothingEnabled = true; mx.imageSmoothingQuality = "high"; mx.filter = `blur(${Math.max(.45, supersample * .18)}px)`; mx.drawImage(img, 0, 0, mask.width, mask.height); mx.filter = "none";
-  const pixels = mx.getImageData(0, 0, mask.width, mask.height); traced.width = mask.width + pad * 2; traced.height = mask.height + pad * 2;
-  const tx = traced.getContext("2d")!; tx.fillStyle = "#fff"; tx.fillRect(0, 0, traced.width, traced.height); const binary = tx.createImageData(mask.width, mask.height);
-  for (let i = 0; i < pixels.data.length; i += 4) { const solid = pixels.data[i + 3] >= 128; binary.data[i] = binary.data[i + 1] = binary.data[i + 2] = solid ? 0 : 255; binary.data[i + 3] = 255; }
+  const img = await getImage(src), longest = Math.max(img.naturalWidth, img.naturalHeight),
+    supersample = clamp(1800 / Math.max(longest, 1), 2, 6), pad = Math.ceil(supersample * 3),
+    mask = document.createElement("canvas"), traced = document.createElement("canvas");
+  mask.width = Math.max(1, Math.round(img.naturalWidth * supersample));
+  mask.height = Math.max(1, Math.round(img.naturalHeight * supersample));
+  const mx = mask.getContext("2d")!;
+  mx.imageSmoothingEnabled = true; mx.imageSmoothingQuality = "high";
+  mx.filter = `blur(${Math.max(.45, supersample * .18)}px)`;
+  mx.drawImage(img, 0, 0, mask.width, mask.height); mx.filter = "none";
+  const pixels = mx.getImageData(0, 0, mask.width, mask.height);
+  traced.width = mask.width + pad * 2; traced.height = mask.height + pad * 2;
+  const tx = traced.getContext("2d")!; tx.fillStyle = "#fff"; tx.fillRect(0, 0, traced.width, traced.height);
+  const binary = tx.createImageData(mask.width, mask.height);
+  for (let i = 0; i < pixels.data.length; i += 4) {
+    const solid = pixels.data[i + 3] >= 128;
+    binary.data[i] = binary.data[i + 1] = binary.data[i + 2] = solid ? 0 : 255; binary.data[i + 3] = 255;
+  }
   tx.putImageData(binary, pad, pad);
   const paths = traceCanvas(traced, { turnpolicy: "minority", turdsize: Math.max(2, Math.round(supersample * supersample * .45)), alphamax: .82, optcurve: true, opttolerance: .32 });
   if (!paths.length) throw new Error("The cutout contour is empty");
   const doc = new DOMParser().parseFromString(getSVG(paths, 1, "fill"), "image/svg+xml"), root = doc.documentElement;
-  root.setAttribute("width", String(traced.width)); root.setAttribute("height", String(traced.height)); root.setAttribute("viewBox", `0 0 ${traced.width} ${traced.height}`); root.setAttribute("preserveAspectRatio", "none");
+  root.setAttribute("width", String(traced.width)); root.setAttribute("height", String(traced.height));
+  root.setAttribute("viewBox", `0 0 ${traced.width} ${traced.height}`); root.setAttribute("preserveAspectRatio", "none");
   root.querySelectorAll("path").forEach((path) => { path.setAttribute("fill", color); path.setAttribute("fill-rule", "evenodd"); path.setAttribute("stroke", "#141715"); path.setAttribute("stroke-width", "1.15"); path.setAttribute("vector-effect", "non-scaling-stroke"); path.setAttribute("paint-order", "stroke fill"); });
   return `data:image/svg+xml,${encodeURIComponent(new XMLSerializer().serializeToString(root))}`;
 }
-async function imageTracerPaperCutout(src: string, color: string) {
-  const img = await getImage(src), longest = Math.max(img.naturalWidth, img.naturalHeight), scale = clamp(1600 / Math.max(longest, 1), 2, 5), canvas = document.createElement("canvas");
+let vTracerFramePromise: Promise<HTMLIFrameElement> | null = null;
+function getVTracerFrame() {
+  if (vTracerFramePromise) return vTracerFramePromise;
+  vTracerFramePromise = new Promise((resolve, reject) => {
+    const frame = document.createElement("iframe");
+    frame.src = "/vtracer/index.html";
+    frame.setAttribute("aria-hidden", "true");
+    Object.assign(frame.style, { position: "fixed", width: "1px", height: "1px", left: "-9999px", top: "-9999px", border: "0" });
+    frame.onload = () => {
+      const started = performance.now();
+      const ready = () => {
+        const svg = frame.contentDocument?.getElementById("svg") as SVGSVGElement | null;
+        if (svg?.style.display === "none") resolve(frame);
+        else if (performance.now() - started > 10000) reject(new Error("VTracer engine did not initialize"));
+        else window.setTimeout(ready, 40);
+      };
+      ready();
+    };
+    frame.onerror = () => reject(new Error("VTracer engine could not be loaded"));
+    document.body.appendChild(frame);
+  });
+  return vTracerFramePromise;
+}
+async function vTracerCutout(src: string, color: string) {
+  const img = await getImage(src), longest = Math.max(img.naturalWidth, img.naturalHeight), scale = clamp(1800 / Math.max(longest, 1), 2, 6), canvas = document.createElement("canvas");
   canvas.width = Math.max(1, Math.round(img.naturalWidth * scale)); canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
-  const context = canvas.getContext("2d", { willReadFrequently: true })!; context.imageSmoothingEnabled = true; context.imageSmoothingQuality = "high"; context.drawImage(img, 0, 0, canvas.width, canvas.height);
-  const rgba = context.getImageData(0, 0, canvas.width, canvas.height);
-  for (let i = 0; i < rgba.data.length; i += 4) { const alpha = rgba.data[i + 3] >= 128 ? 255 : 0; rgba.data[i] = rgba.data[i + 1] = rgba.data[i + 2] = 0; rgba.data[i + 3] = alpha; }
-  const tracedSvg = ImageTracer.imagedataToSVG(rgba, { colorsampling: 0, numberofcolors: 2, pal: [{ r: 0, g: 0, b: 0, a: 0 }, { r: 0, g: 0, b: 0, a: 255 }], ltres: 2.25, qtres: 1.15, pathomit: Math.max(4, Math.round(scale * 2)), rightangleenhance: true, linefilter: true, blurradius: 2, blurdelta: 48, strokewidth: 0, roundcoords: 2, viewbox: true, desc: false });
-  const doc = new DOMParser().parseFromString(tracedSvg, "image/svg+xml"), root = doc.documentElement; root.setAttribute("preserveAspectRatio", "none");
-  root.querySelectorAll("path").forEach((path) => { if (Number(path.getAttribute("opacity") || "1") < .01) { path.remove(); return; } path.setAttribute("fill", color); path.setAttribute("stroke", "#141715"); path.setAttribute("stroke-width", "1.1"); path.setAttribute("fill-rule", "evenodd"); path.setAttribute("vector-effect", "non-scaling-stroke"); path.setAttribute("paint-order", "stroke fill"); });
-  return `data:image/svg+xml,${encodeURIComponent(new XMLSerializer().serializeToString(root))}`;
+  const context = canvas.getContext("2d", { willReadFrequently: true })!;
+  context.imageSmoothingEnabled = true; context.imageSmoothingQuality = "high"; context.drawImage(img, 0, 0, canvas.width, canvas.height);
+  const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
+  for (let i = 0; i < pixels.data.length; i += 4) {
+    const foreground = pixels.data[i + 3] >= 128;
+    pixels.data[i] = pixels.data[i + 1] = pixels.data[i + 2] = foreground ? 255 : 0;
+    pixels.data[i + 3] = 255;
+  }
+  context.putImageData(pixels, 0, 0);
+  const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob((value) => value ? resolve(value) : reject(new Error("Cutout mask could not be prepared")), "image/png"));
+  const frame = await getVTracerFrame(), doc = frame.contentDocument;
+  if (!doc) throw new Error("VTracer document is unavailable");
+  const input = doc.getElementById("imageInput") as HTMLInputElement | null, svg = doc.getElementById("svg") as SVGSVGElement | null;
+  if (!input || !svg) throw new Error("VTracer controls are unavailable");
+  (doc.getElementById("clustering-binary") as HTMLButtonElement)?.click();
+  (doc.getElementById("clustering-cutout") as HTMLButtonElement)?.click();
+  (doc.getElementById("spline") as HTMLButtonElement)?.click();
+  const setValue = (id: string, value: string) => { const element = doc.getElementById(id) as HTMLInputElement | null; if (element) element.value = value; };
+  setValue("filterspeckle", "8"); setValue("corner", "60"); setValue("length", "4"); setValue("splice", "4"); setValue("pathprecision", "3");
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+  const transfer = new DataTransfer(); transfer.items.add(new File([blob], "cutout-mask.png", { type: "image/png" })); input.files = transfer.files; input.dispatchEvent(new Event("change", { bubbles: true }));
+  await new Promise<void>((resolve, reject) => {
+    const started = performance.now();
+    const check = () => {
+      const complete = svg.querySelectorAll("path").length > 0 && (doc.getElementById("progressregion") as HTMLElement | null)?.style.display === "none";
+      if (complete) resolve(); else if (performance.now() - started > 60000) reject(new Error("VTracer timed out")); else window.setTimeout(check, 40);
+    };
+    check();
+  });
+  const output = svg.cloneNode(true) as SVGSVGElement;
+  output.setAttribute("preserveAspectRatio", "none"); output.setAttribute("width", String(canvas.width)); output.setAttribute("height", String(canvas.height)); output.setAttribute("viewBox", `0 0 ${canvas.width} ${canvas.height}`);
+  output.querySelectorAll("path").forEach((path) => { path.setAttribute("fill", color); path.setAttribute("stroke", "#141715"); path.setAttribute("stroke-width", "1.1"); path.setAttribute("fill-rule", "evenodd"); path.setAttribute("vector-effect", "non-scaling-stroke"); path.setAttribute("paint-order", "stroke fill"); });
+  return `data:image/svg+xml,${encodeURIComponent(new XMLSerializer().serializeToString(output))}`;
 }
 async function renderCutoutEdit(editor: CutoutEditor, applyCrop = false) {
   const img = await getImage(editor.source), c = document.createElement("canvas");
@@ -740,9 +805,12 @@ export default function Home() {
     [imageEditor,setImageEditor]=useState<ImageEditor|null>(null),
     [imageEditorSize,setImageEditorSize]=useState({w:0,h:0}),
     [rulerOrigin, setRulerOrigin] = useState({ x: 0, y: 0 }),
-    [session, setSession] = useState<Session | null>(null), [projects, setProjects] = useState<SavedProject[]>([]),
-    [projectsOpen, setProjectsOpen] = useState(false), [accountOpen, setAccountOpen] = useState(false),
-    [currentProjectId, setCurrentProjectId] = useState<string | null>(null), [projectName, setProjectName] = useState("Untitled Project");
+    [session, setSession] = useState<Session | null>(null),
+    [projects, setProjects] = useState<SavedProject[]>([]),
+    [projectsOpen, setProjectsOpen] = useState(false),
+    [accountOpen, setAccountOpen] = useState(false),
+    [currentProjectId, setCurrentProjectId] = useState<string | null>(null),
+    [projectName, setProjectName] = useState("Untitled Project");
   const fileRef = useRef<HTMLInputElement>(null),
     stageRef = useRef<HTMLDivElement>(null),
     canvasRef = useRef<HTMLDivElement>(null),
@@ -777,11 +845,38 @@ export default function Home() {
       picked.every((l) => ["stroke", "vector"].includes(l.kind));
   const mutate = (id: string, fn: (l: Layer) => Layer) =>
     setLayers((v) => v.map((l) => (l.id === id ? fn(l) : l)));
-  const refreshProjects = async () => { const { data, error } = await supabase.from("projects").select("id,name,updated_at,data").order("updated_at", { ascending: false }); if (error) { setNotice("Projects could not be loaded"); return; } setProjects((data || []) as SavedProject[]); };
-  const saveProject = async () => { if (!session?.user) return setNotice("Sign in to save a project"); setWorking(true); const payload = { name: projectName.trim() || "Untitled Project", data: { layers, landscape, safeMargin }, user_id: session.user.id, updated_at: new Date().toISOString() }; const query = currentProjectId ? supabase.from("projects").update(payload).eq("id", currentProjectId).select("id,name,updated_at,data").single() : supabase.from("projects").insert(payload).select("id,name,updated_at,data").single(); const { data, error } = await query; setWorking(false); if (error || !data) return setNotice("Project could not be saved"); setCurrentProjectId(data.id); setProjectName(data.name); await refreshProjects(); setNotice("Project saved"); };
-  const openProject = (project: SavedProject) => { setLayers(project.data.layers || []); setLandscape(Boolean(project.data.landscape)); setSafeMargin(project.data.safeMargin ?? 1); setSelected([]); setCurrentProjectId(project.id); setProjectName(project.name); history.current = []; setProjectsOpen(false); setNotice(`${project.name} opened`); };
-  const deleteProject = async (id: string) => { const { error } = await supabase.from("projects").delete().eq("id", id); if (error) return setNotice("Project could not be deleted"); if (currentProjectId === id) { setCurrentProjectId(null); setProjectName("Untitled Project"); } await refreshProjects(); setNotice("Project deleted"); };
-  useEffect(() => { void supabase.auth.getSession().then(({ data }) => { setSession(data.session); if (data.session) void refreshProjects(); }); const { data } = supabase.auth.onAuthStateChange((_event, next) => { setSession(next); if (next) void refreshProjects(); else setProjects([]); }); return () => data.subscription.unsubscribe(); }, []);
+  const refreshProjects = async () => {
+    const { data, error } = await supabase.from("projects").select("id,name,updated_at,data").order("updated_at", { ascending: false });
+    if (error) { setNotice("Projects could not be loaded"); return; }
+    setProjects((data || []) as SavedProject[]);
+  };
+  const saveProject = async () => {
+    if (!session?.user) return setNotice("Sign in to save a project");
+    setWorking(true);
+    const payload = { name: projectName.trim() || "Untitled Project", data: { layers, landscape, safeMargin }, user_id: session.user.id, updated_at: new Date().toISOString() };
+    const query = currentProjectId
+      ? supabase.from("projects").update(payload).eq("id", currentProjectId).select("id,name,updated_at,data").single()
+      : supabase.from("projects").insert(payload).select("id,name,updated_at,data").single();
+    const { data, error } = await query;
+    setWorking(false);
+    if (error || !data) return setNotice("Project could not be saved");
+    setCurrentProjectId(data.id); setProjectName(data.name); await refreshProjects(); setNotice("Project saved");
+  };
+  const openProject = (project: SavedProject) => {
+    setLayers(project.data.layers || []); setLandscape(Boolean(project.data.landscape)); setSafeMargin(project.data.safeMargin ?? 1);
+    setSelected([]); setCurrentProjectId(project.id); setProjectName(project.name); history.current = []; setProjectsOpen(false); setNotice(`${project.name} opened`);
+  };
+  const deleteProject = async (id: string) => {
+    const { error } = await supabase.from("projects").delete().eq("id", id);
+    if (error) return setNotice("Project could not be deleted");
+    if (currentProjectId === id) { setCurrentProjectId(null); setProjectName("Untitled Project"); }
+    await refreshProjects(); setNotice("Project deleted");
+  };
+  useEffect(() => {
+    void supabase.auth.getSession().then(({ data }) => { setSession(data.session); if (data.session) void refreshProjects(); });
+    const { data } = supabase.auth.onAuthStateChange((_event, next) => { setSession(next); if (next) void refreshProjects(); else setProjects([]); });
+    return () => data.subscription.unsubscribe();
+  }, []);
   useEffect(() => {
     if (!bgEditor) return;
     let cancelled = false;
@@ -1416,12 +1511,17 @@ export default function Home() {
     if (!one || ["vector", "stroke", "acetate"].includes(one.kind)) return;
     setBgMenuOpen(false); setWorking(true);
     try {
-      const refined = await refineBackground(one.src, 46, [], 12, 0), trimmed = await trimTransparent(refined), color = COLORS[Math.floor(Math.random() * 21)], solid = await silhouette(trimmed.src, color, 255), vectorSrc = await imageTracerPaperCutout(solid, color),
+      const refined = await refineBackground(one.src, 46, [], 12, 0), trimmed = await trimTransparent(refined),
+        color = COLORS[Math.floor(Math.random() * 21)], solid = await silhouette(trimmed.src, color, 255),
+        vectorSrc = await vTracerCutout(solid, color),
         noBgLayer: Layer = { ...one, src: trimmed.src, x: one.x + one.w * trimmed.left, y: one.y + one.h * trimmed.top, w: one.w * trimmed.width, h: one.h * trimmed.height, kind: "nobg" },
         finalLayer: Layer = { ...noBgLayer, name: `${one.name.replace(/_(NoBG|Cutout|SmoothCutout)$/i, "")}_SmoothCutout`, src: vectorSrc, color, kind: "vector" };
-      const removeStep: LayerStep = { id: uid(), type: "remove-bg", label: "Remove Background", snapshot: snapshot(noBgLayer) }, cutoutStep: LayerStep = { id: uid(), type: "cutout", label: "Smooth Cutout v2", snapshot: snapshot(finalLayer) };
-      mutate(one.id, () => ({ ...finalLayer, steps: [...one.steps, removeStep, cutoutStep], activeStep: one.steps.length + 1 })); setNotice("Smooth Cutout v2 created with ImageTracerJS");
-    } catch (error) { setNotice(`Smooth Cutout could not be created: ${error instanceof Error ? error.message : "Unknown error"}`); } finally { setWorking(false); }
+      const removeStep: LayerStep = { id: uid(), type: "remove-bg", label: "Remove Background", snapshot: snapshot(noBgLayer) },
+        cutoutStep: LayerStep = { id: uid(), type: "cutout", label: "Smooth Cutout v3", snapshot: snapshot(finalLayer) };
+      mutate(one.id, () => ({ ...finalLayer, steps: [...one.steps, removeStep, cutoutStep], activeStep: one.steps.length + 1 }));
+      setNotice("Smooth Cutout v3 created with VTracer");
+    } catch (error) { setNotice(`Smooth Cutout could not be created: ${error instanceof Error ? error.message : "Unknown error"}`); }
+    finally { setWorking(false); }
   };
   const applyColor = async (color: string) => {
     if (!vectorsOnly) return;
@@ -2023,7 +2123,7 @@ export default function Home() {
           <div className="wrap remove-bg-control">
             <button type="button" className="remove-bg-main" onClick={()=>void quickBackground()}><Sparkles />Remove Background</button>
             <button type="button" className="remove-bg-chevron" onClick={(e)=>{e.preventDefault();e.stopPropagation();if(!one){setNotice("Select one image for Advanced Background Removal");return}setBgMenuOpen(v=>!v)}} aria-label="Background removal options"><ChevronDown /></button>
-            {bgMenuOpen&&<div className="pop bg-options"><button onClick={()=>{setBgMenuOpen(false);noBackground()}}>Advanced Background Removal</button><button disabled={!one || ["vector","stroke","acetate"].includes(one.kind)} onClick={()=>void smoothCutoutV1()}>Smooth Cutout v2</button></div>}
+            {bgMenuOpen&&<div className="pop bg-options"><button onClick={()=>{setBgMenuOpen(false);noBackground()}}>Advanced Background Removal</button><button disabled={!one || ["vector","stroke","acetate"].includes(one.kind)} onClick={()=>void smoothCutoutV1()}>Smooth Cutout v3</button></div>}
           </div>
           <button
             disabled={!one || ["vector", "stroke"].includes(one.kind)}
@@ -2625,7 +2725,11 @@ export default function Home() {
           </footer>
         </aside>
       </section>
-      {projectsOpen && <div className="project-modal" role="dialog" aria-modal="true" aria-label="My Projects"><div className="project-dialog"><header><div><b>My Projects</b><small>{projects.length} saved {projects.length === 1 ? "project" : "projects"}</small></div><button onClick={() => setProjectsOpen(false)} aria-label="Close"><X/></button></header><div className="project-name-row"><label>Current project</label><input value={projectName} maxLength={80} onChange={(e) => setProjectName(e.target.value)} /><button onClick={() => void saveProject()}>Save</button></div><div className="project-list">{projects.length ? projects.map(project => <article key={project.id} className={project.id === currentProjectId ? "current" : ""}><button className="project-open" onClick={() => openProject(project)}><FolderOpen/><span><b>{project.name}</b><small>Updated {new Date(project.updated_at).toLocaleString()}</small></span></button><button className="project-delete" onClick={() => void deleteProject(project.id)} title="Delete project"><Trash2/></button></article>) : <div className="projects-empty"><FolderOpen/><b>No saved projects yet</b><span>Save your current canvas to see it here.</span></div>}</div></div></div>}
+      {projectsOpen && <div className="project-modal" role="dialog" aria-modal="true" aria-label="My Projects"><div className="project-dialog">
+        <header><div><b>My Projects</b><small>{projects.length} saved {projects.length === 1 ? "project" : "projects"}</small></div><button onClick={() => setProjectsOpen(false)} aria-label="Close"><X/></button></header>
+        <div className="project-name-row"><label>Current project</label><input value={projectName} maxLength={80} onChange={(e) => setProjectName(e.target.value)} /><button onClick={() => void saveProject()}>Save</button></div>
+        <div className="project-list">{projects.length ? projects.map(project => <article key={project.id} className={project.id === currentProjectId ? "current" : ""}><button className="project-open" onClick={() => openProject(project)}><FolderOpen/><span><b>{project.name}</b><small>Updated {new Date(project.updated_at).toLocaleString()}</small></span></button><button className="project-delete" onClick={() => void deleteProject(project.id)} title="Delete project"><Trash2/></button></article>) : <div className="projects-empty"><FolderOpen/><b>No saved projects yet</b><span>Save your current canvas to see it here.</span></div>}</div>
+      </div></div>}
       {accountOpen && <div className="account-panel" role="dialog" aria-label="My Account"><button className="account-close" onClick={() => setAccountOpen(false)} aria-label="Close"><X/></button><span className="account-avatar"><User/></span><b>My Account</b><small>Signed in as</small><p>{session?.user.email || "Unknown account"}</p><div className="account-stat"><FolderOpen/><span><b>{projects.length}</b><small>Saved projects</small></span></div><button className="sign-out" onClick={() => void supabase.auth.signOut()}><LogOut/> Sign Out</button></div>}
       {notice && <div className="toast">{notice}</div>}
       {imageEditor&&(()=>{const target=layers.find(l=>l.id===imageEditor.layerId);return <div className="bg-modal image-edit-modal" role="dialog" aria-modal="true" aria-label="Image editor">

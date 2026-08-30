@@ -1,0 +1,8 @@
+VTracer browser engine
+Copyright (c) Vision Cortex contributors
+Source: https://github.com/visioncortex/vtracer
+License: MIT OR Apache-2.0
+
+The bundled bootstrap and WebAssembly files are used locally by Better Cricut
+Editor. Images are processed in the user's browser and are not uploaded to the
+Vision Cortex website.
