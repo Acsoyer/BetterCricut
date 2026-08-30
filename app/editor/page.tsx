@@ -466,29 +466,6 @@ async function smoothVectorCutout(src: string, color: string) {
   root.querySelectorAll("path").forEach((path) => { path.setAttribute("fill", color); path.setAttribute("fill-rule", "evenodd"); path.setAttribute("stroke", "#141715"); path.setAttribute("stroke-width", "1.15"); path.setAttribute("vector-effect", "non-scaling-stroke"); path.setAttribute("paint-order", "stroke fill"); });
   return `data:image/svg+xml,${encodeURIComponent(new XMLSerializer().serializeToString(root))}`;
 }
-let vTracerFramePromise: Promise<HTMLIFrameElement> | null = null;
-function getVTracerFrame() {
-  if (vTracerFramePromise) return vTracerFramePromise;
-  vTracerFramePromise = new Promise((resolve, reject) => {
-    const frame = document.createElement("iframe");
-    frame.src = "/vtracer/index.html";
-    frame.setAttribute("aria-hidden", "true");
-    Object.assign(frame.style, { position: "fixed", width: "1px", height: "1px", left: "-9999px", top: "-9999px", border: "0" });
-    frame.onload = () => {
-      const started = performance.now();
-      const ready = () => {
-        const svg = frame.contentDocument?.getElementById("svg") as SVGSVGElement | null;
-        if (svg?.style.display === "none") resolve(frame);
-        else if (performance.now() - started > 10000) reject(new Error("VTracer engine did not initialize"));
-        else window.setTimeout(ready, 40);
-      };
-      ready();
-    };
-    frame.onerror = () => reject(new Error("VTracer engine could not be loaded"));
-    document.body.appendChild(frame);
-  });
-  return vTracerFramePromise;
-}
 async function vTracerCutout(src: string, color: string) {
   const img = await getImage(src), longest = Math.max(img.naturalWidth, img.naturalHeight), scale = clamp(1100 / Math.max(longest, 1), 1, 3), canvas = document.createElement("canvas");
   canvas.width = Math.max(1, Math.round(img.naturalWidth * scale)); canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
@@ -497,37 +474,23 @@ async function vTracerCutout(src: string, color: string) {
   const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
   for (let i = 0; i < pixels.data.length; i += 4) {
     const foreground = pixels.data[i + 3] >= 128;
-    pixels.data[i] = pixels.data[i + 1] = pixels.data[i + 2] = foreground ? 255 : 0;
+    pixels.data[i] = pixels.data[i + 1] = pixels.data[i + 2] = foreground ? 0 : 255;
     pixels.data[i + 3] = 255;
   }
   context.putImageData(pixels, 0, 0);
   const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob((value) => value ? resolve(value) : reject(new Error("Cutout mask could not be prepared")), "image/png"));
-  const frame = await getVTracerFrame(), doc = frame.contentDocument;
-  if (!doc) throw new Error("VTracer document is unavailable");
-  const input = doc.getElementById("imageInput") as HTMLInputElement | null, svg = doc.getElementById("svg") as SVGSVGElement | null;
-  if (!input || !svg) throw new Error("VTracer controls are unavailable");
-  (doc.getElementById("clustering-binary") as HTMLButtonElement)?.click();
-  (doc.getElementById("clustering-cutout") as HTMLButtonElement)?.click();
-  (doc.getElementById("spline") as HTMLButtonElement)?.click();
-  const setValue = (id: string, value: string) => { const element = doc.getElementById(id) as HTMLInputElement | null; if (element) element.value = value; };
-  setValue("filterspeckle", "8"); setValue("corner", "60"); setValue("length", "4"); setValue("splice", "4"); setValue("pathprecision", "3");
-  while (svg.firstChild) svg.removeChild(svg.firstChild);
-  const transfer = new DataTransfer(); transfer.items.add(new File([blob], "cutout-mask.png", { type: "image/png" })); input.files = transfer.files; input.dispatchEvent(new Event("change", { bubbles: true }));
-  await new Promise<void>((resolve, reject) => {
-    const started = performance.now(); let previousCount = 0, lastChange = started;
-    const check = () => {
-      const now = performance.now(), count = svg.querySelectorAll("path").length;
-      if (count !== previousCount) { previousCount = count; lastChange = now; }
-      const reportedComplete = count > 0 && (doc.getElementById("progressregion") as HTMLElement | null)?.style.display === "none";
-      const settled = count > 0 && now - lastChange > 900;
-      if (reportedComplete || settled) resolve();
-      else window.setTimeout(check, 80);
-    };
-    check();
+  const buffer = await blob.arrayBuffer(), worker = new Worker("/vtracer/worker.js");
+  const tracedSvg = await new Promise<string>((resolve, reject) => {
+    const timeout = window.setTimeout(() => { worker.terminate(); reject(new Error("VTracer could not finish this image within three minutes")); }, 180000);
+    worker.onmessage = (event) => { window.clearTimeout(timeout); worker.terminate(); event.data.error ? reject(new Error(event.data.error)) : resolve(event.data.svg); };
+    worker.onerror = (event) => { window.clearTimeout(timeout); worker.terminate(); reject(new Error(event.message || "VTracer worker failed")); };
+    worker.postMessage({ buffer }, [buffer]);
   });
-  const output = svg.cloneNode(true) as SVGSVGElement;
-  output.setAttribute("preserveAspectRatio", "none"); output.setAttribute("width", String(canvas.width)); output.setAttribute("height", String(canvas.height)); output.setAttribute("viewBox", `0 0 ${canvas.width} ${canvas.height}`);
-  output.querySelectorAll("path").forEach((path) => { path.setAttribute("fill", color); path.setAttribute("stroke", "#141715"); path.setAttribute("stroke-width", "1.1"); path.setAttribute("fill-rule", "evenodd"); path.setAttribute("vector-effect", "non-scaling-stroke"); path.setAttribute("paint-order", "stroke fill"); });
+  const doc = new DOMParser().parseFromString(tracedSvg, "image/svg+xml"), output = doc.documentElement as unknown as SVGSVGElement;
+  if (output.tagName.toLowerCase() !== "svg" || output.querySelector("parsererror")) throw new Error("VTracer returned an invalid SVG");
+  const outputWidth = Number(output.getAttribute("width")) || canvas.width, outputHeight = Number(output.getAttribute("height")) || canvas.height;
+  output.setAttribute("preserveAspectRatio", "none"); output.setAttribute("viewBox", `0 0 ${outputWidth} ${outputHeight}`);
+  output.querySelectorAll("path").forEach((path) => { path.setAttribute("fill", color); path.setAttribute("stroke", "#141715"); path.setAttribute("stroke-width", "1.1"); path.setAttribute("vector-effect", "non-scaling-stroke"); path.setAttribute("paint-order", "stroke fill"); });
   return `data:image/svg+xml,${encodeURIComponent(new XMLSerializer().serializeToString(output))}`;
 }
 async function renderCutoutEdit(editor: CutoutEditor, applyCrop = false) {
@@ -2902,7 +2865,7 @@ export default function Home() {
         <div className="working">
           <div />
           <b>{vTracerStartedAt === null ? "WORKING" : "CREATING SMOOTH CUTOUT"}</b>
-          <span>{vTracerStartedAt === null ? "Processing your design…" : `VTracer is processing locally · ${String(Math.floor(vTracerElapsed / 60)).padStart(2, "0")}:${String(vTracerElapsed % 60).padStart(2, "0")} · No time limit`}</span>
+          <span>{vTracerStartedAt === null ? "Processing your design…" : `VTracer is processing locally · ${String(Math.floor(vTracerElapsed / 60)).padStart(2, "0")}:${String(vTracerElapsed % 60).padStart(2, "0")} / 03:00`}</span>
         </div>
       )}
     </main>
