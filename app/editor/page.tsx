@@ -31,6 +31,7 @@ import {
   Link2Off,
   Maximize2,
   Palette,
+  Pipette,
   Plus,
   RotateCw,
   Scissors,
@@ -172,8 +173,11 @@ type BgStroke = {
   id: string;
   mode: "remove" | "keep";
   brush: number;
+  bleed: number;
+  reach: number | null;
   points: Omit<BgPoint, "mode">[];
 };
+type EraseColor = { color: string | null; sensitivity: number };
 type BgEditor = {
   layerId: string;
   source: string;
@@ -181,14 +185,15 @@ type BgEditor = {
   mode: "remove" | "keep";
   brush: number;
   sensitivity: number;
+  connectedReach: number;
   alphaView: boolean;
   zoom: number;
   panX: number;
   panY: number;
   speckles: number;
   edgeRefine: number;
-  eraseColor: string | null;
-  colorSensitivity: number;
+  eraseColors: EraseColor[];
+  pickingColor: number | null;
 };
 type ImageEditTool = "crop" | "erase" | "lasso";
 type ImageEditStroke = { id:string; tool:Exclude<ImageEditTool,"crop">; brush:number; points:{x:number;y:number}[] };
@@ -306,8 +311,7 @@ async function refineBackground(
   strokes: BgStroke[],
   speckles = 0,
   edgeRefine = 0,
-  eraseColor: string | null = null,
-  colorSensitivity = 30,
+  eraseColors: EraseColor[] = [],
 ) {
   const original = await getImage(src),
     base = original,
@@ -326,15 +330,16 @@ async function refineBackground(
     sourceData = source.data,
     floodSeen = new Uint16Array(c.width * c.height),
     floodQueue = new Int32Array(c.width * c.height);
-  if (eraseColor) {
-    const rgb = eraseColor.match(/[a-f\d]{2}/gi)?.map((part) => parseInt(part, 16));
+  for (const entry of eraseColors) {
+    if (!entry.color) continue;
+    const rgb = entry.color.match(/[a-f\d]{2}/gi)?.map((part) => parseInt(part, 16));
     if (rgb?.length === 3) for (let q = 0; q < result.data.length; q += 4) {
       const distance = Math.hypot(sourceData[q] - rgb[0], sourceData[q + 1] - rgb[1], sourceData[q + 2] - rgb[2]);
-      if (distance <= colorSensitivity * 2.2) result.data[q + 3] = 0;
+      if (distance <= entry.sensitivity * 2.2) result.data[q + 3] = 0;
     }
   }
   let floodGeneration = 0;
-  const floodApply = (seedX: number, seedY: number, mode:"remove"|"keep") => {
+  const floodApply = (seedX: number, seedY: number, mode:"remove"|"keep", bleed:number, reach:number|null) => {
     const startX = clamp(Math.round(seedX), 0, c.width - 1),
       startY = clamp(Math.round(seedY), 0, c.height - 1),
       start = startY * c.width + startX,
@@ -349,7 +354,8 @@ async function refineBackground(
       const at = floodQueue[head++], q = at * 4,
         px = at % c.width, py = (at / c.width) | 0,
         dist = Math.hypot(sourceData[q] - target[0], sourceData[q + 1] - target[1], sourceData[q + 2] - target[2]);
-      if (dist > Math.max(2, tolerance * 2.2)) continue;
+      if (dist > Math.max(2, bleed * 2.2)) continue;
+      if (reach !== null && Math.hypot(px - startX, py - startY) > reach * Math.max(c.width,c.height)) continue;
       if(mode==="remove") result.data[q+3]=0;
       else {result.data[q] = sourceData[q]; result.data[q + 1] = sourceData[q + 1]; result.data[q + 2] = sourceData[q + 2]; result.data[q + 3] = 255;}
       const ns = [at - 1, at + 1, at - c.width, at + c.width];
@@ -368,7 +374,7 @@ async function refineBackground(
     else {mx.beginPath();stroke.points.forEach((p,index)=>index?mx.lineTo(p.x*c.width,p.y*c.height):mx.moveTo(p.x*c.width,p.y*c.height));mx.stroke();}
     const painted=mx.getImageData(0,0,c.width,c.height).data;
     for(let at=0;at<c.width*c.height;at++){if(painted[at*4+3]<64)continue;const q=at*4;if(stroke.mode==="remove")result.data[q+3]=0;else{result.data[q]=sourceData[q];result.data[q+1]=sourceData[q+1];result.data[q+2]=sourceData[q+2];result.data[q+3]=255;}}
-    if(tolerance>0){const stride=Math.max(1,Math.ceil(stroke.points.length/12));for(let i=0;i<stroke.points.length;i+=stride){const p=stroke.points[i];floodApply(p.x*c.width,p.y*c.height,stroke.mode);}}
+    if(stroke.bleed>0){const stride=Math.max(1,Math.ceil(stroke.points.length/12));for(let i=0;i<stroke.points.length;i+=stride){const p=stroke.points[i];floodApply(p.x*c.width,p.y*c.height,stroke.mode,stroke.bleed,stroke.reach);}}
   }
   // Final output is strictly binary, including manually refined areas.
   for (let q = 3; q < result.data.length; q += 4)
@@ -893,6 +899,11 @@ export default function Home() {
     if (currentProjectId === id) { setCurrentProjectId(null); setProjectName("Untitled Project"); }
     await refreshProjects(); setNotice("Project deleted");
   };
+  const newProject = () => {
+    setLayers([]); setSelected([]); setCurrentProjectId(null); setProjectName("Untitled Project");
+    setPageMode("portrait"); setSafeMargin(1); history.current=[]; setProjectsOpen(false);
+    window.setTimeout(centerDocument,40); setNotice("New project created");
+  };
   useEffect(() => {
     void supabase.auth.getSession().then(({ data }) => { setSession(data.session); if (data.session) void refreshProjects(); });
     const { data } = supabase.auth.onAuthStateChange((_event, next) => { setSession(next); if (next) void refreshProjects(); else setProjects([]); });
@@ -909,8 +920,7 @@ export default function Home() {
         bgEditor.strokes,
         bgEditor.speckles,
         bgEditor.edgeRefine,
-        bgEditor.eraseColor,
-        bgEditor.colorSensitivity,
+        bgEditor.eraseColors,
       ).then((src) => {
         if (!cancelled) {
           setBgPreview(src);
@@ -922,7 +932,7 @@ export default function Home() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [bgEditor?.source, bgEditor?.sensitivity, bgEditor?.strokes, bgEditor?.speckles, bgEditor?.edgeRefine, bgEditor?.eraseColor, bgEditor?.colorSensitivity]);
+  }, [bgEditor?.source, bgEditor?.strokes, bgEditor?.speckles, bgEditor?.edgeRefine, bgEditor?.eraseColors]);
   useEffect(() => {
     if (!cutEditor) return;
     let cancelled = false;
@@ -997,6 +1007,10 @@ export default function Home() {
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
         e.preventDefault();
+        if (bgEditor) {
+          setBgEditor((value) => value && value.strokes.length ? {...value,strokes:value.strokes.slice(0,-1)} : value);
+          return;
+        }
         undo();
         return;
       }
@@ -1011,7 +1025,7 @@ export default function Home() {
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [selected]);
+  }, [selected,bgEditor]);
   useEffect(() => {
     const stopBrowserZoom = (e: WheelEvent) => {
       if (!e.ctrlKey) return;
@@ -1040,6 +1054,15 @@ export default function Home() {
     const timer=window.setTimeout(()=>pageMode==="full"?stageRef.current?.scrollTo({left:0,top:0}):centerDocument(),40);
     return()=>window.clearTimeout(timer);
   },[pageMode]);
+  const visibleInsertionPoint = (w:number,h:number) => {
+    const stage=stageRef.current, canvas=canvasRef.current;
+    if(!stage||!canvas) return {x:SAFE.x+(SAFE.w-w)/2,y:SAFE.y+(SAFE.h-h)/2};
+    const s=stage.getBoundingClientRect(),c=canvas.getBoundingClientRect();
+    return {
+      x:clamp((s.left+s.width/2-c.left)/scale-w/2,SAFE.x,Math.max(SAFE.x,SAFE.x+SAFE.w-w)),
+      y:clamp((s.top+s.height/2-c.top)/scale-h/2,SAFE.y,Math.max(SAFE.y,SAFE.y+SAFE.h-h)),
+    };
+  };
   const importFiles = async (files: File[]) => {
     for (const f of files) {
       if (!/image\/(jpeg|png|svg\+xml|webp)/.test(f.type)) continue;
@@ -1056,7 +1079,7 @@ export default function Home() {
         h = SAFE.h;
         w = h * ratio;
       }
-      const id = uid();
+      const id = uid(), place=visibleInsertionPoint(w,h);
       setLayers((v) =>
         v.concat({
           id,
@@ -1064,8 +1087,8 @@ export default function Home() {
           src,
           originalSrc: src,
           visible: true,
-          x: 1 + (SAFE.w - w) / 2,
-          y: 1 + (SAFE.h - h) / 2,
+          x: place.x,
+          y: place.y,
           w,
           h,
           naturalW: img.naturalWidth,
@@ -1106,20 +1129,21 @@ export default function Home() {
       mode: "remove",
       brush: 3,
       sensitivity: 0,
+      connectedReach: 0,
       alphaView: false,
       zoom: 1,
       panX: 0,
       panY: 0,
       speckles: 0,
       edgeRefine: 0,
-      eraseColor: null,
-      colorSensitivity: 30,
+      eraseColors: [{ color: null, sensitivity: 30 }],
+      pickingColor: null,
     });
   };
   const quickBackground = async (chosen?:Layer|null) => {
     const targets=chosen?[chosen]:picked;if(!targets.length){setNotice("Select at least one image first");return}setBgMenuOpen(false);setNotice("Removing background…");setWorking(true);
     try{
-      const results=await Promise.all(targets.map(async target=>{const refined=await refineBackground(target.src,46,[],0,0),t=await trimTransparent(refined),next={...target,src:t.src,x:target.x+target.w*t.left,y:target.y+target.h*t.top,w:target.w*t.width,h:target.h*t.height,kind:"nobg" as Kind};const step:LayerStep={id:uid(),type:"remove-bg",label:"Remove Background",snapshot:snapshot(next)};return {...next,steps:[...target.steps,step],activeStep:target.steps.length}}));
+      const results=await Promise.all(targets.map(async target=>{const refined=await removeBg(target.src),t=await trimTransparent(refined),next={...target,src:t.src,x:target.x+target.w*t.left,y:target.y+target.h*t.top,w:target.w*t.width,h:target.h*t.height,kind:"nobg" as Kind};const step:LayerStep={id:uid(),type:"remove-bg",label:"Remove Background",snapshot:snapshot(next)};return {...next,steps:[...target.steps,step],activeStep:target.steps.length}}));
       const byId=new Map(results.map(l=>[l.id,l]));setLayers(items=>items.map(l=>byId.get(l.id)||l));setNotice(`${results.length} background${results.length>1?"s":""} removed`);
     }catch{setNotice("Background removal could not be applied");}finally{setWorking(false)}
   };
@@ -1130,7 +1154,7 @@ export default function Home() {
     setWorking(true);
     try {
       const refined = !bgRendering && bgPreview ? bgPreview : await refineBackground(
-        bgEditor.source, bgEditor.sensitivity, bgEditor.strokes, bgEditor.speckles, bgEditor.edgeRefine, bgEditor.eraseColor, bgEditor.colorSensitivity,
+        bgEditor.source, 0, bgEditor.strokes, bgEditor.speckles, bgEditor.edgeRefine, bgEditor.eraseColors,
       );
       const t = await trimTransparent(refined);
       const next = {
@@ -1169,13 +1193,25 @@ export default function Home() {
       y: clamp((e.clientY - r.top) / r.height, 0, 1),
     };
   };
-  const startBackgroundStroke = (e: RPointer<HTMLImageElement>) => {
+  const startBackgroundStroke = async (e: RPointer<HTMLImageElement>) => {
     if (!bgEditor || e.button !== 0) return;
     const id = uid();
     bgDrawing.current = id;
     setBgActiveStroke(id);
     e.currentTarget.setPointerCapture(e.pointerId);
-    const stroke: BgStroke = { id, mode: bgEditor.mode, brush: bgEditor.brush, points: [bgPointFromEvent(e)] };
+    if (bgEditor.pickingColor !== null) {
+      const point = bgPointFromEvent(e), img = await getImage(bgEditor.source), sample = document.createElement("canvas");
+      sample.width = img.naturalWidth; sample.height = img.naturalHeight;
+      const context = sample.getContext("2d")!; context.drawImage(img,0,0);
+      const pixel = context.getImageData(Math.min(sample.width-1,Math.floor(point.x*sample.width)),Math.min(sample.height-1,Math.floor(point.y*sample.height)),1,1).data;
+      const color = `#${[pixel[0],pixel[1],pixel[2]].map(v=>v.toString(16).padStart(2,"0")).join("")}`;
+      const colors=[...bgEditor.eraseColors]; colors[bgEditor.pickingColor]={...colors[bgEditor.pickingColor],color};
+      if(colors.every(entry=>entry.color)&&colors.length<6) colors.push({color:null,sensitivity:30});
+      setBgEditor({...bgEditor,eraseColors:colors,pickingColor:null}); return;
+    }
+    const target=layers.find(layer=>layer.id===bgEditor.layerId);
+    const reach=bgEditor.connectedReach>=51?null:(bgEditor.connectedReach/10)/Math.max(target?.w||1,target?.h||1);
+    const stroke: BgStroke = { id, mode: bgEditor.mode, brush: bgEditor.brush, bleed:bgEditor.sensitivity, reach, points: [bgPointFromEvent(e)] };
     setBgEditor({ ...bgEditor, strokes: [...bgEditor.strokes, stroke] });
   };
   const moveBackgroundStroke = (e: RPointer<HTMLImageElement>) => {
@@ -2163,9 +2199,10 @@ export default function Home() {
           </span>
           <div>
             <b>Better Cricut Editor</b>
-            <small>Personal workspace · v47</small>
+            <small>Personal workspace · v48</small>
           </div>
         </div>
+        <button className="brand-undo" onClick={undo} title="Undo (Ctrl+Z)"><Undo2 /> Undo</button>
         <input
           hidden
           ref={fileRef}
@@ -2187,16 +2224,6 @@ export default function Home() {
           >
             <Scissors />
             Make Cutout
-          </button>
-          <button
-            disabled={!one || one.kind !== "vector"}
-            onClick={() => {
-              setStrokeDraft(0.5);
-              void addStroke(0.5);
-            }}
-          >
-            <Palette />
-            Add Stroke
           </button>
           <button disabled={!one || !["vector", "stroke"].includes(one.kind)} onClick={acetate}>
             <FileImage />
@@ -2224,7 +2251,7 @@ export default function Home() {
         <div className="sub-left">
         <div className="wrap page-setup-slot">
           <button onClick={() => setPageSetupOpen((value) => !value)}><RotateCw /> Page Setup <ChevronDown /></button>
-          {pageSetupOpen && <div className="pop page-setup-menu">{(["portrait","landscape","full"] as PageMode[]).map((mode)=><button key={mode} className={pageMode===mode?"active":""} onClick={()=>{setPageMode(mode);setPageSetupOpen(false);setSelected([]);setNotice(mode==="full"?"Page changed to 100 × 100 cm Full canvas":`Page changed to ${mode}`);window.setTimeout(()=>mode==="full"?stageRef.current?.scrollTo({left:0,top:0}):centerDocument(),0)}}><span>{mode==="portrait"?"21 × 29.7 cm":mode==="landscape"?"29.7 × 21 cm":"100 × 100 cm"}</span><b>{mode[0].toUpperCase()+mode.slice(1)}</b></button>)}</div>}
+          {pageSetupOpen && <div className="pop page-setup-menu">{(["portrait","landscape","full"] as PageMode[]).map((mode)=><button key={mode} className={pageMode===mode?"active":""} onClick={()=>{setPageMode(mode);setPageSetupOpen(false);setSelected([]);setNotice(mode==="full"?"Page changed to 100 × 100 cm Full canvas":`Page changed to ${mode}`);window.setTimeout(()=>mode==="full"?stageRef.current?.scrollTo({left:0,top:0}):centerDocument(),0)}}><b>{mode[0].toUpperCase()+mode.slice(1)}</b><span>{mode==="portrait"?"21 × 29.7 cm":mode==="landscape"?"29.7 × 21 cm":"100 × 100 cm"}</span></button>)}</div>}
         </div>
         <div className="wrap safe-area-slot">
           <button onClick={() => setSafeOpen((v) => !v)}>
@@ -2242,7 +2269,6 @@ export default function Home() {
           )}
         </div>
         <button className={gridVisible ? "active" : ""} onClick={() => setGridVisible((value) => !value)} title="Show or hide the page grid"><Grid3X3 /> Grid</button>
-        <button className="sub-undo" onClick={undo} title="Undo (Ctrl+Z)"><Undo2 /> Undo</button>
         </div>
         <div className="sub-center">
         <div className="wrap color-slot">
@@ -2301,7 +2327,7 @@ export default function Home() {
           <Sparkles /> Bake Cutout
         </button>
         </div>
-        <div className="save-actions"><button className="save-project" onClick={() => currentProjectId ? void saveProject(false) : (setSaveAsMode(false),setProjectsOpen(true))} title="Save current project"><Download /> Save</button><button className="save-as-project" onClick={() => {setSaveAsMode(true);setProjectName(currentProjectId?`${projectName} Copy`:projectName);setProjectsOpen(true)}} title="Create a new project copy">Save As</button></div>
+        <div className="save-actions"><button className="new-project" onClick={newProject} title="Start a new project"><Plus /> New Project</button><button className="save-project" onClick={() => currentProjectId ? void saveProject(false) : (setSaveAsMode(false),setProjectsOpen(true))} title="Save current project"><Download /> Save</button><button className="save-as-project" onClick={() => {setSaveAsMode(true);setProjectName(currentProjectId?`${projectName} Copy`:projectName);setProjectsOpen(true)}} title="Create a new project copy"><Copy /> Save As</button></div>
       </div>
       <section className="workspace">
         <div className="left-tools">
@@ -2862,7 +2888,8 @@ export default function Home() {
                       src={bgPreview}
                       alt="Background removal preview"
                       draggable={false}
-                      onLoad={e=>setBgImageSize(fitEditorImage(e.currentTarget,bgPreviewRef.current))}
+                        className={bgEditor.pickingColor!==null?"eyedrop-active":""}
+                        onLoad={e=>setBgImageSize(fitEditorImage(e.currentTarget,bgPreviewRef.current))}
                       onPointerDown={startBackgroundStroke}
                       onPointerMove={moveBackgroundStroke}
                       onPointerUp={endBackgroundStroke}
@@ -2870,18 +2897,19 @@ export default function Home() {
                       onPointerLeave={() => setBgCursor((v) => ({ ...v, visible: false }))}
                       onPointerEnter={() => setBgCursor((v) => ({ ...v, visible: true }))}
                     />
-                    <svg className="bg-marks" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+                    <svg className="bg-marks" viewBox={`0 0 ${bgImageSize.w||100} ${bgImageSize.h||100}`} aria-hidden="true">
                       {bgEditor.strokes.filter((stroke) => stroke.id === bgActiveStroke).map((stroke) => {
-                        const points = stroke.points.map((p) => `${p.x * 100},${p.y * 100}`).join(" ");
+                        const points = stroke.points.map((p) => `${p.x * (bgImageSize.w||100)},${p.y * (bgImageSize.h||100)}`).join(" ");
                         const color = stroke.mode === "remove" ? "#ef3f46" : "#00a66f";
+                        const radius=stroke.brush/200*Math.min(bgImageSize.w||100,bgImageSize.h||100);
                         return stroke.points.length === 1 ? (
-                          <circle key={stroke.id} cx={stroke.points[0].x * 100} cy={stroke.points[0].y * 100} r={stroke.brush / 2} fill={color} fillOpacity=".5" stroke="#fff" strokeWidth=".35" />
+                          <circle key={stroke.id} cx={stroke.points[0].x*(bgImageSize.w||100)} cy={stroke.points[0].y*(bgImageSize.h||100)} r={radius} fill={color} fillOpacity=".5" stroke="#fff" strokeWidth="1" />
                         ) : (
-                          <polyline key={stroke.id} points={points} fill="none" stroke={color} strokeOpacity=".5" strokeWidth={stroke.brush} strokeLinecap="round" strokeLinejoin="round" />
+                          <polyline key={stroke.id} points={points} fill="none" stroke={color} strokeOpacity=".5" strokeWidth={radius*2} strokeLinecap="round" strokeLinejoin="round" />
                         );
                       })}
                       {bgCursor.visible && (
-                        <circle cx={bgCursor.x * 100} cy={bgCursor.y * 100} r={bgEditor.brush / 2} className="bg-brush-cursor" />
+                        <circle cx={bgCursor.x*(bgImageSize.w||100)} cy={bgCursor.y*(bgImageSize.h||100)} r={bgEditor.brush/200*Math.min(bgImageSize.w||100,bgImageSize.h||100)} className="bg-brush-cursor" />
                       )}
                     </svg>
                   </div>
@@ -2895,33 +2923,24 @@ export default function Home() {
                 </div>
               </div>
               <aside className="bg-controls">
-                <section>
-                  <label>Brush Mode</label>
+                <section className="connected-brush-section">
+                  <label>Connected Area with Brush</label>
                   <div className="mode-buttons">
                     <button className={bgEditor.mode === "remove" ? "active remove" : ""} onClick={() => setBgEditor({ ...bgEditor, mode: "remove" })}>Remove</button>
                     <button className={bgEditor.mode === "keep" ? "active keep" : ""} onClick={() => setBgEditor({ ...bgEditor, mode: "keep" })}>Keep</button>
                   </div>
-                  <small>Remove erases unwanted halos. Keep protects highlights and fine details.</small>
+                  <div className="compact-slider"><label>Brush Size <b>{bgEditor.brush.toFixed(1)}%</b></label><input type="range" min=".1" max="60" step=".1" value={bgEditor.brush} onChange={(e) => setBgEditor({ ...bgEditor, brush: +e.target.value })} /></div>
+                  <div className="compact-slider"><label>Color Bleed <b>{bgEditor.sensitivity}</b></label><input type="range" min="0" max="100" value={bgEditor.sensitivity} onChange={(e) => setBgEditor({ ...bgEditor, sensitivity: +e.target.value })} /></div>
+                  <div className="compact-slider"><label>Connected Distance <b>{bgEditor.connectedReach>=51?"Full":`${(bgEditor.connectedReach/10).toFixed(1)} cm`}</b></label><input type="range" min="0" max="51" value={bgEditor.connectedReach} onChange={(e) => setBgEditor({ ...bgEditor, connectedReach: +e.target.value })} /></div>
+                  <small>Each stroke keeps the size, color bleed and distance used when it was drawn. Distance limits connected-color spread; Full follows the complete connected area.</small>
                 </section>
-                <section>
-                  <label>Brush Size <b>{bgEditor.brush}%</b></label>
-                  <input type="range" min=".2" max="40" step=".2" value={bgEditor.brush} onChange={(e) => setBgEditor({ ...bgEditor, brush: +e.target.value })} />
-                </section>
-                <section>
-                  <label>Brush Color Bleed <b>{bgEditor.sensitivity}</b></label>
-                  <input type="range" min="0" max="100" value={bgEditor.sensitivity} onChange={(e) => setBgEditor({ ...bgEditor, sensitivity: +e.target.value })} />
-                  <small>0 affects only the painted area. Higher values follow connected pixels with a similar color.</small>
-                </section>
-                <section>
-                  <label>Erase Color</label>
-                  <div className="erase-color-row">
-                    <input type="color" value={bgEditor.eraseColor || "#ffffff"} onChange={(e)=>setBgEditor({...bgEditor,eraseColor:e.target.value})}/>
-                    <button onClick={async()=>{const Picker=(window as unknown as {EyeDropper?:new()=>{open:()=>Promise<{sRGBHex:string}>}}).EyeDropper;if(!Picker)return setNotice("Use the color swatch in this browser");try{const picked=await new Picker().open();setBgEditor({...bgEditor,eraseColor:picked.sRGBHex})}catch{}}}>Pick from Image</button>
-                    <button disabled={!bgEditor.eraseColor} onClick={()=>setBgEditor({...bgEditor,eraseColor:null})}>Clear</button>
-                  </div>
-                  <label>Color Sensitivity <b>{bgEditor.colorSensitivity}</b></label>
-                  <input type="range" min="0" max="100" value={bgEditor.colorSensitivity} onChange={(e)=>setBgEditor({...bgEditor,colorSensitivity:+e.target.value})}/>
-                  <small>Removes pixels close to the selected color throughout the image.</small>
+                <section className="all-color-section">
+                  <label>All the Color with Eyedrop</label>
+                  {bgEditor.eraseColors.map((entry,index)=><div className="erase-color-entry" key={index}>
+                    <div className="erase-color-row"><input type="color" value={entry.color||"#ffffff"} onChange={(e)=>{const colors=[...bgEditor.eraseColors];colors[index]={...entry,color:e.target.value};if(colors.every(v=>v.color)&&colors.length<6)colors.push({color:null,sensitivity:30});setBgEditor({...bgEditor,eraseColors:colors})}}/><button className={bgEditor.pickingColor===index?"active":""} onClick={()=>setBgEditor({...bgEditor,pickingColor:bgEditor.pickingColor===index?null:index})}><Pipette/> Pick from Image</button><button disabled={!entry.color} onClick={()=>{const colors=bgEditor.eraseColors.filter((_,i)=>i!==index);setBgEditor({...bgEditor,eraseColors:colors.length?colors:[{color:null,sensitivity:30}],pickingColor:null})}}>Clear</button></div>
+                    <div className="compact-slider"><label>Color Sensitivity <b>{entry.sensitivity}</b></label><input type="range" min="0" max="100" value={entry.sensitivity} onChange={(e)=>{const colors=[...bgEditor.eraseColors];colors[index]={...entry,sensitivity:+e.target.value};setBgEditor({...bgEditor,eraseColors:colors})}}/></div>
+                  </div>)}
+                  <small>Every selected color is removed throughout the entire image, whether its pixels are connected or not.</small>
                 </section>
                 <section>
                   <label>Edge Refinement <b>{bgEditor.edgeRefine > 0 ? "+" : ""}{bgEditor.edgeRefine} px</b></label>
