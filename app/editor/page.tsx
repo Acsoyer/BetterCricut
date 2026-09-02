@@ -154,8 +154,9 @@ type SavedProject = {
   id: string;
   name: string;
   updated_at: string;
-  data: { layers: Layer[]; landscape: boolean; safeMargin: number };
+  data: { layers: Layer[]; landscape: boolean; pageMode?: PageMode; safeMargin: number };
 };
+type PageMode = "portrait" | "landscape" | "full";
 type Drag = {
   mode: string;
   sx: number;
@@ -189,7 +190,9 @@ type BgEditor = {
   eraseColor: string | null;
   colorSensitivity: number;
 };
-type ImageEditor = { layerId:string; source:string; crop:{left:number;top:number;right:number;bottom:number}; upscale:1|2|3 };
+type ImageEditTool = "crop" | "erase" | "lasso";
+type ImageEditStroke = { id:string; tool:Exclude<ImageEditTool,"crop">; brush:number; points:{x:number;y:number}[] };
+type ImageEditor = { layerId:string; source:string; crop:{left:number;top:number;right:number;bottom:number}; upscale:1|2|3; tool:ImageEditTool; brush:number; strokes:ImageEditStroke[] };
 type EditTool = "bridge" | "erase" | "lasso" | "rectangle" | "smooth";
 type EditStroke = { id: string; tool: EditTool; brush: number; points: { x: number; y: number }[] };
 type CutoutEditor = {
@@ -306,8 +309,8 @@ async function refineBackground(
   eraseColor: string | null = null,
   colorSensitivity = 30,
 ) {
-  const base = await getImage(await removeBg(src, tolerance)),
-    original = await getImage(src),
+  const original = await getImage(src),
+    base = original,
     c = document.createElement("canvas");
   c.width = base.naturalWidth;
   c.height = base.naturalHeight;
@@ -331,7 +334,7 @@ async function refineBackground(
     }
   }
   let floodGeneration = 0;
-  const floodKeep = (seedX: number, seedY: number) => {
+  const floodApply = (seedX: number, seedY: number, mode:"remove"|"keep") => {
     const startX = clamp(Math.round(seedX), 0, c.width - 1),
       startY = clamp(Math.round(seedY), 0, c.height - 1),
       start = startY * c.width + startX,
@@ -346,8 +349,9 @@ async function refineBackground(
       const at = floodQueue[head++], q = at * 4,
         px = at % c.width, py = (at / c.width) | 0,
         dist = Math.hypot(sourceData[q] - target[0], sourceData[q + 1] - target[1], sourceData[q + 2] - target[2]);
-      if (dist > Math.max(8, tolerance * .65)) continue;
-      result.data[q] = sourceData[q]; result.data[q + 1] = sourceData[q + 1]; result.data[q + 2] = sourceData[q + 2]; result.data[q + 3] = 255;
+      if (dist > Math.max(2, tolerance * 2.2)) continue;
+      if(mode==="remove") result.data[q+3]=0;
+      else {result.data[q] = sourceData[q]; result.data[q + 1] = sourceData[q + 1]; result.data[q + 2] = sourceData[q + 2]; result.data[q + 3] = 255;}
       const ns = [at - 1, at + 1, at - c.width, at + c.width];
       for (let n = 0; n < 4; n++) {
         const next = ns[n];
@@ -358,28 +362,13 @@ async function refineBackground(
   };
   for (const stroke of strokes) {
     const radius = Math.max(2, (stroke.brush / 200) * Math.min(c.width, c.height));
-    if (stroke.mode === "keep" && stroke.points.length === 1)
-      floodKeep(stroke.points[0].x * c.width, stroke.points[0].y * c.height);
-    for (const point of stroke.points) {
-    const cx = point.x * c.width,
-      cy = point.y * c.height,
-      x0 = Math.max(0, Math.floor(cx - radius)),
-      x1 = Math.min(c.width - 1, Math.ceil(cx + radius)),
-      y0 = Math.max(0, Math.floor(cy - radius)),
-      y1 = Math.min(c.height - 1, Math.ceil(cy + radius));
-    for (let py = y0; py <= y1; py++)
-      for (let px = x0; px <= x1; px++) {
-        if (Math.hypot(px - cx, py - cy) > radius) continue;
-        const q = (py * c.width + px) * 4;
-        if (stroke.mode === "remove") result.data[q + 3] = 0;
-        else {
-          result.data[q] = source.data[q];
-          result.data[q + 1] = source.data[q + 1];
-          result.data[q + 2] = source.data[q + 2];
-          result.data[q + 3] = 255;
-        }
-      }
-    }
+    const mask=document.createElement("canvas");mask.width=c.width;mask.height=c.height;const mx=mask.getContext("2d")!;
+    mx.strokeStyle="#fff";mx.fillStyle="#fff";mx.lineWidth=radius*2;mx.lineCap="round";mx.lineJoin="round";
+    if(stroke.points.length===1){const p=stroke.points[0];mx.beginPath();mx.arc(p.x*c.width,p.y*c.height,radius,0,Math.PI*2);mx.fill();}
+    else {mx.beginPath();stroke.points.forEach((p,index)=>index?mx.lineTo(p.x*c.width,p.y*c.height):mx.moveTo(p.x*c.width,p.y*c.height));mx.stroke();}
+    const painted=mx.getImageData(0,0,c.width,c.height).data;
+    for(let at=0;at<c.width*c.height;at++){if(painted[at*4+3]<64)continue;const q=at*4;if(stroke.mode==="remove")result.data[q+3]=0;else{result.data[q]=sourceData[q];result.data[q+1]=sourceData[q+1];result.data[q+2]=sourceData[q+2];result.data[q+3]=255;}}
+    if(tolerance>0){const stride=Math.max(1,Math.ceil(stroke.points.length/12));for(let i=0;i<stroke.points.length;i+=stride){const p=stroke.points[i];floodApply(p.x*c.width,p.y*c.height,stroke.mode);}}
   }
   // Final output is strictly binary, including manually refined areas.
   for (let q = 3; q < result.data.length; q += 4)
@@ -803,7 +792,8 @@ export default function Home() {
     [fillGapsDraft, setFillGapsDraft] = useState(0),
     [widthDraft, setWidthDraft] = useState("0.0"),
     [heightDraft, setHeightDraft] = useState("0.0"),
-    [landscape, setLandscape] = useState(false),
+    [pageMode, setPageMode] = useState<PageMode>("portrait"),
+    [pageSetupOpen, setPageSetupOpen] = useState(false),
     [safeMargin, setSafeMargin] = useState(1),
     [safeOpen, setSafeOpen] = useState(false),
     [gridVisible, setGridVisible] = useState(true),
@@ -835,6 +825,7 @@ export default function Home() {
     [session, setSession] = useState<Session | null>(null),
     [projects, setProjects] = useState<SavedProject[]>([]),
     [projectsOpen, setProjectsOpen] = useState(false),
+    [saveAsMode, setSaveAsMode] = useState(false),
     [accountOpen, setAccountOpen] = useState(false),
     [currentProjectId, setCurrentProjectId] = useState<string | null>(null),
     [projectName, setProjectName] = useState("Untitled Project");
@@ -855,8 +846,10 @@ export default function Home() {
     cutPreviewRef = useRef<HTMLDivElement>(null),
     cropDrag = useRef<{mode:string;x:number;y:number;crop:CutoutEditor["crop"];rect:DOMRect}|null>(null),
     imageCropDrag = useRef<{mode:string;x:number;y:number;crop:ImageEditor["crop"];rect:DOMRect}|null>(null),
+    imageDrawing = useRef<string|null>(null),
     pan = useRef<{ x: number; y: number; l: number; t: number } | null>(null);
-  const A4 = landscape ? { w: PORTRAIT.h, h: PORTRAIT.w } : PORTRAIT,
+  const landscape = pageMode === "landscape",
+    A4 = pageMode === "full" ? {w:100,h:100} : landscape ? { w: PORTRAIT.h, h: PORTRAIT.w } : PORTRAIT,
     SAFE = { x: safeMargin, y: safeMargin, w: A4.w - safeMargin * 2, h: A4.h - safeMargin * 2 },
     picked = layers.filter((l) => selected.includes(l.id)),
     one = picked.length === 1 ? picked[0] : null,
@@ -878,20 +871,20 @@ export default function Home() {
     if (error) { setNotice("Projects could not be loaded"); return; }
     setProjects((data || []) as SavedProject[]);
   };
-  const saveProject = async () => {
+  const saveProject = async (asNew = false) => {
     if (!session?.user) return setNotice("Sign in to save a project");
     setWorking(true);
-    const payload = { name: projectName.trim() || "Untitled Project", data: { layers, landscape, safeMargin }, user_id: session.user.id, updated_at: new Date().toISOString() };
-    const query = currentProjectId
+    const payload = { name: projectName.trim() || "Untitled Project", data: { layers, landscape, pageMode, safeMargin }, user_id: session.user.id, updated_at: new Date().toISOString() };
+    const query = currentProjectId && !asNew
       ? supabase.from("projects").update(payload).eq("id", currentProjectId).select("id,name,updated_at,data").single()
       : supabase.from("projects").insert(payload).select("id,name,updated_at,data").single();
     const { data, error } = await query;
     setWorking(false);
     if (error || !data) return setNotice("Project could not be saved");
-    setCurrentProjectId(data.id); setProjectName(data.name); await refreshProjects(); setProjectsOpen(false); setNotice("Project saved");
+    setCurrentProjectId(data.id); setProjectName(data.name); await refreshProjects(); setProjectsOpen(false); setSaveAsMode(false); setNotice(asNew ? "Project saved as a new copy" : "Project saved");
   };
   const openProject = (project: SavedProject) => {
-    setLayers(project.data.layers || []); setLandscape(Boolean(project.data.landscape)); setSafeMargin(project.data.safeMargin ?? 1);
+    setLayers(project.data.layers || []); setPageMode(project.data.pageMode || (project.data.landscape ? "landscape" : "portrait")); setSafeMargin(project.data.safeMargin ?? 1);
     setSelected([]); setCurrentProjectId(project.id); setProjectName(project.name); history.current = []; setProjectsOpen(false); setNotice(`${project.name} opened`);
   };
   const deleteProject = async (id: string) => {
@@ -1042,7 +1035,11 @@ export default function Home() {
     stage.scrollTop = Math.max(0, (stage.scrollHeight - stage.clientHeight) / 2);
     updateRulers();
   };
-  useEffect(() => { updateRulers(); }, [zoom, landscape, safeMargin]);
+  useEffect(() => { updateRulers(); }, [zoom, pageMode, safeMargin]);
+  useEffect(() => {
+    const timer=window.setTimeout(()=>pageMode==="full"?stageRef.current?.scrollTo({left:0,top:0}):centerDocument(),40);
+    return()=>window.clearTimeout(timer);
+  },[pageMode]);
   const importFiles = async (files: File[]) => {
     for (const f of files) {
       if (!/image\/(jpeg|png|svg\+xml|webp)/.test(f.type)) continue;
@@ -1107,8 +1104,8 @@ export default function Home() {
       source: one.src,
       strokes: [],
       mode: "remove",
-      brush: 5,
-      sensitivity: 46,
+      brush: 3,
+      sensitivity: 0,
       alphaView: false,
       zoom: 1,
       panX: 0,
@@ -1290,10 +1287,14 @@ export default function Home() {
       next.steps=[step]; mutate(target.id,()=>next); setCutEditor(null); setNotice("Cutout edits baked into the layer");
     } finally { setWorking(false); }
   };
-  const openImageEditor=()=>{if(!one||["vector","stroke","acetate"].includes(one.kind))return;setImageEditorSize({w:0,h:0});setImageEditor({layerId:one.id,source:one.src,crop:{left:0,top:0,right:0,bottom:0},upscale:1})};
-  const applyImageEdit=async()=>{
+  const openImageEditor=()=>{if(!one||["vector","stroke","acetate"].includes(one.kind))return;setImageEditorSize({w:0,h:0});setImageEditor({layerId:one.id,source:one.src,crop:{left:0,top:0,right:0,bottom:0},upscale:1,tool:"crop",brush:4,strokes:[]})};
+  const imageEditPoint=(e:RPointer<HTMLImageElement>)=>{const r=e.currentTarget.getBoundingClientRect();return{x:clamp((e.clientX-r.left)/r.width,0,1),y:clamp((e.clientY-r.top)/r.height,0,1)}};
+  const startImageEdit=(e:RPointer<HTMLImageElement>)=>{if(!imageEditor||imageEditor.tool==="crop"||e.button!==0)return;e.preventDefault();e.currentTarget.setPointerCapture(e.pointerId);const id=uid(),stroke:ImageEditStroke={id,tool:imageEditor.tool,brush:imageEditor.brush,points:[imageEditPoint(e)]};imageDrawing.current=id;setImageEditor({...imageEditor,strokes:[...imageEditor.strokes,stroke]})};
+  const moveImageEdit=(e:RPointer<HTMLImageElement>)=>{if(!imageDrawing.current||!imageEditor||e.buttons!==1)return;const p=imageEditPoint(e),id=imageDrawing.current;setImageEditor(v=>v?{...v,strokes:v.strokes.map(s=>s.id!==id?s:{...s,points:[...s.points,p]})}:v)};
+  const endImageEdit=()=>{imageDrawing.current=null};
+  const applyImageEdit=async(createLayer=false)=>{
     if(!imageEditor)return;const target=layers.find(l=>l.id===imageEditor.layerId);if(!target)return;setWorking(true);
-    try{const img=await getImage(imageEditor.source),c=imageEditor.crop,l=clamp(c.left/100,0,.9),t=clamp(c.top/100,0,.9),r=clamp(c.right/100,0,.9-l),b=clamp(c.bottom/100,0,.9-t),sx=Math.round(img.naturalWidth*l),sy=Math.round(img.naturalHeight*t),sw=Math.max(1,Math.round(img.naturalWidth*(1-l-r))),sh=Math.max(1,Math.round(img.naturalHeight*(1-t-b))),out=document.createElement("canvas"),factor=imageEditor.upscale;out.width=sw*factor;out.height=sh*factor;const x=out.getContext("2d")!;x.imageSmoothingEnabled=true;x.imageSmoothingQuality="high";x.drawImage(img,sx,sy,sw,sh,0,0,out.width,out.height);const src=out.toDataURL("image/png");mutate(target.id,v=>({...v,src,originalSrc:src,x:v.x+v.w*l,y:v.y+v.h*t,w:v.w*(1-l-r),h:v.h*(1-t-b),naturalW:out.width,naturalH:out.height}));setImageEditor(null);setNotice(`Image edited at ${out.width} × ${out.height} px`)}finally{setWorking(false)}
+    try{const img=await getImage(imageEditor.source),work=document.createElement("canvas");work.width=img.naturalWidth;work.height=img.naturalHeight;const wx=work.getContext("2d")!;wx.drawImage(img,0,0);wx.globalCompositeOperation="destination-out";for(const stroke of imageEditor.strokes){if(!stroke.points.length)continue;wx.beginPath();if(stroke.tool==="lasso"){stroke.points.forEach((p,i)=>i?wx.lineTo(p.x*work.width,p.y*work.height):wx.moveTo(p.x*work.width,p.y*work.height));wx.closePath();wx.fill();}else{wx.lineWidth=Math.max(2,stroke.brush/100*Math.min(work.width,work.height));wx.lineCap="round";wx.lineJoin="round";stroke.points.forEach((p,i)=>i?wx.lineTo(p.x*work.width,p.y*work.height):wx.moveTo(p.x*work.width,p.y*work.height));if(stroke.points.length===1){const p=stroke.points[0];wx.arc(p.x*work.width,p.y*work.height,wx.lineWidth/2,0,Math.PI*2);wx.fill()}else wx.stroke();}}const c=imageEditor.crop,l=clamp(c.left/100,0,.9),t=clamp(c.top/100,0,.9),r=clamp(c.right/100,0,.9-l),b=clamp(c.bottom/100,0,.9-t),sx=Math.round(work.width*l),sy=Math.round(work.height*t),sw=Math.max(1,Math.round(work.width*(1-l-r))),sh=Math.max(1,Math.round(work.height*(1-t-b))),out=document.createElement("canvas"),factor=imageEditor.upscale;out.width=sw*factor;out.height=sh*factor;const x=out.getContext("2d")!;x.imageSmoothingEnabled=true;x.imageSmoothingQuality="high";x.drawImage(work,sx,sy,sw,sh,0,0,out.width,out.height);const src=out.toDataURL("image/png"),edited={...target,src,originalSrc:src,x:target.x+target.w*l,y:target.y+target.h*t,w:target.w*(1-l-r),h:target.h*(1-t-b),naturalW:out.width,naturalH:out.height};if(createLayer){const clone={...edited,id:uid(),name:`${target.name}_Edit`,steps:[],activeStep:0};setLayers(items=>{const at=items.findIndex(v=>v.id===target.id);const next=[...items];next.splice(at+1,0,clone);return next});setSelected([clone.id])}else mutate(target.id,()=>edited);setImageEditor(null);setNotice(createLayer?"Edited result created as a separate layer":`Image edited at ${out.width} × ${out.height} px`)}finally{setWorking(false)}
   };
   const startImageCrop=(e:RPointer<HTMLButtonElement>,mode:string)=>{if(!imageEditor)return;e.preventDefault();e.stopPropagation();e.currentTarget.setPointerCapture(e.pointerId);imageCropDrag.current={mode,x:e.clientX,y:e.clientY,crop:{...imageEditor.crop},rect:e.currentTarget.closest(".image-edit-wrap")!.getBoundingClientRect()}};
   const moveImageCrop=(e:RPointer<HTMLButtonElement>)=>{const d=imageCropDrag.current;if(!d||!imageEditor)return;const dx=(e.clientX-d.x)/d.rect.width*100,dy=(e.clientY-d.y)/d.rect.height*100,c={...d.crop};if(d.mode.includes("w"))c.left=clamp(d.crop.left+dx,0,Math.min(90,95-c.right));if(d.mode.includes("e"))c.right=clamp(d.crop.right-dx,0,Math.min(90,95-c.left));if(d.mode.includes("n"))c.top=clamp(d.crop.top+dy,0,Math.min(90,95-c.bottom));if(d.mode.includes("s"))c.bottom=clamp(d.crop.bottom-dy,0,Math.min(90,95-c.top));setImageEditor({...imageEditor,crop:c})};
@@ -1757,6 +1758,7 @@ export default function Home() {
     );
   };
   const canvasDown = (e: RPointer) => {
+    e.stopPropagation();
     if (e.button === 1 && stageRef.current) {
       e.preventDefault();
       pan.current = {
@@ -1823,10 +1825,17 @@ export default function Home() {
     });
   };
   const stageDown = (e: RPointer<HTMLDivElement>) => {
-    if (e.button !== 1 || !stageRef.current) return;
-    e.preventDefault();
+    if (!stageRef.current) return;
+    if (e.button === 1) {
+      e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId);
+      pan.current = { x: e.clientX, y: e.clientY, l: stageRef.current.scrollLeft, t: stageRef.current.scrollTop };
+      return;
+    }
+    if(e.button!==0||(e.target as HTMLElement).closest("button,.viewport-rulers,.canvas"))return;
+    const canvas=canvasRef.current;if(!canvas)return;
+    const rect=canvas.getBoundingClientRect(),x=(e.clientX-rect.left)/scale,y=(e.clientY-rect.top)/scale;
+    setSelected([]);setMarquee({x,y,w:0,h:0});setDrag({mode:"marquee",sx:e.clientX,sy:e.clientY,start:[],box:{x,y,w:0,h:0}});
     e.currentTarget.setPointerCapture(e.pointerId);
-    pan.current = { x: e.clientX, y: e.clientY, l: stageRef.current.scrollLeft, t: stageRef.current.scrollTop };
   };
   const endPointer = async () => {
     if (marquee && marquee.w > 0.05 && marquee.h > 0.05) {
@@ -2104,11 +2113,11 @@ export default function Home() {
       }
       const pdf = new jsPDF({
         unit: "cm",
-        format: "a4",
+        format: pageMode === "full" ? [100,100] : "a4",
         orientation: landscape ? "landscape" : "portrait",
       });
       pdf.addImage(c.toDataURL("image/jpeg", 0.95), "JPEG", 0, 0, A4.w, A4.h);
-      pdf.save("Cricut_A4_150DPI.pdf");
+      pdf.save(pageMode === "full" ? "Cricut_100x100cm_150DPI.pdf" : "Cricut_A4_150DPI.pdf");
     } finally {
       setWorking(false);
     }
@@ -2154,7 +2163,7 @@ export default function Home() {
           </span>
           <div>
             <b>Better Cricut Editor</b>
-            <small>Personal workspace · v43</small>
+            <small>Personal workspace · v47</small>
           </div>
         </div>
         <input
@@ -2213,15 +2222,10 @@ export default function Home() {
       </header>
       <div className="sub-toolbar">
         <div className="sub-left">
-        <button
-          onClick={() => {
-            setLandscape((v) => !v);
-            setLayers((items) => items.map((l) => ({ ...l, x: l.y, y: l.x })));
-            setNotice(landscape ? "Page changed to portrait" : "Page changed to landscape");
-          }}
-        >
-          <RotateCw /> {landscape ? "Portrait" : "Landscape"}
-        </button>
+        <div className="wrap page-setup-slot">
+          <button onClick={() => setPageSetupOpen((value) => !value)}><RotateCw /> Page Setup <ChevronDown /></button>
+          {pageSetupOpen && <div className="pop page-setup-menu">{(["portrait","landscape","full"] as PageMode[]).map((mode)=><button key={mode} className={pageMode===mode?"active":""} onClick={()=>{setPageMode(mode);setPageSetupOpen(false);setSelected([]);setNotice(mode==="full"?"Page changed to 100 × 100 cm Full canvas":`Page changed to ${mode}`);window.setTimeout(()=>mode==="full"?stageRef.current?.scrollTo({left:0,top:0}):centerDocument(),0)}}><span>{mode==="portrait"?"21 × 29.7 cm":mode==="landscape"?"29.7 × 21 cm":"100 × 100 cm"}</span><b>{mode[0].toUpperCase()+mode.slice(1)}</b></button>)}</div>}
+        </div>
         <div className="wrap safe-area-slot">
           <button onClick={() => setSafeOpen((v) => !v)}>
             <Maximize2 /> Safe Area <ChevronDown />
@@ -2297,9 +2301,7 @@ export default function Home() {
           <Sparkles /> Bake Cutout
         </button>
         </div>
-        <button className="save-project" onClick={() => setProjectsOpen(true)} title="Name and save this project">
-          <Download /> Save Project
-        </button>
+        <div className="save-actions"><button className="save-project" onClick={() => currentProjectId ? void saveProject(false) : (setSaveAsMode(false),setProjectsOpen(true))} title="Save current project"><Download /> Save</button><button className="save-as-project" onClick={() => {setSaveAsMode(true);setProjectName(currentProjectId?`${projectName} Copy`:projectName);setProjectsOpen(true)}} title="Create a new project copy">Save As</button></div>
       </div>
       <section className="workspace">
         <div className="left-tools">
@@ -2315,7 +2317,7 @@ export default function Home() {
             <button className="left-account" onClick={() => { setAccountOpen(true); setProjectsOpen(false); }}><span className="profile-placeholder"><User/></span><small>My Account</small></button>
           </div>
         </div>
-        <div className="stage" ref={stageRef} onScroll={updateRulers} onPointerDown={stageDown}>
+        <div className={`stage ${pageMode==="full"?"full-page":"standard-page"}`} ref={stageRef} onScroll={updateRulers} onPointerDown={stageDown}>
           <div className="viewport-rulers">
             <div className="viewport-corner" />
             <div className="viewport-ruler-x">
@@ -2775,18 +2777,18 @@ export default function Home() {
       </section>
       {projectsOpen && <div className="project-modal" role="dialog" aria-modal="true" aria-label="My Projects"><div className="project-dialog">
         <header><div><b>My Projects</b><small>{projects.length} saved {projects.length === 1 ? "project" : "projects"}</small></div><button onClick={() => setProjectsOpen(false)} aria-label="Close"><X/></button></header>
-        <div className="project-name-row"><label>Project name</label><input autoFocus value={projectName} maxLength={80} onFocus={(e)=>e.currentTarget.select()} onChange={(e) => setProjectName(e.target.value)} /><button onClick={() => void saveProject()}>Save Project</button></div>
+        <div className="project-name-row"><label>{saveAsMode?"New project name":"Project name"}</label><input autoFocus value={projectName} maxLength={80} onFocus={(e)=>e.currentTarget.select()} onChange={(e) => setProjectName(e.target.value)} /><button onClick={() => void saveProject(saveAsMode)}>{saveAsMode?"Save As":"Save"}</button></div>
         <div className="project-list">{projects.length ? projects.map(project => <article key={project.id} className={project.id === currentProjectId ? "current" : ""}><button className="project-open" onClick={() => openProject(project)}><FolderOpen/><span><b>{project.name}</b><small>Updated {new Date(project.updated_at).toLocaleString()}</small></span></button><button className="project-delete" onClick={() => void deleteProject(project.id)} title="Delete project"><Trash2/></button></article>) : <div className="projects-empty"><FolderOpen/><b>No saved projects yet</b><span>Save your current canvas to see it here.</span></div>}</div>
       </div></div>}
       {accountOpen && <div className="account-panel" role="dialog" aria-label="My Account"><button className="account-close" onClick={() => setAccountOpen(false)} aria-label="Close"><X/></button><span className="account-avatar"><User/></span><b>My Account</b><small>Signed in as</small><p>{session?.user.email || "Unknown account"}</p><div className="account-stat"><FolderOpen/><span><b>{projects.length}</b><small>Saved projects</small></span></div><button className="sign-out" onClick={() => void supabase.auth.signOut()}><LogOut/> Sign Out</button></div>}
       {notice && <div className="toast">{notice}</div>}
       {imageEditor&&(()=>{const target=layers.find(l=>l.id===imageEditor.layerId);return <div className="bg-modal image-edit-modal" role="dialog" aria-modal="true" aria-label="Image editor">
         <div className="bg-dialog"><header><div><b>Edit Image</b><small>Crop and increase raster resolution without altering the design geometry.</small></div><button onClick={()=>setImageEditor(null)}>×</button></header>
-        <div className="bg-editor-body"><div className="bg-preview"><div className="image-edit-wrap" style={{"--fit-w":imageEditorSize.w?`${imageEditorSize.w}px`:"auto","--fit-h":imageEditorSize.h?`${imageEditorSize.h}px`:"auto"} as React.CSSProperties}><img src={imageEditor.source} draggable={false} alt="Image edit preview" onLoad={e=>setImageEditorSize(fitEditorImage(e.currentTarget,e.currentTarget.closest(".bg-preview") as HTMLDivElement))}/><div className="crop-guide" style={{left:`${imageEditor.crop.left}%`,top:`${imageEditor.crop.top}%`,right:`${imageEditor.crop.right}%`,bottom:`${imageEditor.crop.bottom}%`}}>{["nw","n","ne","e","se","s","sw","w"].map(h=><button key={h} className={`crop-handle crop-${h}`} onPointerDown={e=>startImageCrop(e,h)} onPointerMove={moveImageCrop} onPointerUp={endImageCrop} onPointerCancel={endImageCrop}/>)}</div></div></div>
-        <aside className="bg-controls image-controls"><section><label>Resolution</label><b>{target?.naturalW||0} × {target?.naturalH||0} px</b><small>Output: {Math.round((target?.naturalW||0)*(1-(imageEditor.crop.left+imageEditor.crop.right)/100)*imageEditor.upscale)} × {Math.round((target?.naturalH||0)*(1-(imageEditor.crop.top+imageEditor.crop.bottom)/100)*imageEditor.upscale)} px</small></section>
+        <div className="bg-editor-body"><div className="bg-preview"><div className="image-edit-wrap" style={{"--fit-w":imageEditorSize.w?`${imageEditorSize.w}px`:"auto","--fit-h":imageEditorSize.h?`${imageEditorSize.h}px`:"auto"} as React.CSSProperties}><img className={`image-tool-${imageEditor.tool}`} src={imageEditor.source} draggable={false} alt="Image edit preview" onLoad={e=>setImageEditorSize(fitEditorImage(e.currentTarget,e.currentTarget.closest(".bg-preview") as HTMLDivElement))} onPointerDown={startImageEdit} onPointerMove={moveImageEdit} onPointerUp={endImageEdit} onPointerCancel={endImageEdit}/><svg className="image-edit-overlay" viewBox="0 0 100 100" preserveAspectRatio="none">{imageEditor.strokes.map(s=>{const pts=s.points.map(p=>`${p.x*100},${p.y*100}`).join(" ");return s.tool==="lasso"?<polygon key={s.id} points={pts} className="image-lasso-mark"/>:<polyline key={s.id} points={pts} className="image-erase-mark" style={{strokeWidth:s.brush}}/>})}</svg>{imageEditor.tool==="crop"&&<div className="crop-guide" style={{left:`${imageEditor.crop.left}%`,top:`${imageEditor.crop.top}%`,right:`${imageEditor.crop.right}%`,bottom:`${imageEditor.crop.bottom}%`}}>{["nw","n","ne","e","se","s","sw","w"].map(h=><button key={h} className={`crop-handle crop-${h}`} onPointerDown={e=>startImageCrop(e,h)} onPointerMove={moveImageCrop} onPointerUp={endImageCrop} onPointerCancel={endImageCrop}/>)}</div>}</div></div>
+        <aside className="bg-controls image-controls"><section><label>Edit Tool</label><div className="image-tool-buttons">{(["crop","erase","lasso"] as ImageEditTool[]).map(tool=><button key={tool} className={imageEditor.tool===tool?"active":""} onClick={()=>setImageEditor({...imageEditor,tool})}>{tool==="lasso"?"Lasso Erase":tool[0].toUpperCase()+tool.slice(1)}</button>)}</div></section>{imageEditor.tool==="erase"&&<section><label>Brush Size <b>{imageEditor.brush}%</b></label><input type="range" min=".5" max="35" step=".5" value={imageEditor.brush} onChange={e=>setImageEditor({...imageEditor,brush:+e.target.value})}/></section>}<section><label>Resolution</label><b>{target?.naturalW||0} × {target?.naturalH||0} px</b><small>Output: {Math.round((target?.naturalW||0)*(1-(imageEditor.crop.left+imageEditor.crop.right)/100)*imageEditor.upscale)} × {Math.round((target?.naturalH||0)*(1-(imageEditor.crop.top+imageEditor.crop.bottom)/100)*imageEditor.upscale)} px</small></section>
         <section><label>Upscale</label><div className="mode-buttons">{([1,2,3] as const).map(n=><button key={n} className={imageEditor.upscale===n?"active keep":""} onClick={()=>setImageEditor({...imageEditor,upscale:n})}>{n}×</button>)}</div><small>High-quality resampling preserves hard corners and smooth curves; it does not invent missing detail.</small></section>
         <section><label>Crop Canvas</label>{(["left","right","top","bottom"] as const).map(side=><label className="crop-range" key={side}><span>{side}</span><input type="range" min="0" max="90" value={imageEditor.crop[side]} onChange={e=>setImageEditor({...imageEditor,crop:{...imageEditor.crop,[side]:+e.target.value}})}/><b>{imageEditor.crop[side]}%</b></label>)}</section></aside></div>
-        <footer><button className="cancel" onClick={()=>setImageEditor(null)}>Cancel</button><button className="confirm" onClick={()=>void applyImageEdit()}>Apply Image Edit</button></footer></div></div>})()}
+        <footer><button className="cancel" onClick={()=>setImageEditor(null)}>Cancel</button><button className="secondary-create" onClick={()=>void applyImageEdit(true)}>Create Layer</button><button className="confirm" onClick={()=>void applyImageEdit(false)}>Apply Image Edit</button></footer></div></div>})()}
       {cutEditor && (
         <div className="bg-modal cutout-modal" role="dialog" aria-modal="true" aria-label="Cutout editor">
           <div className="bg-dialog" onPointerDown={(e)=>e.stopPropagation()}>
@@ -2903,12 +2905,12 @@ export default function Home() {
                 </section>
                 <section>
                   <label>Brush Size <b>{bgEditor.brush}%</b></label>
-                  <input type="range" min="1" max="18" value={bgEditor.brush} onChange={(e) => setBgEditor({ ...bgEditor, brush: +e.target.value })} />
+                  <input type="range" min=".2" max="40" step=".2" value={bgEditor.brush} onChange={(e) => setBgEditor({ ...bgEditor, brush: +e.target.value })} />
                 </section>
                 <section>
-                  <label>Sensitivity <b>{bgEditor.sensitivity}</b></label>
-                  <input type="range" min="10" max="100" value={bgEditor.sensitivity} onChange={(e) => setBgEditor({ ...bgEditor, sensitivity: +e.target.value })} />
-                  <small>Higher values remove a wider range of background colors.</small>
+                  <label>Brush Color Bleed <b>{bgEditor.sensitivity}</b></label>
+                  <input type="range" min="0" max="100" value={bgEditor.sensitivity} onChange={(e) => setBgEditor({ ...bgEditor, sensitivity: +e.target.value })} />
+                  <small>0 affects only the painted area. Higher values follow connected pixels with a similar color.</small>
                 </section>
                 <section>
                   <label>Erase Color</label>

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { supabase } from "../lib/supabase";
 import "./v42.css";
 import "./v43.css";
+import "./v47.css";
 
 export default function EditorLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
