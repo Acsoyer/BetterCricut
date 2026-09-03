@@ -118,6 +118,14 @@ type LayerStep = {
   locked?: boolean;
   before?: Pick<Layer,"src"|"x"|"y"|"w"|"h"|"kind"|"color"|"strokeCm"|"fillGapsMm"|"acetateOn">;
   backgroundColor?: string;
+  removalSettings?: {
+    strokes: BgStroke[];
+    speckles: number;
+    edgeRefine: number;
+    edgeSmooth: number;
+    optimizeAlpha: boolean;
+    eraseColors: EraseColor[];
+  };
   snapshot: Pick<
     Layer,
     | "src"
@@ -1219,14 +1227,14 @@ export default function Home() {
   };
   const noBackground = () => {
     if (!one) return;
-    const priorRemoval=[...one.steps].reverse().find(step=>step.type==="remove-bg"&&step.before),base=priorRemoval?.before||snapshot(one);
+    const priorRemoval=[...one.steps].reverse().find(step=>step.type==="remove-bg"&&step.before),base=priorRemoval?.before||snapshot(one),settings=priorRemoval?.removalSettings;
     setBgPreview("");
     setBgImageSize({ w: 0, h: 0 });
     setBgEditor({
       layerId: one.id,
       source: base.src,
       base,
-      strokes: [],
+      strokes: settings?.strokes.map(stroke=>({...stroke,points:stroke.points.map(point=>({...point}))}))||[],
       mode: "remove",
       brush: 3,
       sensitivity: 0,
@@ -1235,11 +1243,11 @@ export default function Home() {
       zoom: 1,
       panX: 0,
       panY: 0,
-      speckles: 0,
-      edgeRefine: 0,
-      edgeSmooth: 0,
-      optimizeAlpha: false,
-      eraseColors: [{ color: null, sensitivity: 30 }],
+      speckles: settings?.speckles||0,
+      edgeRefine: settings?.edgeRefine||0,
+      edgeSmooth: settings?.edgeSmooth||0,
+      optimizeAlpha: settings?.optimizeAlpha||false,
+      eraseColors: settings?.eraseColors.map(entry=>({...entry}))||[{ color: null, sensitivity: 30 }],
       pickingColor: null,
     });
   };
@@ -1252,9 +1260,16 @@ export default function Home() {
   };
   const applyBackgroundPreset=async(type:"image"|"rim"|"text")=>{
     if(!one)return setNotice("Select one image first");setBgMenuOpen(false);setWorking(true);setNotice("Applying background removal preset…");
-    try{const before=snapshot(one);let strokes:BgStroke[]=[],colors:EraseColor[]=[],edgeRefine=0,edgeSmooth=2,backgroundColor="#ffffff";
-      if(type==="text"){const img=await getImage(one.src),sample=document.createElement("canvas");sample.width=img.naturalWidth;sample.height=img.naturalHeight;const sx=sample.getContext("2d")!;sx.drawImage(img,0,0);const p=sx.getImageData(0,0,1,1).data,color=`#${[p[0],p[1],p[2]].map(v=>v.toString(16).padStart(2,"0")).join("")}`;backgroundColor=color;colors=[{color,sensitivity:30}];edgeSmooth=1}else{const img=await getImage(one.src),sample=document.createElement("canvas");sample.width=img.naturalWidth;sample.height=img.naturalHeight;const sx=sample.getContext("2d")!;sx.drawImage(img,0,0);const p=sx.getImageData(0,0,1,1).data;backgroundColor=`#${[p[0],p[1],p[2]].map(v=>v.toString(16).padStart(2,"0")).join("")}`;strokes=[{id:uid(),mode:"remove",brush:4,bleed:10,reach:null,points:[{x:.005,y:.005}]}];if(type==="rim"){edgeRefine=-8;edgeSmooth=8}}
-      let refined=await refineBackground(one.src,0,strokes,0,edgeRefine,colors,edgeSmooth,true);if(type!=="text")refined=await featherAlphaInside(refined);const t=await trimTransparent(refined),next={...one,src:t.src,x:one.x+one.w*t.left,y:one.y+one.h*t.top,w:one.w*t.width,h:one.h*t.height,kind:"nobg" as Kind},label=type==="image"?"Image Remove Background":type==="rim"?"Image Background + Rim":"Text Background Removal",step:LayerStep={id:uid(),type:"remove-bg",label,before,backgroundColor,snapshot:snapshot(next)};mutate(one.id,()=>({...next,steps:[...one.steps,step],activeStep:one.steps.length}));setNotice(`${label} applied`)
+    try{
+      const removalIndex=one.steps.findIndex(step=>step.type==="remove-bg"),prior=removalIndex>=0?one.steps[removalIndex]:undefined,before=prior?.before||snapshot(one),source=before.src;
+      let strokes:BgStroke[]=[],colors:EraseColor[]=[],edgeRefine=0,edgeSmooth=2;
+      const img=await getImage(source),sample=document.createElement("canvas");sample.width=img.naturalWidth;sample.height=img.naturalHeight;const sx=sample.getContext("2d")!;sx.drawImage(img,0,0);const p=sx.getImageData(0,0,1,1).data,backgroundColor=`#${[p[0],p[1],p[2]].map(v=>v.toString(16).padStart(2,"0")).join("")}`;
+      if(type==="text"){colors=[{color:backgroundColor,sensitivity:30}];edgeSmooth=1}
+      else{strokes=[{id:uid(),mode:"remove",brush:4,bleed:10,reach:null,points:[{x:.005,y:.005}]}];if(type==="rim"){edgeRefine=-8;edgeSmooth=8}}
+      let refined=await refineBackground(source,0,strokes,0,edgeRefine,colors,edgeSmooth,true);if(type!=="text")refined=await featherAlphaInside(refined);
+      const t=await trimTransparent(refined),next={...one,src:t.src,x:before.x+before.w*t.left,y:before.y+before.h*t.top,w:before.w*t.width,h:before.h*t.height,kind:"nobg" as Kind},label=type==="image"?"Image Remove Background":type==="rim"?"Image Background + Rim":"Text Background Removal",
+        removalSettings={strokes,speckles:0,edgeRefine,edgeSmooth,optimizeAlpha:true,eraseColors:colors},step:LayerStep={id:uid(),type:"remove-bg",label,before,backgroundColor,removalSettings,snapshot:snapshot(next)},steps=removalIndex>=0?one.steps.slice(0,removalIndex):one.steps;
+      mutate(one.id,()=>({...next,steps:[...steps,step],activeStep:steps.length}));setNotice(`${label} applied`)
     }catch{setNotice("Background removal preset could not be applied")}finally{setWorking(false)}
   };
   const optimizeSelectedAlpha=async()=>{
@@ -1291,12 +1306,14 @@ export default function Home() {
         label: "Remove Background",
         before: base,
         backgroundColor:selectedBackground,
+        removalSettings:{strokes:bgEditor.strokes.map(stroke=>({...stroke,points:stroke.points.map(point=>({...point}))})),speckles:bgEditor.speckles,edgeRefine:bgEditor.edgeRefine,edgeSmooth:bgEditor.edgeSmooth,optimizeAlpha:bgEditor.optimizeAlpha,eraseColors:bgEditor.eraseColors.map(entry=>({...entry}))},
         snapshot: snapshot(next),
       };
+      const priorRemoval=target.steps.findIndex(item=>item.type==="remove-bg"),steps=priorRemoval>=0?target.steps.slice(0,priorRemoval):target.steps;
       mutate(target.id, () => ({
         ...next,
-        steps: [...target.steps, step],
-        activeStep: target.steps.length,
+        steps: [...steps, step],
+        activeStep: steps.length,
       }));
       setBgEditor(null);
       setNotice("Background removed, including enclosed background areas");
@@ -2340,7 +2357,7 @@ export default function Home() {
           </span>
           <div>
             <b>Better Cricut Editor</b>
-            <small>Personal workspace · v55</small>
+            <small>Personal workspace · v56</small>
           </div>
         </div>
         <button className="brand-undo" onClick={undo} title="Undo (Ctrl+Z)"><Undo2 /> Undo</button>

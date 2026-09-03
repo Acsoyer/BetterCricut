@@ -1,0 +1,3 @@
+.preset-dialog{width:min(650px,calc(100vw - 32px))}.preset-grid{grid-template-columns:repeat(3,190px);gap:10px}.preset-grid>button,.preset-image{width:190px}.preset-image{height:190px}
+.image-edit-modal .bg-dialog{position:relative}.image-edit-modal .bg-dialog>header>button{margin-left:auto;order:10}.image-edit-modal .bg-dialog>header:after{position:absolute;left:20px;bottom:17px;margin:0!important;z-index:2}
+@media(max-width:680px){.preset-grid{grid-template-columns:1fr}.preset-grid>button,.preset-image{width:100%}}
