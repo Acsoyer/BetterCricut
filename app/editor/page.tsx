@@ -36,6 +36,7 @@ import {
   RotateCw,
   Ruler,
   Scissors,
+  SlidersHorizontal,
   Sparkles,
   Star,
   Trash2,
@@ -939,8 +940,9 @@ export default function Home() {
     setSelected([]); setCurrentProjectId(project.id); setProjectName(project.name); history.current = []; setProjectsOpen(false); setNotice(`${project.name} opened`);
   };
   const deleteProject = async (id: string) => {
+    const previous=projects;setProjects(items=>items.filter(project=>project.id!==id));
     const { error } = await supabase.from("projects").delete().eq("id", id);
-    if (error) return setNotice("Project could not be deleted");
+    if (error) {setProjects(previous);return setNotice("Project could not be deleted");}
     if (currentProjectId === id) { setCurrentProjectId(null); setProjectName("Untitled Project"); }
     await refreshProjects(); setNotice("Project deleted");
   };
@@ -1082,11 +1084,11 @@ export default function Home() {
     const stopBrowserZoom = (e: WheelEvent) => {
       if (!e.ctrlKey) return;
       e.preventDefault();
-      setZoom((z) => clamp(z + (e.deltaY < 0 ? 0.1 : -0.1), 0.2, 4));
     };
     window.addEventListener("wheel", stopBrowserZoom, { passive: false });
     return () => window.removeEventListener("wheel", stopBrowserZoom);
   }, []);
+  const editorWheel=(e:RWheel<HTMLDivElement>)=>{e.preventDefault();const stage=stageRef.current;if(!stage)return;if(e.ctrlKey){stage.scrollTop+=e.deltaY;stage.scrollLeft+=e.deltaX;updateRulers();return}setZoom(z=>clamp(z*(e.deltaY<0?1.08:.925),.2,4))};
   const updateRulers = () =>
     requestAnimationFrame(() => {
       if (!stageRef.current || !canvasRef.current) return;
@@ -1200,6 +1202,13 @@ export default function Home() {
       const results=await Promise.all(targets.map(async target=>{const refined=await removeBg(target.src),t=await trimTransparent(refined),next={...target,src:t.src,x:target.x+target.w*t.left,y:target.y+target.h*t.top,w:target.w*t.width,h:target.h*t.height,kind:"nobg" as Kind};const step:LayerStep={id:uid(),type:"remove-bg",label:"Remove Background",snapshot:snapshot(next)};return {...next,steps:[...target.steps,step],activeStep:target.steps.length}}));
       const byId=new Map(results.map(l=>[l.id,l]));setLayers(items=>items.map(l=>byId.get(l.id)||l));setNotice(`${results.length} background${results.length>1?"s":""} removed`);
     }catch{setNotice("Background removal could not be applied");}finally{setWorking(false)}
+  };
+  const applyBackgroundPreset=async(type:"image"|"rim"|"text")=>{
+    if(!one)return setNotice("Select one image first");setBgMenuOpen(false);setWorking(true);setNotice("Applying background removal preset…");
+    try{let strokes:BgStroke[]=[],colors:EraseColor[]=[],edgeRefine=0,edgeSmooth=2;
+      if(type==="text"){const img=await getImage(one.src),sample=document.createElement("canvas");sample.width=img.naturalWidth;sample.height=img.naturalHeight;const sx=sample.getContext("2d")!;sx.drawImage(img,0,0);const p=sx.getImageData(0,0,1,1).data,color=`#${[p[0],p[1],p[2]].map(v=>v.toString(16).padStart(2,"0")).join("")}`;colors=[{color,sensitivity:30}];edgeSmooth=1}else{strokes=[{id:uid(),mode:"remove",brush:4,bleed:10,reach:null,points:[{x:.005,y:.005}]}];if(type==="rim"){edgeRefine=-8;edgeSmooth=8}}
+      const refined=await refineBackground(one.src,0,strokes,0,edgeRefine,colors,edgeSmooth,true),t=await trimTransparent(refined),next={...one,src:t.src,x:one.x+one.w*t.left,y:one.y+one.h*t.top,w:one.w*t.width,h:one.h*t.height,kind:"nobg" as Kind},label=type==="image"?"Image Remove Background":type==="rim"?"Image Background + Rim":"Text Background Removal",step:LayerStep={id:uid(),type:"remove-bg",label,snapshot:snapshot(next)};mutate(one.id,()=>({...next,steps:[...one.steps,step],activeStep:one.steps.length}));setNotice(`${label} applied`)
+    }catch{setNotice("Background removal preset could not be applied")}finally{setWorking(false)}
   };
   const optimizeSelectedAlpha=async()=>{
     if(!one||!["nobg","vector","stroke","acetate"].includes(one.kind)){setNotice("Select one background-removed image or Cutout first");return}
@@ -2265,7 +2274,7 @@ export default function Home() {
           </span>
           <div>
             <b>Better Cricut Editor</b>
-            <small>Personal workspace · v51</small>
+            <small>Personal workspace · v52</small>
           </div>
         </div>
         <button className="brand-undo" onClick={undo} title="Undo (Ctrl+Z)"><Undo2 /> Undo</button>
@@ -2280,9 +2289,14 @@ export default function Home() {
         <span className="toolbar-divider" />
         <nav className="main-actions">
           <div className="wrap remove-bg-control">
-            <button type="button" className="remove-bg-main" onClick={()=>void quickBackground()}><Sparkles />Remove Background</button>
+            <button type="button" className="remove-bg-main" onClick={()=>{if(!one)return setNotice("Select one image first");setBgMenuOpen(v=>!v)}}><Sparkles />Remove Background</button>
             <button type="button" className="remove-bg-chevron" onClick={(e)=>{e.preventDefault();e.stopPropagation();if(!one){setNotice("Select one image for Advanced Background Removal");return}setBgMenuOpen(v=>!v)}} aria-label="Background removal options"><ChevronDown /></button>
-            {bgMenuOpen&&<div className="pop bg-options"><button onClick={()=>{setBgMenuOpen(false);noBackground()}}>Advanced Background Removal</button></div>}
+            {bgMenuOpen&&<div className="pop bg-options preset-picker">
+              <button onClick={()=>void applyBackgroundPreset("image")}><img src="/background-presets/image-default.png" alt=""/><span><b>Image Remove Background</b><small>Default</small></span></button>
+              <button onClick={()=>void applyBackgroundPreset("rim")}><img src="/background-presets/image-rim.png" alt=""/><span><b>Image Remove Background</b><small>Add Rim</small></span></button>
+              <button onClick={()=>void applyBackgroundPreset("text")}><img src="/background-presets/text-bw.png" alt=""/><span><b>Text Remove Background</b><small>Black and White</small></span></button>
+              <button className="advanced-preset" onClick={()=>{setBgMenuOpen(false);noBackground()}}><i><SlidersHorizontal/></i><span><b>Advanced Background Removal</b><small>Open the full control panel</small></span></button>
+            </div>}
           </div>
           <button
             disabled={!one || ["vector", "stroke", "acetate"].includes(one.kind)}
@@ -2397,7 +2411,7 @@ export default function Home() {
             <button className="left-account" onClick={() => { setAccountOpen(true); setProjectsOpen(false); }}><span className="profile-placeholder"><User/></span><small>My Account</small></button>
           </div>
         </div>
-        <div className={`stage ${pageMode==="full"?"full-page":"standard-page"}`} ref={stageRef} onScroll={updateRulers} onPointerDown={stageDown}>
+        <div className={`stage ${pageMode==="full"?"full-page":"standard-page"}`} ref={stageRef} onScroll={updateRulers} onWheel={editorWheel} onPointerDown={stageDown}>
           <div className="viewport-rulers">
             <div className="viewport-corner" />
             <div className="viewport-ruler-x">
@@ -2419,11 +2433,11 @@ export default function Home() {
             <button onClick={() => setZoom((v) => clamp(v - 0.1, 0.2, 4))}>
               <ZoomOut />
             </button>
-            <span>{Math.round(zoom * 100)}%</span>
+            <label className="zoom-value"><input aria-label="Zoom percentage" type="number" min="20" max="400" value={Math.round(zoom*100)} onChange={e=>setZoom(clamp((+e.target.value||20)/100,.2,4))}/><i>%</i></label>
             <button onClick={() => setZoom((v) => clamp(v + 0.1, 0.8, 4))}>
               <ZoomIn />
             </button>
-            <button onClick={centerDocument} title="Center document">
+            <button onClick={()=>{setZoom(1);window.setTimeout(centerDocument,30)}} title="Center document at 100%">
               <Crosshair />
             </button>
             <button onClick={()=>{setCalibrationDraft(calibration);setCalibrationOpen(true)}} title="Calibrate real-world size"><Ruler /></button>
@@ -2862,7 +2876,7 @@ export default function Home() {
         <div className="project-list">{projects.length ? projects.map(project => <article key={project.id} className={project.id === currentProjectId ? "current" : ""}><button className="project-open" onClick={() => openProject(project)}><FolderOpen/><span><b>{project.name}</b><small>Updated {new Date(project.updated_at).toLocaleString()}</small></span></button><button className="project-delete" onClick={() => void deleteProject(project.id)} title="Delete project"><Trash2/></button></article>) : <div className="projects-empty"><FolderOpen/><b>No saved projects yet</b><span>Save your current canvas to see it here.</span></div>}</div>
       </div></div>}
       {accountOpen && <div className="account-panel" role="dialog" aria-label="My Account"><button className="account-close" onClick={() => setAccountOpen(false)} aria-label="Close"><X/></button><span className="account-avatar"><User/></span><b>My Account</b><small>Signed in as</small><p>{session?.user.email || "Unknown account"}</p><div className="account-stat"><FolderOpen/><span><b>{projects.length}</b><small>Saved projects</small></span></div><button className="sign-out" onClick={() => void supabase.auth.signOut()}><LogOut/> Sign Out</button></div>}
-      {calibrationOpen&&<div className="calibration-modal" role="dialog" aria-modal="true" aria-label="Screen size calibration"><div className="calibration-dialog"><header><div><b>Calibrate Screen Size</b><small>Place a physical ruler against the screen and match its 10 cm length.</small></div><button onClick={()=>setCalibrationOpen(false)}><X/></button></header><div className="calibration-body"><div className="screen-ruler" style={{width:10*PPCM*calibrationDraft}}>{Array.from({length:101},(_,i)=><i key={i} className={i%10===0?"cm":i%5===0?"half":"mm"} style={{left:`${i}%`}}>{i%10===0&&<span>{i/10}</span>}</i>)}</div><div className="calibration-slider"><span>Shorter</span><input type="range" min=".5" max="2" step=".001" value={calibrationDraft} onChange={e=>setCalibrationDraft(+e.target.value)}/><span>Longer</span></div><p>Calibration: {(calibrationDraft*100).toFixed(1)}%</p></div><footer><button onClick={()=>setCalibrationOpen(false)}>Cancel</button><button className="confirm" onClick={()=>{setCalibration(calibrationDraft);localStorage.setItem("better-cricut-screen-calibration",String(calibrationDraft));setCalibrationOpen(false);setNotice("Screen calibration saved")}}>Save Calibration</button></footer></div></div>}
+      {calibrationOpen&&<div className="calibration-modal" role="dialog" aria-modal="true" aria-label="Screen size calibration"><div className="calibration-dialog"><header><div><b>Calibrate Screen Size</b><small>Place a physical ruler against the screen and match its 10 cm length.</small></div><button onClick={()=>setCalibrationOpen(false)}><X/></button></header><div className="calibration-body"><div className="screen-ruler" style={{width:10*PPCM*calibrationDraft}}>{Array.from({length:101},(_,i)=><i key={i} className={i%10===0?"cm":i%5===0?"half":"mm"} style={{left:`${i}%`}}>{i%10===0&&<span>{i/10}</span>}</i>)}</div><div className="calibration-slider"><span>Shorter</span><button onClick={()=>setCalibrationDraft(v=>clamp(+(v-.001).toFixed(3),.5,2))}>←</button><input type="range" min=".5" max="2" step=".001" value={calibrationDraft} onChange={e=>setCalibrationDraft(+e.target.value)}/><button onClick={()=>setCalibrationDraft(v=>clamp(+(v+.001).toFixed(3),.5,2))}>→</button><span>Longer</span></div><p>Calibration: {(calibrationDraft*100).toFixed(1)}%</p></div><footer><button onClick={()=>setCalibrationOpen(false)}>Cancel</button><button className="confirm" onClick={()=>{setCalibration(calibrationDraft);setZoom(1);localStorage.setItem("better-cricut-screen-calibration",String(calibrationDraft));setCalibrationOpen(false);window.setTimeout(centerDocument,30);setNotice("Screen calibration saved at true 100% size")}}>Save Calibration</button></footer></div></div>}
       {notice && <div className="toast">{notice}</div>}
       {imageEditor&&(()=>{const target=layers.find(l=>l.id===imageEditor.layerId);return <div className="bg-modal image-edit-modal" role="dialog" aria-modal="true" aria-label="Image editor">
         <div className="bg-dialog"><header><div><b>Edit Image</b><small>Crop and increase raster resolution without altering the design geometry.</small></div><button onClick={()=>setImageEditor(null)}>×</button></header>
