@@ -206,7 +206,7 @@ type BgEditor = {
 type ImageEditTool = "crop" | "erase" | "lasso";
 type ImageEditStroke = { id:string; tool:Exclude<ImageEditTool,"crop">; brush:number; points:{x:number;y:number}[] };
 type ImageEditState = { source:string; offsetX:number; offsetY:number; widthScale:number; heightScale:number };
-type ImageEditor = ImageEditState & { layerId:string; crop:{left:number;top:number;right:number;bottom:number}; upscale:1|2|3; tool:ImageEditTool; brush:number; strokes:ImageEditStroke[]; history:ImageEditState[] };
+type ImageEditor = ImageEditState & { layerId:string; crop:{left:number;top:number;right:number;bottom:number}; upscale:1|2|3; tool:ImageEditTool; brush:number; strokes:ImageEditStroke[]; history:ImageEditState[]; zoom:number; panX:number; panY:number };
 type EditTool = "bridge" | "erase" | "lasso" | "rectangle" | "smooth";
 type EditStroke = { id: string; tool: EditTool; brush: number; points: { x: number; y: number }[] };
 type CutoutEditor = {
@@ -346,15 +346,14 @@ async function featherAlphaInside(src:string){
   const img=await getImage(src),c=document.createElement("canvas");c.width=img.naturalWidth;c.height=img.naturalHeight;
   const x=c.getContext("2d")!;x.drawImage(img,0,0);const data=x.getImageData(0,0,c.width,c.height),source=new Uint8ClampedArray(data.data),w=c.width,h=c.height;
   // Keep transparent pixels transparent so no removed background colour can bleed back in.
-  // Only the first opaque pixel along the inside edge receives a one-pixel alpha ramp.
+  // Feather the first two opaque pixels along the inside edge without reviving background RGB.
   for(let py=0;py<h;py++)for(let px=0;px<w;px++){
     const at=py*w+px,q=at*4;if(source[q+3]<128){data.data[q+3]=0;continue}
-    let opaque=0,total=0;
-    for(let oy=-1;oy<=1;oy++)for(let ox=-1;ox<=1;ox++){
-      const nx=px+ox,ny=py+oy;if(nx<0||ny<0||nx>=w||ny>=h)continue;
-      total++;if(source[(ny*w+nx)*4+3]>=128)opaque++;
+    let nearest=3;
+    for(let oy=-2;oy<=2;oy++)for(let ox=-2;ox<=2;ox++){
+      const nx=px+ox,ny=py+oy;if(nx<0||ny<0||nx>=w||ny>=h||source[(ny*w+nx)*4+3]<128)nearest=Math.min(nearest,Math.max(Math.abs(ox),Math.abs(oy)));
     }
-    data.data[q+3]=opaque===total?255:Math.max(72,Math.round(255*opaque/total));
+    data.data[q+3]=nearest<=1?118:nearest===2?205:255;
   }
   x.putImageData(data,0,0);return c.toDataURL("image/png");
 }
@@ -618,11 +617,16 @@ async function renderCutoutEdit(editor: CutoutEditor, applyCrop = false) {
     const maskContext = mask.getContext("2d")!, softContext = softened.getContext("2d")!;
     maskContext.lineCap = "round"; maskContext.lineJoin = "round"; maskContext.strokeStyle = "#fff";
     maskContext.lineWidth = Math.max(4, stroke.brush / 100 * Math.min(c.width, c.height));
-    maskContext.beginPath(); maskContext.moveTo(stroke.points[0].x * c.width, stroke.points[0].y * c.height);
-    for (const point of stroke.points.slice(1)) maskContext.lineTo(point.x * c.width, point.y * c.height);
+    const trajectory=stroke.points.map((point,index,points)=>{
+      if(index===0||index===points.length-1)return point;
+      const from=Math.max(0,index-3),to=Math.min(points.length-1,index+3),window=points.slice(from,to+1);
+      return{x:window.reduce((sum,p)=>sum+p.x,0)/window.length,y:window.reduce((sum,p)=>sum+p.y,0)/window.length};
+    });
+    maskContext.beginPath(); maskContext.moveTo(trajectory[0].x * c.width, trajectory[0].y * c.height);
+    for (const point of trajectory.slice(1)) maskContext.lineTo(point.x * c.width, point.y * c.height);
     if (stroke.points.length === 1) maskContext.lineTo(stroke.points[0].x * c.width + .01, stroke.points[0].y * c.height);
     maskContext.stroke();
-    softContext.filter = `blur(${Math.max(2.5, maskContext.lineWidth * .12)}px)`; softContext.drawImage(c, 0, 0); softContext.filter = "none";
+    softContext.filter = `blur(${Math.max(4, maskContext.lineWidth * .2)}px)`; softContext.drawImage(c, 0, 0); softContext.filter = "none";
     const current = x.getImageData(0, 0, c.width, c.height), blurred = softContext.getImageData(0, 0, c.width, c.height), selected = maskContext.getImageData(0, 0, c.width, c.height);
     for (let q = 0; q < current.data.length; q += 4) if (selected.data[q + 3] > 20) {
       const alpha = blurred.data[q + 3] >= 128 ? 255 : 0;
@@ -916,6 +920,7 @@ export default function Home() {
     bgPanDrag = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null),
     cutDrawing = useRef<string | null>(null),
     cutPanDrag = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null),
+    imagePanDrag = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null),
     bgPreviewRef = useRef<HTMLDivElement>(null),
     cutPreviewRef = useRef<HTMLDivElement>(null),
     cropDrag = useRef<{mode:string;x:number;y:number;crop:CutoutEditor["crop"];rect:DOMRect}|null>(null),
@@ -1078,7 +1083,7 @@ export default function Home() {
       if ((e.ctrlKey || e.metaKey) && ["+", "=", "-", "0"].includes(e.key)) {
         e.preventDefault();
         setZoom((z) =>
-          e.key === "0" ? 1 : clamp(z + (e.key === "-" ? -0.1 : 0.1), 0.2, 4),
+          e.key === "0" ? 1 : clamp(z + (e.key === "-" ? -0.1 : 0.1), 0.2, 5),
         );
         return;
       }
@@ -1117,7 +1122,7 @@ export default function Home() {
     if(e.ctrlKey){stage.scrollTop+=e.deltaY;stage.scrollLeft+=e.deltaX;updateRulers();return}
     const clientX=e.clientX,clientY=e.clientY,before=canvas.getBoundingClientRect(),oldScale=before.width/A4.w,
       worldX=(clientX-before.left)/oldScale,worldY=(clientY-before.top)/oldScale,
-      nextZoom=clamp(zoomRef.current*Math.exp(-e.deltaY*.0012),.2,4);
+      nextZoom=clamp(zoomRef.current*Math.exp(-e.deltaY*.0012),.2,5);
     if(Math.abs(nextZoom-zoomRef.current)<.0001)return;
     zoomAnchor.current={clientX,clientY,worldX,worldY};zoomRef.current=nextZoom;setZoom(nextZoom);
   };
@@ -1369,7 +1374,7 @@ export default function Home() {
   const zoomCutout = (e: RWheel<HTMLDivElement>) => {
     e.preventDefault(); e.stopPropagation();
     if (!cutEditor) return;
-    setCutEditor({ ...cutEditor, zoom: clamp(cutEditor.zoom * (e.deltaY < 0 ? 1.12 : .89), .5, 4) });
+    setCutEditor({ ...cutEditor, zoom: clamp(cutEditor.zoom * (e.deltaY < 0 ? 1.12 : .89), .5, 5) });
   };
   const startCutoutPan = (e: RPointer<HTMLDivElement>) => {
     if (!cutEditor || e.button !== 1) return;
@@ -1439,7 +1444,11 @@ export default function Home() {
       next.steps=[step]; mutate(target.id,()=>next); setCutEditor(null); setNotice("Cutout edits baked into the layer");
     } finally { setWorking(false); }
   };
-  const openImageEditor=()=>{if(!one||["vector","stroke","acetate"].includes(one.kind))return;setImageEditorSize({w:0,h:0});setImageEditor({layerId:one.id,source:one.src,crop:{left:0,top:0,right:0,bottom:0},upscale:1,tool:"crop",brush:4,strokes:[],history:[],offsetX:0,offsetY:0,widthScale:1,heightScale:1})};
+  const openImageEditor=()=>{if(!one||["vector","stroke","acetate"].includes(one.kind))return;setImageEditorSize({w:0,h:0});setImageEditor({layerId:one.id,source:one.src,crop:{left:0,top:0,right:0,bottom:0},upscale:1,tool:"crop",brush:4,strokes:[],history:[],offsetX:0,offsetY:0,widthScale:1,heightScale:1,zoom:1,panX:0,panY:0})};
+  const zoomImageEditor=(e:RWheel<HTMLDivElement>)=>{e.preventDefault();e.stopPropagation();setImageEditor(v=>v?{...v,zoom:clamp(v.zoom*(e.deltaY<0?1.12:.89),.5,5)}:v)};
+  const startImagePan=(e:RPointer<HTMLDivElement>)=>{e.stopPropagation();if(!imageEditor||e.button!==1)return;e.preventDefault();e.currentTarget.setPointerCapture(e.pointerId);imagePanDrag.current={x:e.clientX,y:e.clientY,panX:imageEditor.panX,panY:imageEditor.panY}};
+  const moveImagePan=(e:RPointer<HTMLDivElement>)=>{const start=imagePanDrag.current;if(!start)return;setImageEditor(v=>v?{...v,panX:start.panX+e.clientX-start.x,panY:start.panY+e.clientY-start.y}:v)};
+  const endImagePan=()=>{imagePanDrag.current=null};
   const imageEditPoint=(e:RPointer<HTMLImageElement>)=>{const r=e.currentTarget.getBoundingClientRect();return{x:clamp((e.clientX-r.left)/r.width,0,1),y:clamp((e.clientY-r.top)/r.height,0,1)}};
   const startImageEdit=(e:RPointer<HTMLImageElement>)=>{if(!imageEditor||imageEditor.tool==="crop"||e.button!==0)return;e.preventDefault();e.currentTarget.setPointerCapture(e.pointerId);const id=uid(),stroke:ImageEditStroke={id,tool:imageEditor.tool,brush:imageEditor.brush,points:[imageEditPoint(e)]};imageDrawing.current=id;setImageEditor({...imageEditor,strokes:[...imageEditor.strokes,stroke]})};
   const moveImageEdit=(e:RPointer<HTMLImageElement>)=>{if(!imageDrawing.current||!imageEditor||e.buttons!==1)return;const p=imageEditPoint(e),id=imageDrawing.current;setImageEditor(v=>v?{...v,strokes:v.strokes.map(s=>s.id!==id?s:{...s,points:[...s.points,p]})}:v)};
@@ -1895,7 +1904,7 @@ export default function Home() {
       vertical = drag.mode.includes("n") || drag.mode.includes("s");
     let nw = horizontal ? b.w + (left ? -dx : dx) : b.w,
       nh = vertical ? b.h + (top ? -dy : dy) : b.h;
-    if (corner && e.shiftKey) {
+    if (corner && !e.shiftKey) {
       const r = b.w / b.h;
       if (Math.abs(dx) > Math.abs(dy)) nh = nw / r;
       else nw = nh * r;
@@ -2331,7 +2340,7 @@ export default function Home() {
           </span>
           <div>
             <b>Better Cricut Editor</b>
-            <small>Personal workspace · v54</small>
+            <small>Personal workspace · v55</small>
           </div>
         </div>
         <button className="brand-undo" onClick={undo} title="Undo (Ctrl+Z)"><Undo2 /> Undo</button>
@@ -2378,7 +2387,7 @@ export default function Home() {
       <div className="sub-toolbar">
         <div className="sub-left">
         <div className="wrap page-setup-slot">
-          <button onClick={() => setPageSetupOpen((value) => !value)}><RotateCw /> Page Setup <ChevronDown /></button>
+          <button onClick={() => setPageSetupOpen((value) => !value)}><Maximize2 /> Page Setup <ChevronDown /></button>
           {pageSetupOpen && <div className="pop page-setup-menu setup-root">
             <div className="setup-group"><button>Page Size <ChevronDown/></button><div className="setup-submenu">{(["portrait","landscape","full"] as PageMode[]).map(mode=><button key={mode} className={pageMode===mode?"active":""} onClick={()=>{setPageMode(mode);setPageSetupOpen(false);setSelected([])}}><b>{mode[0].toUpperCase()+mode.slice(1)}</b><span>{mode==="portrait"?"21 × 29.7 cm":mode==="landscape"?"29.7 × 21 cm":"100 × 100 cm"}</span></button>)}</div></div>
             <div className="setup-group"><button>Grid <ChevronDown/></button><div className="setup-submenu"><button className={gridVisible?"active":""} onClick={()=>{setGridVisible(true);setPageSetupOpen(false)}}>Grid On</button><button className={!gridVisible?"active":""} onClick={()=>{setGridVisible(false);setPageSetupOpen(false)}}>Grid Off</button></div></div>
@@ -2478,11 +2487,11 @@ export default function Home() {
             </div>
           </div>
           <div className="zoom">
-            <div className="zoom-row"><button onClick={() => setZoom((v) => clamp(v - 0.1, 0.2, 4))}>
+            <div className="zoom-row"><button onClick={() => setZoom((v) => clamp(v - 0.1, 0.2, 5))}>
               <ZoomOut />
             </button>
-            {zoomEditing?<input autoFocus className="zoom-value-input" aria-label="Zoom percentage" inputMode="numeric" value={zoomDraft} onChange={e=>setZoomDraft(e.target.value.replace(/[^0-9]/g,""))} onKeyDown={e=>{if(e.key==="Enter")e.currentTarget.blur();if(e.key==="Escape"){setZoomEditing(false);setZoomDraft(String(Math.round(zoom*100)))}}} onBlur={()=>{const value=clamp((+zoomDraft||20)/100,.2,4);setZoom(value);setZoomDraft(String(Math.round(value*100)));setZoomEditing(false)}}/>:<button className="zoom-value" onClick={()=>{setZoomDraft(String(Math.round(zoom*100)));setZoomEditing(true)}}>{Math.round(zoom*100)}%</button>}
-            <button onClick={() => setZoom((v) => clamp(v + 0.1, 0.2, 4))}>
+            {zoomEditing?<input autoFocus className="zoom-value-input" aria-label="Zoom percentage" inputMode="numeric" value={zoomDraft} onChange={e=>setZoomDraft(e.target.value.replace(/[^0-9]/g,""))} onKeyDown={e=>{if(e.key==="Enter")e.currentTarget.blur();if(e.key==="Escape"){setZoomEditing(false);setZoomDraft(String(Math.round(zoom*100)))}}} onBlur={()=>{const value=clamp((+zoomDraft||20)/100,.2,5);setZoom(value);setZoomDraft(String(Math.round(value*100)));setZoomEditing(false)}}/>:<button className="zoom-value" onClick={()=>{setZoomDraft(String(Math.round(zoom*100)));setZoomEditing(true)}}>{Math.round(zoom*100)}%</button>}
+            <button onClick={() => setZoom((v) => clamp(v + 0.1, 0.2, 5))}>
               <ZoomIn />
             </button></div>
             <div className="zoom-actions"><button onClick={()=>{setZoom(1);window.setTimeout(centerDocument,30)}} title="Center document at 100%"><Crosshair /><span>Center</span></button>
@@ -2935,10 +2944,10 @@ export default function Home() {
       {notice && <div className="toast">{notice}</div>}
       {imageEditor&&(()=>{const target=layers.find(l=>l.id===imageEditor.layerId);return <div className="bg-modal image-edit-modal" role="dialog" aria-modal="true" aria-label="Image editor">
         <div className="bg-dialog"><header><div><b>Edit Image</b><small>Crop and increase raster resolution without altering the design geometry.</small></div><button onClick={()=>setImageEditor(null)}>×</button></header>
-        <div className="bg-editor-body"><div className="bg-preview"><div className="image-edit-wrap" style={{"--fit-w":imageEditorSize.w?`${imageEditorSize.w}px`:"auto","--fit-h":imageEditorSize.h?`${imageEditorSize.h}px`:"auto"} as React.CSSProperties}><img className={`image-tool-${imageEditor.tool}`} src={imageEditor.source} draggable={false} alt="Image edit preview" onLoad={e=>setImageEditorSize(fitEditorImage(e.currentTarget,e.currentTarget.closest(".bg-preview") as HTMLDivElement))} onPointerDown={startImageEdit} onPointerMove={moveImageEdit} onPointerUp={endImageEdit} onPointerCancel={endImageEdit}/><svg className="image-edit-overlay" viewBox="0 0 100 100" preserveAspectRatio="none">{imageEditor.strokes.map(s=>{const pts=s.points.map(p=>`${p.x*100},${p.y*100}`).join(" ");return s.tool==="lasso"?<polygon key={s.id} points={pts} className="image-lasso-mark"/>:<polyline key={s.id} points={pts} className="image-erase-mark" style={{strokeWidth:s.brush}}/>})}</svg>{imageEditor.tool==="crop"&&<div className="crop-guide" style={{left:`${imageEditor.crop.left}%`,top:`${imageEditor.crop.top}%`,right:`${imageEditor.crop.right}%`,bottom:`${imageEditor.crop.bottom}%`}}>{["nw","n","ne","e","se","s","sw","w"].map(h=><button key={h} className={`crop-handle crop-${h}`} onPointerDown={e=>startImageCrop(e,h)} onPointerMove={moveImageCrop} onPointerUp={endImageCrop} onPointerCancel={endImageCrop}/>)}</div>}</div></div>
-        <aside className="bg-controls image-controls"><section><label>Edit Tool</label><div className="image-tool-buttons">{(["crop","erase","lasso"] as ImageEditTool[]).map(tool=><button key={tool} className={imageEditor.tool===tool?"active":""} onClick={()=>setImageEditor({...imageEditor,tool})}>{tool==="lasso"?"Lasso Erase":tool[0].toUpperCase()+tool.slice(1)}</button>)}</div></section>{imageEditor.tool==="erase"&&<section><label>Brush Size <b>{imageEditor.brush}%</b></label><input type="range" min=".5" max="35" step=".5" value={imageEditor.brush} onChange={e=>setImageEditor({...imageEditor,brush:+e.target.value})}/></section>}<section><label>Resolution</label><b>{target?.naturalW||0} × {target?.naturalH||0} px</b><small>Output: {Math.round((target?.naturalW||0)*(1-(imageEditor.crop.left+imageEditor.crop.right)/100)*imageEditor.upscale)} × {Math.round((target?.naturalH||0)*(1-(imageEditor.crop.top+imageEditor.crop.bottom)/100)*imageEditor.upscale)} px</small></section>
+        <div className="bg-editor-body"><div className="bg-preview image-edit-preview" onWheel={zoomImageEditor} onPointerDown={startImagePan} onPointerMove={moveImagePan} onPointerUp={endImagePan} onPointerCancel={endImagePan}><div className="image-edit-wrap" style={{"--fit-w":imageEditorSize.w?`${imageEditorSize.w}px`:"auto","--fit-h":imageEditorSize.h?`${imageEditorSize.h}px`:"auto",transform:`translate(${imageEditor.panX}px,${imageEditor.panY}px) scale(${imageEditor.zoom})`} as React.CSSProperties}><img className={`image-tool-${imageEditor.tool}`} src={imageEditor.source} draggable={false} alt="Image edit preview" onLoad={e=>setImageEditorSize(fitEditorImage(e.currentTarget,e.currentTarget.closest(".bg-preview") as HTMLDivElement))} onPointerDown={startImageEdit} onPointerMove={moveImageEdit} onPointerUp={endImageEdit} onPointerCancel={endImageEdit}/><svg className="image-edit-overlay" viewBox="0 0 100 100" preserveAspectRatio="none">{imageEditor.strokes.map(s=>{const pts=s.points.map(p=>`${p.x*100},${p.y*100}`).join(" ");return s.tool==="lasso"?<polygon key={s.id} points={pts} className="image-lasso-mark"/>:<polyline key={s.id} points={pts} className="image-erase-mark" style={{strokeWidth:s.brush}}/>})}</svg>{imageEditor.tool==="crop"&&<div className="crop-guide" style={{left:`${imageEditor.crop.left}%`,top:`${imageEditor.crop.top}%`,right:`${imageEditor.crop.right}%`,bottom:`${imageEditor.crop.bottom}%`}}>{["nw","n","ne","e","se","s","sw","w"].map(h=><button key={h} className={`crop-handle crop-${h}`} onPointerDown={e=>startImageCrop(e,h)} onPointerMove={moveImageCrop} onPointerUp={endImageCrop} onPointerCancel={endImageCrop}/>)}</div>}</div><div className="bg-zoom-controls"><button onClick={()=>setImageEditor({...imageEditor,zoom:clamp(imageEditor.zoom/1.2,.5,5)})}>−</button><span>{Math.round(imageEditor.zoom*100)}%</span><button onClick={()=>setImageEditor({...imageEditor,zoom:clamp(imageEditor.zoom*1.2,.5,5)})}>+</button><button onClick={()=>setImageEditor({...imageEditor,zoom:1,panX:0,panY:0})}>Fit</button></div></div>
+        <aside className="bg-controls image-controls"><section><label>Edit Tool</label><div className="image-tool-buttons">{(["crop","erase","lasso"] as ImageEditTool[]).map(tool=><button key={tool} className={imageEditor.tool===tool?"active":""} onClick={()=>setImageEditor({...imageEditor,tool})}>{tool==="crop"?<Maximize2/>:tool==="erase"?<Trash2/>:<Scissors/>}<span>{tool==="lasso"?"Lasso Erase":tool[0].toUpperCase()+tool.slice(1)}</span></button>)}</div><small>Crop with the handles on the image. Drag outward to expand the canvas.</small></section>{imageEditor.tool==="erase"&&<section><label>Brush Size <b>{imageEditor.brush}%</b></label><input type="range" min=".5" max="35" step=".5" value={imageEditor.brush} onChange={e=>setImageEditor({...imageEditor,brush:+e.target.value})}/></section>}<section><label>Resolution</label><b>{target?.naturalW||0} × {target?.naturalH||0} px</b><small>Output: {Math.round((target?.naturalW||0)*(1-(imageEditor.crop.left+imageEditor.crop.right)/100)*imageEditor.upscale)} × {Math.round((target?.naturalH||0)*(1-(imageEditor.crop.top+imageEditor.crop.bottom)/100)*imageEditor.upscale)} px</small></section>
         <section><label>Upscale</label><div className="mode-buttons">{([1,2,3] as const).map(n=><button key={n} className={imageEditor.upscale===n?"active keep":""} onClick={()=>setImageEditor({...imageEditor,upscale:n})}>{n}×</button>)}</div><small>High-quality resampling preserves hard corners and smooth curves; it does not invent missing detail.</small></section>
-        <section><label>Crop / Expand Canvas</label>{(["left","right","top","bottom"] as const).map(side=><label className="crop-range" key={side}><span>{side}</span><input type="range" min="-25" max="90" value={imageEditor.crop[side]} onChange={e=>setImageEditor({...imageEditor,crop:{...imageEditor.crop,[side]:+e.target.value}})}/><b>{imageEditor.crop[side]}%</b></label>)}</section></aside></div>
+        </aside></div>
         <footer><button className="image-undo" disabled={!imageEditor.history.length} onClick={undoImageStage}><Undo2/> Undo</button><button className="cancel" onClick={()=>setImageEditor(null)}>Cancel</button><button className="secondary-create" onClick={()=>void applyImageEdit(true)}>Create Layer</button><button className="confirm" onClick={()=>void applyImageEdit(false)}>Save Edit</button></footer></div></div>})()}
       {cutEditor && (
         <div className="bg-modal cutout-modal" role="dialog" aria-modal="true" aria-label="Cutout editor">
@@ -2962,15 +2971,15 @@ export default function Home() {
                   </div>
                 </div>}
                 <div className="bg-zoom-controls">
-                  <button onClick={()=>setCutEditor({...cutEditor,zoom:clamp(cutEditor.zoom/1.2,.5,4)})}>−</button>
+                  <button onClick={()=>setCutEditor({...cutEditor,zoom:clamp(cutEditor.zoom/1.2,.5,5)})}>−</button>
                   <span>{Math.round(cutEditor.zoom*100)}%</span>
-                  <button onClick={()=>setCutEditor({...cutEditor,zoom:clamp(cutEditor.zoom*1.2,.5,4)})}>+</button>
+                  <button onClick={()=>setCutEditor({...cutEditor,zoom:clamp(cutEditor.zoom*1.2,.5,5)})}>+</button>
                   <button onClick={()=>setCutEditor({...cutEditor,zoom:1,panX:0,panY:0})}>Fit</button>
                 </div>
               </div>
               <aside className="bg-controls cutout-controls">
                 <section><label>Edit Tool</label><div className="edit-tool-grid">
-                  {(["bridge","erase","smooth","lasso","rectangle"] as EditTool[]).map((tool)=><button key={tool} className={cutEditor.tool===tool?"active":""} onClick={()=>setCutEditor({...cutEditor,tool:cutEditor.tool===tool?null:tool})}>{tool==="smooth"?"Fix the Edges":tool==="lasso"?"Lasso Eraser":tool==="rectangle"?"Rectangle Eraser":tool[0].toUpperCase()+tool.slice(1)}</button>)}
+                  {(["bridge","erase","smooth","lasso","rectangle"] as EditTool[]).map((tool)=><button key={tool} className={cutEditor.tool===tool?"active":""} onClick={()=>setCutEditor({...cutEditor,tool:cutEditor.tool===tool?null:tool})}>{tool==="bridge"?<LinkIcon/>:tool==="smooth"?<Sparkles/>:tool==="rectangle"?<Maximize2/>:tool==="lasso"?<Scissors/>:<Trash2/>}<span>{tool==="smooth"?"Fix the Edges":tool==="lasso"?"Lasso Eraser":tool==="rectangle"?"Rectangle Eraser":tool[0].toUpperCase()+tool.slice(1)}</span></button>)}
                 </div><small>Fix the Edges smooths only the brushed contour. Its start and end preserve the surrounding trajectory.</small></section>
                 <section><label>Brush Size <b>{cutEditor.brush}%</b></label><input type="range" min="1" max="15" value={cutEditor.brush} onChange={(e)=>setCutEditor({...cutEditor,brush:+e.target.value})}/></section>
                 <section><label>Crop Canvas</label><small>Drag the crop frame from any edge or corner. Up to 90% can be removed from a side.</small></section>
