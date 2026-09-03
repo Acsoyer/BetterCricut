@@ -5,6 +5,7 @@ import {
   PointerEvent as RPointer,
   WheelEvent as RWheel,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -115,6 +116,8 @@ type LayerStep = {
   type: "remove-bg" | "cutout" | "stroke" | "fill-gaps" | "acetate" | "edit-image" | "optimize-alpha";
   label: string;
   locked?: boolean;
+  before?: Pick<Layer,"src"|"x"|"y"|"w"|"h"|"kind"|"color"|"strokeCm"|"fillGapsMm"|"acetateOn">;
+  backgroundColor?: string;
   snapshot: Pick<
     Layer,
     | "src"
@@ -198,6 +201,7 @@ type BgEditor = {
   optimizeAlpha: boolean;
   eraseColors: EraseColor[];
   pickingColor: number | null;
+  base: Pick<Layer,"src"|"x"|"y"|"w"|"h"|"kind"|"color"|"strokeCm"|"fillGapsMm"|"acetateOn">;
 };
 type ImageEditTool = "crop" | "erase" | "lasso";
 type ImageEditStroke = { id:string; tool:Exclude<ImageEditTool,"crop">; brush:number; points:{x:number;y:number}[] };
@@ -209,7 +213,7 @@ type CutoutEditor = {
   layerId: string;
   source: string;
   color: string;
-  tool: EditTool;
+  tool: EditTool | null;
   brush: number;
   strokes: EditStroke[];
   crop: { left: number; top: number; right: number; bottom: number };
@@ -618,7 +622,7 @@ async function renderCutoutEdit(editor: CutoutEditor, applyCrop = false) {
     for (const point of stroke.points.slice(1)) maskContext.lineTo(point.x * c.width, point.y * c.height);
     if (stroke.points.length === 1) maskContext.lineTo(stroke.points[0].x * c.width + .01, stroke.points[0].y * c.height);
     maskContext.stroke();
-    softContext.filter = `blur(${Math.max(1.2, maskContext.lineWidth * .045)}px)`; softContext.drawImage(c, 0, 0); softContext.filter = "none";
+    softContext.filter = `blur(${Math.max(2.5, maskContext.lineWidth * .12)}px)`; softContext.drawImage(c, 0, 0); softContext.filter = "none";
     const current = x.getImageData(0, 0, c.width, c.height), blurred = softContext.getImageData(0, 0, c.width, c.height), selected = maskContext.getImageData(0, 0, c.width, c.height);
     for (let q = 0; q < current.data.length; q += 4) if (selected.data[q + 3] > 20) {
       const alpha = blurred.data[q + 3] >= 128 ? 255 : 0;
@@ -857,7 +861,7 @@ export default function Home() {
     [vTracerElapsed, setVTracerElapsed] = useState(0),
     [notice, setNotice] = useState(""),
     [drag, setDrag] = useState<Drag>(null),
-    [cycle, setCycle] = useState({ key: "", index: 0 }),
+    [cycle, setCycle] = useState({ key: "", index: 0, x: -9999, y: -9999 }),
     [strokeDraft, setStrokeDraft] = useState(0.5),
     [fillGapsDraft, setFillGapsDraft] = useState(0),
     [widthDraft, setWidthDraft] = useState("0.0"),
@@ -917,6 +921,8 @@ export default function Home() {
     cropDrag = useRef<{mode:string;x:number;y:number;crop:CutoutEditor["crop"];rect:DOMRect}|null>(null),
     imageCropDrag = useRef<{mode:string;x:number;y:number;crop:ImageEditor["crop"];rect:DOMRect}|null>(null),
     imageDrawing = useRef<string|null>(null),
+    zoomRef = useRef(.82),
+    zoomAnchor = useRef<{clientX:number;clientY:number;worldX:number;worldY:number}|null>(null),
     pan = useRef<{ x: number; y: number; l: number; t: number } | null>(null);
   const landscape = pageMode === "landscape",
     A4 = pageMode === "full" ? {w:100,h:100} : landscape ? { w: PORTRAIT.h, h: PORTRAIT.w } : PORTRAIT,
@@ -1109,19 +1115,20 @@ export default function Home() {
   const editorWheel=(e:RWheel<HTMLDivElement>)=>{
     e.preventDefault();const stage=stageRef.current,canvas=canvasRef.current;if(!stage||!canvas)return;
     if(e.ctrlKey){stage.scrollTop+=e.deltaY;stage.scrollLeft+=e.deltaX;updateRulers();return}
-    const clientX=e.clientX,clientY=e.clientY,before=canvas.getBoundingClientRect(),oldScale=scale,
+    const clientX=e.clientX,clientY=e.clientY,before=canvas.getBoundingClientRect(),oldScale=before.width/A4.w,
       worldX=(clientX-before.left)/oldScale,worldY=(clientY-before.top)/oldScale,
-      nextZoom=clamp(zoom*Math.exp(-e.deltaY*.0015),.2,4);
-    if(Math.abs(nextZoom-zoom)<.0001)return;
-    setZoom(nextZoom);
-    requestAnimationFrame(()=>requestAnimationFrame(()=>{
-      const currentStage=stageRef.current,currentCanvas=canvasRef.current;if(!currentStage||!currentCanvas)return;
-      const after=currentCanvas.getBoundingClientRect(),nextScale=PPCM*nextZoom*calibration;
-      currentStage.scrollLeft+=after.left+worldX*nextScale-clientX;
-      currentStage.scrollTop+=after.top+worldY*nextScale-clientY;
-      updateRulers();
-    }));
+      nextZoom=clamp(zoomRef.current*Math.exp(-e.deltaY*.0012),.2,4);
+    if(Math.abs(nextZoom-zoomRef.current)<.0001)return;
+    zoomAnchor.current={clientX,clientY,worldX,worldY};zoomRef.current=nextZoom;setZoom(nextZoom);
   };
+  useLayoutEffect(()=>{
+    zoomRef.current=zoom;const anchor=zoomAnchor.current,stage=stageRef.current,canvas=canvasRef.current;
+    if(!anchor||!stage||!canvas)return;
+    const rect=canvas.getBoundingClientRect(),actualScale=rect.width/A4.w;
+    stage.scrollLeft+=rect.left+anchor.worldX*actualScale-anchor.clientX;
+    stage.scrollTop+=rect.top+anchor.worldY*actualScale-anchor.clientY;
+    zoomAnchor.current=null;updateRulers();
+  },[zoom]);
   const updateRulers = () =>
     requestAnimationFrame(() => {
       if (!stageRef.current || !canvasRef.current) return;
@@ -1207,11 +1214,13 @@ export default function Home() {
   };
   const noBackground = () => {
     if (!one) return;
+    const priorRemoval=[...one.steps].reverse().find(step=>step.type==="remove-bg"&&step.before),base=priorRemoval?.before||snapshot(one);
     setBgPreview("");
     setBgImageSize({ w: 0, h: 0 });
     setBgEditor({
       layerId: one.id,
-      source: one.src,
+      source: base.src,
+      base,
       strokes: [],
       mode: "remove",
       brush: 3,
@@ -1232,15 +1241,15 @@ export default function Home() {
   const quickBackground = async (chosen?:Layer|null) => {
     const targets=chosen?[chosen]:picked;if(!targets.length){setNotice("Select at least one image first");return}setBgMenuOpen(false);setNotice("Removing background…");setWorking(true);
     try{
-      const results=await Promise.all(targets.map(async target=>{const refined=await removeBg(target.src),t=await trimTransparent(refined),next={...target,src:t.src,x:target.x+target.w*t.left,y:target.y+target.h*t.top,w:target.w*t.width,h:target.h*t.height,kind:"nobg" as Kind};const step:LayerStep={id:uid(),type:"remove-bg",label:"Remove Background",snapshot:snapshot(next)};return {...next,steps:[...target.steps,step],activeStep:target.steps.length}}));
+      const results=await Promise.all(targets.map(async target=>{const before=snapshot(target),refined=await removeBg(target.src),t=await trimTransparent(refined),next={...target,src:t.src,x:target.x+target.w*t.left,y:target.y+target.h*t.top,w:target.w*t.width,h:target.h*t.height,kind:"nobg" as Kind};const step:LayerStep={id:uid(),type:"remove-bg",label:"Remove Background",before,backgroundColor:"#ffffff",snapshot:snapshot(next)};return {...next,steps:[...target.steps,step],activeStep:target.steps.length}}));
       const byId=new Map(results.map(l=>[l.id,l]));setLayers(items=>items.map(l=>byId.get(l.id)||l));setNotice(`${results.length} background${results.length>1?"s":""} removed`);
     }catch{setNotice("Background removal could not be applied");}finally{setWorking(false)}
   };
   const applyBackgroundPreset=async(type:"image"|"rim"|"text")=>{
     if(!one)return setNotice("Select one image first");setBgMenuOpen(false);setWorking(true);setNotice("Applying background removal preset…");
-    try{let strokes:BgStroke[]=[],colors:EraseColor[]=[],edgeRefine=0,edgeSmooth=2;
-      if(type==="text"){const img=await getImage(one.src),sample=document.createElement("canvas");sample.width=img.naturalWidth;sample.height=img.naturalHeight;const sx=sample.getContext("2d")!;sx.drawImage(img,0,0);const p=sx.getImageData(0,0,1,1).data,color=`#${[p[0],p[1],p[2]].map(v=>v.toString(16).padStart(2,"0")).join("")}`;colors=[{color,sensitivity:30}];edgeSmooth=1}else{strokes=[{id:uid(),mode:"remove",brush:4,bleed:10,reach:null,points:[{x:.005,y:.005}]}];if(type==="rim"){edgeRefine=-8;edgeSmooth=8}}
-      let refined=await refineBackground(one.src,0,strokes,0,edgeRefine,colors,edgeSmooth,true);if(type!=="text")refined=await featherAlphaInside(refined);const t=await trimTransparent(refined),next={...one,src:t.src,x:one.x+one.w*t.left,y:one.y+one.h*t.top,w:one.w*t.width,h:one.h*t.height,kind:"nobg" as Kind},label=type==="image"?"Image Remove Background":type==="rim"?"Image Background + Rim":"Text Background Removal",step:LayerStep={id:uid(),type:"remove-bg",label,snapshot:snapshot(next)};mutate(one.id,()=>({...next,steps:[...one.steps,step],activeStep:one.steps.length}));setNotice(`${label} applied`)
+    try{const before=snapshot(one);let strokes:BgStroke[]=[],colors:EraseColor[]=[],edgeRefine=0,edgeSmooth=2,backgroundColor="#ffffff";
+      if(type==="text"){const img=await getImage(one.src),sample=document.createElement("canvas");sample.width=img.naturalWidth;sample.height=img.naturalHeight;const sx=sample.getContext("2d")!;sx.drawImage(img,0,0);const p=sx.getImageData(0,0,1,1).data,color=`#${[p[0],p[1],p[2]].map(v=>v.toString(16).padStart(2,"0")).join("")}`;backgroundColor=color;colors=[{color,sensitivity:30}];edgeSmooth=1}else{const img=await getImage(one.src),sample=document.createElement("canvas");sample.width=img.naturalWidth;sample.height=img.naturalHeight;const sx=sample.getContext("2d")!;sx.drawImage(img,0,0);const p=sx.getImageData(0,0,1,1).data;backgroundColor=`#${[p[0],p[1],p[2]].map(v=>v.toString(16).padStart(2,"0")).join("")}`;strokes=[{id:uid(),mode:"remove",brush:4,bleed:10,reach:null,points:[{x:.005,y:.005}]}];if(type==="rim"){edgeRefine=-8;edgeSmooth=8}}
+      let refined=await refineBackground(one.src,0,strokes,0,edgeRefine,colors,edgeSmooth,true);if(type!=="text")refined=await featherAlphaInside(refined);const t=await trimTransparent(refined),next={...one,src:t.src,x:one.x+one.w*t.left,y:one.y+one.h*t.top,w:one.w*t.width,h:one.h*t.height,kind:"nobg" as Kind},label=type==="image"?"Image Remove Background":type==="rim"?"Image Background + Rim":"Text Background Removal",step:LayerStep={id:uid(),type:"remove-bg",label,before,backgroundColor,snapshot:snapshot(next)};mutate(one.id,()=>({...next,steps:[...one.steps,step],activeStep:one.steps.length}));setNotice(`${label} applied`)
     }catch{setNotice("Background removal preset could not be applied")}finally{setWorking(false)}
   };
   const optimizeSelectedAlpha=async()=>{
@@ -1260,19 +1269,23 @@ export default function Home() {
         bgEditor.source, 0, bgEditor.strokes, bgEditor.speckles, bgEditor.edgeRefine, bgEditor.eraseColors, bgEditor.edgeSmooth, bgEditor.optimizeAlpha,
       );
       const t = await trimTransparent(refined);
+      const base=bgEditor.base;
       const next = {
         ...target,
         src: t.src,
-        x: target.x + target.w * t.left,
-        y: target.y + target.h * t.top,
-        w: target.w * t.width,
-        h: target.h * t.height,
+        x: base.x + base.w * t.left,
+        y: base.y + base.h * t.top,
+        w: base.w * t.width,
+        h: base.h * t.height,
         kind: "nobg" as Kind,
       };
+      const selectedBackground=bgEditor.eraseColors.find(entry=>entry.color)?.color||[...target.steps].reverse().find(item=>item.type==="remove-bg")?.backgroundColor||"#ffffff";
       const step: LayerStep = {
         id: uid(),
         type: "remove-bg",
         label: "Remove Background",
+        before: base,
+        backgroundColor:selectedBackground,
         snapshot: snapshot(next),
       };
       mutate(target.id, () => ({
@@ -1373,14 +1386,14 @@ export default function Home() {
     if (!one || !["vector", "stroke"].includes(one.kind)) return;
     setCutPreview(one.src);
     setCutImageSize({ w: 0, h: 0 });
-    setCutEditor({ layerId: one.id, source: one.src, color: one.color, tool: "bridge", brush: 3, strokes: [], crop: { left: 0, top: 0, right: 0, bottom: 0 }, zoom: 1, panX: 0, panY: 0 });
+    setCutEditor({ layerId: one.id, source: one.src, color: one.color, tool: null, brush: 3, strokes: [], crop: { left: 0, top: 0, right: 0, bottom: 0 }, zoom: 1, panX: 0, panY: 0 });
   };
   const cutPoint = (e: RPointer<HTMLImageElement>) => {
     const r = e.currentTarget.getBoundingClientRect();
     return { x: clamp((e.clientX-r.left)/r.width,0,1), y: clamp((e.clientY-r.top)/r.height,0,1) };
   };
   const startCutEdit = (e: RPointer<HTMLImageElement>) => {
-    if (!cutEditor || e.button !== 0) return;
+    if (!cutEditor || !cutEditor.tool || e.button !== 0) return;
     e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId);
     const id = uid(); cutDrawing.current = id; setCutActiveStroke(id);
     const stroke: EditStroke = { id, tool: cutEditor.tool, brush: cutEditor.brush, points: [cutPoint(e)] };
@@ -1404,10 +1417,10 @@ export default function Home() {
   const moveCropDrag = (e:RPointer<HTMLButtonElement>) => {
     const d=cropDrag.current;if(!d||!cutEditor)return;e.preventDefault();
     const dx=(e.clientX-d.x)/d.rect.width*100,dy=(e.clientY-d.y)/d.rect.height*100,c={...d.crop};
-    if(d.mode.includes("w"))c.left=clamp(d.crop.left+dx,0,Math.min(90,95-c.right));
-    if(d.mode.includes("e"))c.right=clamp(d.crop.right-dx,0,Math.min(90,95-c.left));
-    if(d.mode.includes("n"))c.top=clamp(d.crop.top+dy,0,Math.min(90,95-c.bottom));
-    if(d.mode.includes("s"))c.bottom=clamp(d.crop.bottom-dy,0,Math.min(90,95-c.top));
+    if(d.mode.includes("w"))c.left=clamp(d.crop.left+dx,-25,Math.min(90,95-c.right));
+    if(d.mode.includes("e"))c.right=clamp(d.crop.right-dx,-25,Math.min(90,95-c.left));
+    if(d.mode.includes("n"))c.top=clamp(d.crop.top+dy,-25,Math.min(90,95-c.bottom));
+    if(d.mode.includes("s"))c.bottom=clamp(d.crop.bottom-dy,-25,Math.min(90,95-c.top));
     setCutEditor({...cutEditor,crop:c});
   };
   const endCropDrag=()=>{cropDrag.current=null};
@@ -1430,7 +1443,14 @@ export default function Home() {
   const imageEditPoint=(e:RPointer<HTMLImageElement>)=>{const r=e.currentTarget.getBoundingClientRect();return{x:clamp((e.clientX-r.left)/r.width,0,1),y:clamp((e.clientY-r.top)/r.height,0,1)}};
   const startImageEdit=(e:RPointer<HTMLImageElement>)=>{if(!imageEditor||imageEditor.tool==="crop"||e.button!==0)return;e.preventDefault();e.currentTarget.setPointerCapture(e.pointerId);const id=uid(),stroke:ImageEditStroke={id,tool:imageEditor.tool,brush:imageEditor.brush,points:[imageEditPoint(e)]};imageDrawing.current=id;setImageEditor({...imageEditor,strokes:[...imageEditor.strokes,stroke]})};
   const moveImageEdit=(e:RPointer<HTMLImageElement>)=>{if(!imageDrawing.current||!imageEditor||e.buttons!==1)return;const p=imageEditPoint(e),id=imageDrawing.current;setImageEditor(v=>v?{...v,strokes:v.strokes.map(s=>s.id!==id?s:{...s,points:[...s.points,p]})}:v)};
-  const renderImageStage=async(editor:ImageEditor)=>{const img=await getImage(editor.source),work=document.createElement("canvas");work.width=img.naturalWidth;work.height=img.naturalHeight;const wx=work.getContext("2d")!;wx.drawImage(img,0,0);wx.globalCompositeOperation="destination-out";for(const stroke of editor.strokes){if(!stroke.points.length)continue;wx.beginPath();if(stroke.tool==="lasso"){stroke.points.forEach((p,i)=>i?wx.lineTo(p.x*work.width,p.y*work.height):wx.moveTo(p.x*work.width,p.y*work.height));wx.closePath();wx.fill()}else{wx.lineWidth=Math.max(2,stroke.brush/100*Math.min(work.width,work.height));wx.lineCap="round";wx.lineJoin="round";stroke.points.forEach((p,i)=>i?wx.lineTo(p.x*work.width,p.y*work.height):wx.moveTo(p.x*work.width,p.y*work.height));if(stroke.points.length===1){const p=stroke.points[0];wx.arc(p.x*work.width,p.y*work.height,wx.lineWidth/2,0,Math.PI*2);wx.fill()}else wx.stroke()}}const c=editor.crop,l=clamp(c.left/100,0,.9),t=clamp(c.top/100,0,.9),r=clamp(c.right/100,0,.9-l),b=clamp(c.bottom/100,0,.9-t),sx=Math.round(work.width*l),sy=Math.round(work.height*t),sw=Math.max(1,Math.round(work.width*(1-l-r))),sh=Math.max(1,Math.round(work.height*(1-t-b))),out=document.createElement("canvas");out.width=sw;out.height=sh;out.getContext("2d")!.drawImage(work,sx,sy,sw,sh,0,0,sw,sh);return{src:out.toDataURL("image/png"),l,t,w:1-l-r,h:1-t-b,naturalW:sw,naturalH:sh}};
+  const renderImageStage=async(editor:ImageEditor)=>{
+    const img=await getImage(editor.source),work=document.createElement("canvas");work.width=img.naturalWidth;work.height=img.naturalHeight;
+    const wx=work.getContext("2d")!;wx.drawImage(img,0,0);wx.globalCompositeOperation="destination-out";
+    for(const stroke of editor.strokes){if(!stroke.points.length)continue;wx.beginPath();if(stroke.tool==="lasso"){stroke.points.forEach((p,i)=>i?wx.lineTo(p.x*work.width,p.y*work.height):wx.moveTo(p.x*work.width,p.y*work.height));wx.closePath();wx.fill()}else{wx.lineWidth=Math.max(2,stroke.brush/100*Math.min(work.width,work.height));wx.lineCap="round";wx.lineJoin="round";stroke.points.forEach((p,i)=>i?wx.lineTo(p.x*work.width,p.y*work.height):wx.moveTo(p.x*work.width,p.y*work.height));if(stroke.points.length===1){const p=stroke.points[0];wx.arc(p.x*work.width,p.y*work.height,wx.lineWidth/2,0,Math.PI*2);wx.fill()}else wx.stroke()}}
+    const c=editor.crop,l=clamp(c.left/100,-.25,.9),t=clamp(c.top/100,-.25,.9),r=clamp(c.right/100,-.25,.9-l),b=clamp(c.bottom/100,-.25,.9-t),sw=Math.max(1,Math.round(work.width*(1-l-r))),sh=Math.max(1,Math.round(work.height*(1-t-b))),out=document.createElement("canvas");
+    out.width=sw;out.height=sh;out.getContext("2d")!.drawImage(work,-Math.round(work.width*l),-Math.round(work.height*t));
+    return{src:out.toDataURL("image/png"),l,t,w:1-l-r,h:1-t-b,naturalW:sw,naturalH:sh};
+  };
   const commitImageStage=async()=>{if(!imageEditor||(!imageEditor.strokes.length&&!Object.values(imageEditor.crop).some(Boolean)))return;const before:ImageEditState={source:imageEditor.source,offsetX:imageEditor.offsetX,offsetY:imageEditor.offsetY,widthScale:imageEditor.widthScale,heightScale:imageEditor.heightScale},rendered=await renderImageStage(imageEditor);setImageEditor(v=>v?{...v,source:rendered.src,strokes:[],crop:{left:0,top:0,right:0,bottom:0},history:[...v.history,before],offsetX:v.offsetX+v.widthScale*rendered.l,offsetY:v.offsetY+v.heightScale*rendered.t,widthScale:v.widthScale*rendered.w,heightScale:v.heightScale*rendered.h}:v)};
   const undoImageStage=()=>setImageEditor(v=>{if(!v||!v.history.length)return v;const prior=v.history[v.history.length-1];return{...v,...prior,history:v.history.slice(0,-1),strokes:[],crop:{left:0,top:0,right:0,bottom:0}}});
   const endImageEdit=()=>{imageDrawing.current=null;void commitImageStage()};
@@ -1439,7 +1459,7 @@ export default function Home() {
     try{if(imageEditor.strokes.length||Object.values(imageEditor.crop).some(Boolean))await commitImageStage();const current=imageEditor.strokes.length||Object.values(imageEditor.crop).some(Boolean)?await renderImageStage(imageEditor):{src:imageEditor.source,naturalW:(await getImage(imageEditor.source)).naturalWidth,naturalH:(await getImage(imageEditor.source)).naturalHeight};const img=await getImage(current.src),out=document.createElement("canvas"),factor=imageEditor.upscale;out.width=img.naturalWidth*factor;out.height=img.naturalHeight*factor;const x=out.getContext("2d")!;x.imageSmoothingEnabled=true;x.imageSmoothingQuality="high";x.drawImage(img,0,0,out.width,out.height);const src=out.toDataURL("image/png"),edited={...target,src,originalSrc:src,x:target.x+target.w*imageEditor.offsetX,y:target.y+target.h*imageEditor.offsetY,w:target.w*imageEditor.widthScale,h:target.h*imageEditor.heightScale,naturalW:out.width,naturalH:out.height};const step:LayerStep={id:uid(),type:"edit-image",label:"Edit Image",snapshot:snapshot(edited)};edited.steps=[...target.steps,step];edited.activeStep=edited.steps.length-1;if(createLayer){const clone={...edited,id:uid(),name:`${target.name}_Edit`};setLayers(items=>{const at=items.findIndex(v=>v.id===target.id);const next=[...items];next.splice(at+1,0,clone);return next});setSelected([clone.id])}else mutate(target.id,()=>edited);setImageEditor(null);setNotice(createLayer?"Edited result created as a separate layer":`Image edited at ${out.width} × ${out.height} px`)}finally{setWorking(false)}
   };
   const startImageCrop=(e:RPointer<HTMLButtonElement>,mode:string)=>{if(!imageEditor)return;e.preventDefault();e.stopPropagation();e.currentTarget.setPointerCapture(e.pointerId);imageCropDrag.current={mode,x:e.clientX,y:e.clientY,crop:{...imageEditor.crop},rect:e.currentTarget.closest(".image-edit-wrap")!.getBoundingClientRect()}};
-  const moveImageCrop=(e:RPointer<HTMLButtonElement>)=>{const d=imageCropDrag.current;if(!d||!imageEditor)return;const dx=(e.clientX-d.x)/d.rect.width*100,dy=(e.clientY-d.y)/d.rect.height*100,c={...d.crop};if(d.mode.includes("w"))c.left=clamp(d.crop.left+dx,0,Math.min(90,95-c.right));if(d.mode.includes("e"))c.right=clamp(d.crop.right-dx,0,Math.min(90,95-c.left));if(d.mode.includes("n"))c.top=clamp(d.crop.top+dy,0,Math.min(90,95-c.bottom));if(d.mode.includes("s"))c.bottom=clamp(d.crop.bottom-dy,0,Math.min(90,95-c.top));setImageEditor({...imageEditor,crop:c})};
+  const moveImageCrop=(e:RPointer<HTMLButtonElement>)=>{const d=imageCropDrag.current;if(!d||!imageEditor)return;const dx=(e.clientX-d.x)/d.rect.width*100,dy=(e.clientY-d.y)/d.rect.height*100,c={...d.crop};if(d.mode.includes("w"))c.left=clamp(d.crop.left+dx,-25,Math.min(90,95-c.right));if(d.mode.includes("e"))c.right=clamp(d.crop.right-dx,-25,Math.min(90,95-c.left));if(d.mode.includes("n"))c.top=clamp(d.crop.top+dy,-25,Math.min(90,95-c.bottom));if(d.mode.includes("s"))c.bottom=clamp(d.crop.bottom-dy,-25,Math.min(90,95-c.top));setImageEditor({...imageEditor,crop:c})};
   const endImageCrop=()=>{imageCropDrag.current=null;void commitImageStage()};
   const addStroke = async (cmOverride?: number) => {
     if (!one || one.kind !== "vector") {
@@ -1948,9 +1968,9 @@ export default function Home() {
       });
       return;
     }
-    const key = h.map((v) => v.id).join(":"),
-      i = key === cycle.key ? (cycle.index + 1) % h.length : 0;
-    setCycle({ key, index: i });
+    const key = h.map((v) => v.id).join(":"),sameSpot=key===cycle.key&&Math.hypot(e.clientX-cycle.x,e.clientY-cycle.y)<=3,
+      i = sameSpot ? (cycle.index + 1) % h.length : 0;
+    setCycle({ key, index: i, x:e.clientX, y:e.clientY });
     const target = h[i];
     if (e.shiftKey || e.ctrlKey || e.metaKey)
       setSelected((v) =>
@@ -2071,11 +2091,15 @@ export default function Home() {
     const step = layer.steps[index];
     if (!step || step.locked) return;
     const steps = layer.steps.slice(0, index),
-      previous = steps.at(-1)?.snapshot;
+      previous = step.before || steps.at(-1)?.snapshot;
     mutate(layer.id, (l) => ({
       ...l,
       ...(previous || {
         src: l.originalSrc,
+        x:l.x,
+        y:l.y,
+        w:l.w,
+        h:l.h,
         kind: "original" as Kind,
         color: DARK,
         strokeCm: 0,
@@ -2307,7 +2331,7 @@ export default function Home() {
           </span>
           <div>
             <b>Better Cricut Editor</b>
-            <small>Personal workspace · v53</small>
+            <small>Personal workspace · v54</small>
           </div>
         </div>
         <button className="brand-undo" onClick={undo} title="Undo (Ctrl+Z)"><Undo2 /> Undo</button>
@@ -2914,7 +2938,7 @@ export default function Home() {
         <div className="bg-editor-body"><div className="bg-preview"><div className="image-edit-wrap" style={{"--fit-w":imageEditorSize.w?`${imageEditorSize.w}px`:"auto","--fit-h":imageEditorSize.h?`${imageEditorSize.h}px`:"auto"} as React.CSSProperties}><img className={`image-tool-${imageEditor.tool}`} src={imageEditor.source} draggable={false} alt="Image edit preview" onLoad={e=>setImageEditorSize(fitEditorImage(e.currentTarget,e.currentTarget.closest(".bg-preview") as HTMLDivElement))} onPointerDown={startImageEdit} onPointerMove={moveImageEdit} onPointerUp={endImageEdit} onPointerCancel={endImageEdit}/><svg className="image-edit-overlay" viewBox="0 0 100 100" preserveAspectRatio="none">{imageEditor.strokes.map(s=>{const pts=s.points.map(p=>`${p.x*100},${p.y*100}`).join(" ");return s.tool==="lasso"?<polygon key={s.id} points={pts} className="image-lasso-mark"/>:<polyline key={s.id} points={pts} className="image-erase-mark" style={{strokeWidth:s.brush}}/>})}</svg>{imageEditor.tool==="crop"&&<div className="crop-guide" style={{left:`${imageEditor.crop.left}%`,top:`${imageEditor.crop.top}%`,right:`${imageEditor.crop.right}%`,bottom:`${imageEditor.crop.bottom}%`}}>{["nw","n","ne","e","se","s","sw","w"].map(h=><button key={h} className={`crop-handle crop-${h}`} onPointerDown={e=>startImageCrop(e,h)} onPointerMove={moveImageCrop} onPointerUp={endImageCrop} onPointerCancel={endImageCrop}/>)}</div>}</div></div>
         <aside className="bg-controls image-controls"><section><label>Edit Tool</label><div className="image-tool-buttons">{(["crop","erase","lasso"] as ImageEditTool[]).map(tool=><button key={tool} className={imageEditor.tool===tool?"active":""} onClick={()=>setImageEditor({...imageEditor,tool})}>{tool==="lasso"?"Lasso Erase":tool[0].toUpperCase()+tool.slice(1)}</button>)}</div></section>{imageEditor.tool==="erase"&&<section><label>Brush Size <b>{imageEditor.brush}%</b></label><input type="range" min=".5" max="35" step=".5" value={imageEditor.brush} onChange={e=>setImageEditor({...imageEditor,brush:+e.target.value})}/></section>}<section><label>Resolution</label><b>{target?.naturalW||0} × {target?.naturalH||0} px</b><small>Output: {Math.round((target?.naturalW||0)*(1-(imageEditor.crop.left+imageEditor.crop.right)/100)*imageEditor.upscale)} × {Math.round((target?.naturalH||0)*(1-(imageEditor.crop.top+imageEditor.crop.bottom)/100)*imageEditor.upscale)} px</small></section>
         <section><label>Upscale</label><div className="mode-buttons">{([1,2,3] as const).map(n=><button key={n} className={imageEditor.upscale===n?"active keep":""} onClick={()=>setImageEditor({...imageEditor,upscale:n})}>{n}×</button>)}</div><small>High-quality resampling preserves hard corners and smooth curves; it does not invent missing detail.</small></section>
-        <section><label>Crop Canvas</label>{(["left","right","top","bottom"] as const).map(side=><label className="crop-range" key={side}><span>{side}</span><input type="range" min="0" max="90" value={imageEditor.crop[side]} onChange={e=>setImageEditor({...imageEditor,crop:{...imageEditor.crop,[side]:+e.target.value}})}/><b>{imageEditor.crop[side]}%</b></label>)}</section></aside></div>
+        <section><label>Crop / Expand Canvas</label>{(["left","right","top","bottom"] as const).map(side=><label className="crop-range" key={side}><span>{side}</span><input type="range" min="-25" max="90" value={imageEditor.crop[side]} onChange={e=>setImageEditor({...imageEditor,crop:{...imageEditor.crop,[side]:+e.target.value}})}/><b>{imageEditor.crop[side]}%</b></label>)}</section></aside></div>
         <footer><button className="image-undo" disabled={!imageEditor.history.length} onClick={undoImageStage}><Undo2/> Undo</button><button className="cancel" onClick={()=>setImageEditor(null)}>Cancel</button><button className="secondary-create" onClick={()=>void applyImageEdit(true)}>Create Layer</button><button className="confirm" onClick={()=>void applyImageEdit(false)}>Save Edit</button></footer></div></div>})()}
       {cutEditor && (
         <div className="bg-modal cutout-modal" role="dialog" aria-modal="true" aria-label="Cutout editor">
@@ -2925,13 +2949,13 @@ export default function Home() {
                 {cutPreview && <div className="cut-image-wrap" style={{"--fit-w":cutImageSize.w?`${cutImageSize.w}px`:"auto","--fit-h":cutImageSize.h?`${cutImageSize.h}px`:"auto",transform:`translate(${cutEditor.panX}px,${cutEditor.panY}px) scale(${cutEditor.zoom})`} as React.CSSProperties}>
                   <img className={`cut-tool-${cutEditor.tool}`} src={cutPreview} alt="Cutout edit preview" draggable={false} onLoad={e=>setCutImageSize(fitEditorImage(e.currentTarget,cutPreviewRef.current))} onPointerDown={startCutEdit} onPointerMove={moveCutEdit} onPointerUp={endCutEdit} onPointerCancel={endCutEdit} onPointerEnter={()=>setCutCursor(v=>({...v,visible:true}))} onPointerLeave={()=>setCutCursor(v=>({...v,visible:false}))}/>
                   <svg className="cut-edit-overlay" viewBox="0 0 100 100" preserveAspectRatio="none">
-                    {cutEditor.strokes.filter(s=>s.id===cutActiveStroke).map(s=>{
+                    {cutEditor.strokes.filter(s=>s.id===cutActiveStroke||s.tool==="smooth").map(s=>{
                       const first=s.points[0],last=s.points.at(-1)!,pts=s.points.map(p=>`${p.x*100},${p.y*100}`).join(" ");
                       if(s.tool==="rectangle")return <rect key={s.id} x={Math.min(first.x,last.x)*100} y={Math.min(first.y,last.y)*100} width={Math.abs(last.x-first.x)*100} height={Math.abs(last.y-first.y)*100} className="eraser-selection"/>;
                       if(s.tool==="lasso")return <polyline key={s.id} points={pts} className="eraser-selection lasso-selection"/>;
                       return <polyline key={s.id} points={pts} className={`edit-brush-stroke ${s.tool}`} style={{strokeWidth:s.brush}}/>;
                     })}
-                    {cutCursor.visible&&["bridge","erase","smooth"].includes(cutEditor.tool)&&<circle cx={cutCursor.x*100} cy={cutCursor.y*100} r={cutEditor.brush/2} className="cut-brush-cursor"/>}
+                    {cutCursor.visible&&cutEditor.tool&&["bridge","erase","smooth"].includes(cutEditor.tool)&&<circle cx={cutCursor.x*100} cy={cutCursor.y*100} r={cutEditor.brush/2} className="cut-brush-cursor"/>}
                   </svg>
                   <div className="crop-guide" style={{left:`${cutEditor.crop.left}%`,top:`${cutEditor.crop.top}%`,right:`${cutEditor.crop.right}%`,bottom:`${cutEditor.crop.bottom}%`}}>
                     {["nw","n","ne","e","se","s","sw","w"].map(h=><button key={h} className={`crop-handle crop-${h}`} onPointerDown={e=>startCropDrag(e,h)} onPointerMove={moveCropDrag} onPointerUp={endCropDrag} onPointerCancel={endCropDrag}/>) }
@@ -2946,7 +2970,7 @@ export default function Home() {
               </div>
               <aside className="bg-controls cutout-controls">
                 <section><label>Edit Tool</label><div className="edit-tool-grid">
-                  {(["bridge","erase","smooth","lasso","rectangle"] as EditTool[]).map((tool)=><button key={tool} className={cutEditor.tool===tool?"active":""} onClick={()=>setCutEditor({...cutEditor,tool})}>{tool==="smooth"?"Fix the Edges":tool==="lasso"?"Lasso Eraser":tool==="rectangle"?"Rectangle Eraser":tool[0].toUpperCase()+tool.slice(1)}</button>)}
+                  {(["bridge","erase","smooth","lasso","rectangle"] as EditTool[]).map((tool)=><button key={tool} className={cutEditor.tool===tool?"active":""} onClick={()=>setCutEditor({...cutEditor,tool:cutEditor.tool===tool?null:tool})}>{tool==="smooth"?"Fix the Edges":tool==="lasso"?"Lasso Eraser":tool==="rectangle"?"Rectangle Eraser":tool[0].toUpperCase()+tool.slice(1)}</button>)}
                 </div><small>Fix the Edges smooths only the brushed contour. Its start and end preserve the surrounding trajectory.</small></section>
                 <section><label>Brush Size <b>{cutEditor.brush}%</b></label><input type="range" min="1" max="15" value={cutEditor.brush} onChange={(e)=>setCutEditor({...cutEditor,brush:+e.target.value})}/></section>
                 <section><label>Crop Canvas</label><small>Drag the crop frame from any edge or corner. Up to 90% can be removed from a side.</small></section>

@@ -1,0 +1,4 @@
+.preset-dialog{width:min(820px,calc(100vw - 32px))}
+.preset-grid{gap:10px}.preset-grid>button{padding:0;overflow:hidden}.preset-image{height:190px;padding:0;border-radius:11px 11px 7px 7px}.preset-grid>button>span:last-child{padding:0 9px 9px}
+.edit-brush-stroke.smooth{stroke:#ef2b2d!important;stroke-opacity:.94!important;stroke-linecap:round;stroke-linejoin:round;filter:drop-shadow(0 0 1px #fff)}
+.image-edit-wrap{overflow:visible!important}
