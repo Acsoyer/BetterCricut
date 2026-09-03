@@ -193,6 +193,8 @@ type BgEditor = {
   panY: number;
   speckles: number;
   edgeRefine: number;
+  edgeSmooth: number;
+  optimizeAlpha: boolean;
   eraseColors: EraseColor[];
   pickingColor: number | null;
 };
@@ -342,6 +344,8 @@ async function refineBackground(
   speckles = 0,
   edgeRefine = 0,
   eraseColors: EraseColor[] = [],
+  edgeSmooth = 0,
+  optimizeAlpha = false,
 ) {
   const original = await getImage(src),
     base = original,
@@ -450,8 +454,16 @@ async function refineBackground(
       if(!remove&&!opaque&&neighbor){result.data[q]=sourceData[q];result.data[q+1]=sourceData[q+1];result.data[q+2]=sourceData[q+2];result.data[q+3]=255;}
     }
   }
+  if(edgeSmooth>0){
+    const radius=Math.max(1,Math.round(edgeSmooth)),w=c.width,h=c.height,alpha=new Float32Array(w*h),horizontal=new Float32Array(w*h),smoothed=new Float32Array(w*h);
+    for(let i=0;i<w*h;i++)alpha[i]=result.data[i*4+3]/255;
+    for(let py=0;py<h;py++){let sum=0;for(let px=-radius;px<=radius;px++)sum+=alpha[py*w+clamp(px,0,w-1)];for(let px=0;px<w;px++){horizontal[py*w+px]=sum/(radius*2+1);sum-=alpha[py*w+clamp(px-radius,0,w-1)];sum+=alpha[py*w+clamp(px+radius+1,0,w-1)];}}
+    for(let px=0;px<w;px++){let sum=0;for(let py=-radius;py<=radius;py++)sum+=horizontal[clamp(py,0,h-1)*w+px];for(let py=0;py<h;py++){smoothed[py*w+px]=sum/(radius*2+1);sum-=horizontal[clamp(py-radius,0,h-1)*w+px];sum+=horizontal[clamp(py+radius+1,0,h-1)*w+px];}}
+    for(let i=0;i<w*h;i++){const q=i*4;if(smoothed[i]>=.5){result.data[q]=sourceData[q];result.data[q+1]=sourceData[q+1];result.data[q+2]=sourceData[q+2];result.data[q+3]=255}else result.data[q+3]=0;}
+  }
   x.putImageData(result, 0, 0);
-  return c.toDataURL();
+  const output=c.toDataURL("image/png");
+  return optimizeAlpha?optimizeAlphaChannel(output):output;
 }
 async function silhouette(src: string, color = DARK, opacity = 255) {
   const img = await getImage(src),
@@ -958,6 +970,8 @@ export default function Home() {
         bgEditor.speckles,
         bgEditor.edgeRefine,
         bgEditor.eraseColors,
+        bgEditor.edgeSmooth,
+        bgEditor.optimizeAlpha,
       ).then((src) => {
         if (!cancelled) {
           setBgPreview(src);
@@ -969,7 +983,7 @@ export default function Home() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [bgEditor?.source, bgEditor?.strokes, bgEditor?.speckles, bgEditor?.edgeRefine, bgEditor?.eraseColors]);
+  }, [bgEditor?.source, bgEditor?.strokes, bgEditor?.speckles, bgEditor?.edgeRefine, bgEditor?.eraseColors, bgEditor?.edgeSmooth, bgEditor?.optimizeAlpha]);
   useEffect(() => {
     if (!cutEditor) return;
     let cancelled = false;
@@ -1174,6 +1188,8 @@ export default function Home() {
       panY: 0,
       speckles: 0,
       edgeRefine: 0,
+      edgeSmooth: 0,
+      optimizeAlpha: false,
       eraseColors: [{ color: null, sensitivity: 30 }],
       pickingColor: null,
     });
@@ -1199,7 +1215,7 @@ export default function Home() {
     setWorking(true);
     try {
       const refined = !bgRendering && bgPreview ? bgPreview : await refineBackground(
-        bgEditor.source, 0, bgEditor.strokes, bgEditor.speckles, bgEditor.edgeRefine, bgEditor.eraseColors,
+        bgEditor.source, 0, bgEditor.strokes, bgEditor.speckles, bgEditor.edgeRefine, bgEditor.eraseColors, bgEditor.edgeSmooth, bgEditor.optimizeAlpha,
       );
       const t = await trimTransparent(refined);
       const next = {
@@ -2249,7 +2265,7 @@ export default function Home() {
           </span>
           <div>
             <b>Better Cricut Editor</b>
-            <small>Personal workspace · v50</small>
+            <small>Personal workspace · v51</small>
           </div>
         </div>
         <button className="brand-undo" onClick={undo} title="Undo (Ctrl+Z)"><Undo2 /> Undo</button>
@@ -2266,7 +2282,7 @@ export default function Home() {
           <div className="wrap remove-bg-control">
             <button type="button" className="remove-bg-main" onClick={()=>void quickBackground()}><Sparkles />Remove Background</button>
             <button type="button" className="remove-bg-chevron" onClick={(e)=>{e.preventDefault();e.stopPropagation();if(!one){setNotice("Select one image for Advanced Background Removal");return}setBgMenuOpen(v=>!v)}} aria-label="Background removal options"><ChevronDown /></button>
-            {bgMenuOpen&&<div className="pop bg-options"><button onClick={()=>{setBgMenuOpen(false);noBackground()}}>Advanced Background Removal</button><button disabled={!one||!["nobg","vector","stroke","acetate"].includes(one.kind)} onClick={()=>void optimizeSelectedAlpha()}><Sparkles/> Optimize Alpha Channel</button></div>}
+            {bgMenuOpen&&<div className="pop bg-options"><button onClick={()=>{setBgMenuOpen(false);noBackground()}}>Advanced Background Removal</button></div>}
           </div>
           <button
             disabled={!one || ["vector", "stroke", "acetate"].includes(one.kind)}
@@ -2909,6 +2925,7 @@ export default function Home() {
                 <button disabled={!bgEditor.strokes.length} onClick={() => setBgEditor({ ...bgEditor, strokes: bgEditor.strokes.slice(0, -1) })}>Undo</button>
                 <button disabled={!bgEditor.strokes.length} onClick={() => setBgEditor({ ...bgEditor, strokes: [] })}>Reset</button>
                 <label><input type="checkbox" checked={bgEditor.alphaView} onChange={(e) => setBgEditor({ ...bgEditor, alphaView: e.target.checked })}/> Alpha</label>
+                <button className={bgEditor.optimizeAlpha?"active optimize-alpha":"optimize-alpha"} onClick={()=>setBgEditor({...bgEditor,optimizeAlpha:!bgEditor.optimizeAlpha,alphaView:true})}><Sparkles/> Optimize Alpha</button>
               </div>
               <button aria-label="Close" onClick={() => setBgEditor(null)}>×</button>
             </header>
@@ -2986,6 +3003,7 @@ export default function Home() {
                   <label>Edge Refinement <b>{bgEditor.edgeRefine > 0 ? "+" : ""}{bgEditor.edgeRefine} px</b></label>
                   <input type="range" min="-12" max="12" step="1" value={bgEditor.edgeRefine} onChange={(e)=>setBgEditor({...bgEditor,edgeRefine:+e.target.value})}/>
                   <small>Positive values contract the edge to remove pale halos. Negative values recover pixels removed by an aggressive cut.</small>
+                  <div className="compact-slider edge-smooth-control"><label>Edge Smooth <b>{bgEditor.edgeSmooth}</b></label><input type="range" min="0" max="10" step="1" value={bgEditor.edgeSmooth} onChange={e=>setBgEditor({...bgEditor,edgeSmooth:+e.target.value})}/><small>Smooths both outer and inner alpha contours at pixel level. The result remains fully opaque or transparent.</small></div>
                 </section>
                 <section>
                   <label>Remove Speckles <b>{bgEditor.speckles} px</b></label>
