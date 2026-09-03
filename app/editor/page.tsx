@@ -111,7 +111,7 @@ const shapeSource = (name:string,color:string) => {
 type Kind = "original" | "nobg" | "stroke" | "acetate" | "vector";
 type LayerStep = {
   id: string;
-  type: "remove-bg" | "cutout" | "stroke" | "fill-gaps" | "acetate" | "edit-image";
+  type: "remove-bg" | "cutout" | "stroke" | "fill-gaps" | "acetate" | "edit-image" | "optimize-alpha";
   label: string;
   locked?: boolean;
   snapshot: Pick<
@@ -306,6 +306,34 @@ async function removeBg(src: string, tolerance = 46) {
   }
   x.putImageData(d, 0, 0);
   return c.toDataURL();
+}
+async function optimizeAlphaChannel(src:string){
+  const img=await getImage(src),c=document.createElement("canvas");c.width=img.naturalWidth;c.height=img.naturalHeight;
+  const x=c.getContext("2d")!;x.drawImage(img,0,0);const data=x.getImageData(0,0,c.width,c.height),count=c.width*c.height,
+    source=new Uint8ClampedArray(data.data),alpha=new Uint8Array(count);
+  for(let i=0;i<count;i++)alpha[i]=source[i*4+3]>=128?1:0;
+  // A conservative majority pass removes one-pixel edge chatter without rounding real corners.
+  const settled=new Uint8Array(alpha);
+  for(let py=1;py<c.height-1;py++)for(let px=1;px<c.width-1;px++){
+    const at=py*c.width+px;let opaque=0;
+    for(let oy=-1;oy<=1;oy++)for(let ox=-1;ox<=1;ox++)if(ox||oy)opaque+=alpha[at+oy*c.width+ox];
+    if(alpha[at]&&opaque<=2)settled[at]=0;
+    else if(!alpha[at]&&opaque>=6)settled[at]=1;
+  }
+  const walkComponents=(foreground:boolean,maxArea:number,fill:number)=>{
+    const seen=new Uint8Array(count),queue=new Int32Array(count);
+    for(let start=0;start<count;start++){
+      if(seen[start]||Boolean(settled[start])!==foreground)continue;
+      let head=0,tail=0,touchesEdge=false;queue[tail++]=start;seen[start]=1;
+      while(head<tail){const at=queue[head++],px=at%c.width,py=(at/c.width)|0;if(px===0||py===0||px===c.width-1||py===c.height-1)touchesEdge=true;
+        const ns=[at-1,at+1,at-c.width,at+c.width];for(let n=0;n<4;n++){const next=ns[n];if(next<0||next>=count||seen[next]||(n===0&&px===0)||(n===1&&px===c.width-1)||Boolean(settled[next])!==foreground)continue;seen[next]=1;queue[tail++]=next;}}
+      const removable=foreground?tail<=maxArea:!touchesEdge&&tail<=maxArea;if(removable)for(let i=0;i<tail;i++)settled[queue[i]]=fill;
+    }
+  };
+  const islandLimit=Math.min(180,Math.max(12,Math.round(count/50000))),holeLimit=Math.min(260,Math.max(18,Math.round(count/35000)));
+  walkComponents(true,islandLimit,0);walkComponents(false,holeLimit,1);
+  for(let i=0;i<count;i++){const q=i*4;if(settled[i]){data.data[q]=source[q];data.data[q+1]=source[q+1];data.data[q+2]=source[q+2];data.data[q+3]=255}else data.data[q+3]=0;}
+  x.putImageData(data,0,0);return c.toDataURL("image/png");
 }
 async function refineBackground(
   src: string,
@@ -1156,6 +1184,13 @@ export default function Home() {
       const results=await Promise.all(targets.map(async target=>{const refined=await removeBg(target.src),t=await trimTransparent(refined),next={...target,src:t.src,x:target.x+target.w*t.left,y:target.y+target.h*t.top,w:target.w*t.width,h:target.h*t.height,kind:"nobg" as Kind};const step:LayerStep={id:uid(),type:"remove-bg",label:"Remove Background",snapshot:snapshot(next)};return {...next,steps:[...target.steps,step],activeStep:target.steps.length}}));
       const byId=new Map(results.map(l=>[l.id,l]));setLayers(items=>items.map(l=>byId.get(l.id)||l));setNotice(`${results.length} background${results.length>1?"s":""} removed`);
     }catch{setNotice("Background removal could not be applied");}finally{setWorking(false)}
+  };
+  const optimizeSelectedAlpha=async()=>{
+    if(!one||!["nobg","vector","stroke","acetate"].includes(one.kind)){setNotice("Select one background-removed image or Cutout first");return}
+    setBgMenuOpen(false);setWorking(true);setNotice("Optimizing alpha channel…");
+    try{const cleaned=await optimizeAlphaChannel(one.src),trimmed=await trimTransparent(cleaned),next={...one,src:trimmed.src,x:one.x+one.w*trimmed.left,y:one.y+one.h*trimmed.top,w:one.w*trimmed.width,h:one.h*trimmed.height},step:LayerStep={id:uid(),type:"optimize-alpha",label:"Optimize Alpha",snapshot:snapshot(next)};mutate(one.id,()=>({...next,steps:[...one.steps,step],activeStep:one.steps.length}));setNotice("Alpha channel optimized for cleaner Cricut cutting paths")}
+    catch{setNotice("Alpha channel could not be optimized")}
+    finally{setWorking(false)}
   };
   const commitBackground = async () => {
     if (!bgEditor) return;
@@ -2214,7 +2249,7 @@ export default function Home() {
           </span>
           <div>
             <b>Better Cricut Editor</b>
-            <small>Personal workspace · v49</small>
+            <small>Personal workspace · v50</small>
           </div>
         </div>
         <button className="brand-undo" onClick={undo} title="Undo (Ctrl+Z)"><Undo2 /> Undo</button>
@@ -2231,7 +2266,7 @@ export default function Home() {
           <div className="wrap remove-bg-control">
             <button type="button" className="remove-bg-main" onClick={()=>void quickBackground()}><Sparkles />Remove Background</button>
             <button type="button" className="remove-bg-chevron" onClick={(e)=>{e.preventDefault();e.stopPropagation();if(!one){setNotice("Select one image for Advanced Background Removal");return}setBgMenuOpen(v=>!v)}} aria-label="Background removal options"><ChevronDown /></button>
-            {bgMenuOpen&&<div className="pop bg-options"><button onClick={()=>{setBgMenuOpen(false);noBackground()}}>Advanced Background Removal</button></div>}
+            {bgMenuOpen&&<div className="pop bg-options"><button onClick={()=>{setBgMenuOpen(false);noBackground()}}>Advanced Background Removal</button><button disabled={!one||!["nobg","vector","stroke","acetate"].includes(one.kind)} onClick={()=>void optimizeSelectedAlpha()}><Sparkles/> Optimize Alpha Channel</button></div>}
           </div>
           <button
             disabled={!one || ["vector", "stroke", "acetate"].includes(one.kind)}
