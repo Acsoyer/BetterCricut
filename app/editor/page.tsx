@@ -338,6 +338,22 @@ async function optimizeAlphaChannel(src:string){
   for(let i=0;i<count;i++){const q=i*4;if(settled[i]){data.data[q]=source[q];data.data[q+1]=source[q+1];data.data[q+2]=source[q+2];data.data[q+3]=255}else data.data[q+3]=0;}
   x.putImageData(data,0,0);return c.toDataURL("image/png");
 }
+async function featherAlphaInside(src:string){
+  const img=await getImage(src),c=document.createElement("canvas");c.width=img.naturalWidth;c.height=img.naturalHeight;
+  const x=c.getContext("2d")!;x.drawImage(img,0,0);const data=x.getImageData(0,0,c.width,c.height),source=new Uint8ClampedArray(data.data),w=c.width,h=c.height;
+  // Keep transparent pixels transparent so no removed background colour can bleed back in.
+  // Only the first opaque pixel along the inside edge receives a one-pixel alpha ramp.
+  for(let py=0;py<h;py++)for(let px=0;px<w;px++){
+    const at=py*w+px,q=at*4;if(source[q+3]<128){data.data[q+3]=0;continue}
+    let opaque=0,total=0;
+    for(let oy=-1;oy<=1;oy++)for(let ox=-1;ox<=1;ox++){
+      const nx=px+ox,ny=py+oy;if(nx<0||ny<0||nx>=w||ny>=h)continue;
+      total++;if(source[(ny*w+nx)*4+3]>=128)opaque++;
+    }
+    data.data[q+3]=opaque===total?255:Math.max(72,Math.round(255*opaque/total));
+  }
+  x.putImageData(data,0,0);return c.toDataURL("image/png");
+}
 async function refineBackground(
   src: string,
   tolerance: number,
@@ -828,6 +844,8 @@ export default function Home() {
   const [layers, setLayers] = useState<Layer[]>([]),
     [selected, setSelected] = useState<string[]>([]),
     [zoom, setZoom] = useState(0.82),
+    [zoomEditing,setZoomEditing]=useState(false),
+    [zoomDraft,setZoomDraft]=useState("82"),
     [calibration,setCalibration]=useState(1),
     [calibrationDraft,setCalibrationDraft]=useState(1),
     [calibrationOpen,setCalibrationOpen]=useState(false),
@@ -1088,7 +1106,22 @@ export default function Home() {
     window.addEventListener("wheel", stopBrowserZoom, { passive: false });
     return () => window.removeEventListener("wheel", stopBrowserZoom);
   }, []);
-  const editorWheel=(e:RWheel<HTMLDivElement>)=>{e.preventDefault();const stage=stageRef.current;if(!stage)return;if(e.ctrlKey){stage.scrollTop+=e.deltaY;stage.scrollLeft+=e.deltaX;updateRulers();return}setZoom(z=>clamp(z*(e.deltaY<0?1.08:.925),.2,4))};
+  const editorWheel=(e:RWheel<HTMLDivElement>)=>{
+    e.preventDefault();const stage=stageRef.current,canvas=canvasRef.current;if(!stage||!canvas)return;
+    if(e.ctrlKey){stage.scrollTop+=e.deltaY;stage.scrollLeft+=e.deltaX;updateRulers();return}
+    const clientX=e.clientX,clientY=e.clientY,before=canvas.getBoundingClientRect(),oldScale=scale,
+      worldX=(clientX-before.left)/oldScale,worldY=(clientY-before.top)/oldScale,
+      nextZoom=clamp(zoom*Math.exp(-e.deltaY*.0015),.2,4);
+    if(Math.abs(nextZoom-zoom)<.0001)return;
+    setZoom(nextZoom);
+    requestAnimationFrame(()=>requestAnimationFrame(()=>{
+      const currentStage=stageRef.current,currentCanvas=canvasRef.current;if(!currentStage||!currentCanvas)return;
+      const after=currentCanvas.getBoundingClientRect(),nextScale=PPCM*nextZoom*calibration;
+      currentStage.scrollLeft+=after.left+worldX*nextScale-clientX;
+      currentStage.scrollTop+=after.top+worldY*nextScale-clientY;
+      updateRulers();
+    }));
+  };
   const updateRulers = () =>
     requestAnimationFrame(() => {
       if (!stageRef.current || !canvasRef.current) return;
@@ -1207,7 +1240,7 @@ export default function Home() {
     if(!one)return setNotice("Select one image first");setBgMenuOpen(false);setWorking(true);setNotice("Applying background removal preset…");
     try{let strokes:BgStroke[]=[],colors:EraseColor[]=[],edgeRefine=0,edgeSmooth=2;
       if(type==="text"){const img=await getImage(one.src),sample=document.createElement("canvas");sample.width=img.naturalWidth;sample.height=img.naturalHeight;const sx=sample.getContext("2d")!;sx.drawImage(img,0,0);const p=sx.getImageData(0,0,1,1).data,color=`#${[p[0],p[1],p[2]].map(v=>v.toString(16).padStart(2,"0")).join("")}`;colors=[{color,sensitivity:30}];edgeSmooth=1}else{strokes=[{id:uid(),mode:"remove",brush:4,bleed:10,reach:null,points:[{x:.005,y:.005}]}];if(type==="rim"){edgeRefine=-8;edgeSmooth=8}}
-      const refined=await refineBackground(one.src,0,strokes,0,edgeRefine,colors,edgeSmooth,true),t=await trimTransparent(refined),next={...one,src:t.src,x:one.x+one.w*t.left,y:one.y+one.h*t.top,w:one.w*t.width,h:one.h*t.height,kind:"nobg" as Kind},label=type==="image"?"Image Remove Background":type==="rim"?"Image Background + Rim":"Text Background Removal",step:LayerStep={id:uid(),type:"remove-bg",label,snapshot:snapshot(next)};mutate(one.id,()=>({...next,steps:[...one.steps,step],activeStep:one.steps.length}));setNotice(`${label} applied`)
+      let refined=await refineBackground(one.src,0,strokes,0,edgeRefine,colors,edgeSmooth,true);if(type!=="text")refined=await featherAlphaInside(refined);const t=await trimTransparent(refined),next={...one,src:t.src,x:one.x+one.w*t.left,y:one.y+one.h*t.top,w:one.w*t.width,h:one.h*t.height,kind:"nobg" as Kind},label=type==="image"?"Image Remove Background":type==="rim"?"Image Background + Rim":"Text Background Removal",step:LayerStep={id:uid(),type:"remove-bg",label,snapshot:snapshot(next)};mutate(one.id,()=>({...next,steps:[...one.steps,step],activeStep:one.steps.length}));setNotice(`${label} applied`)
     }catch{setNotice("Background removal preset could not be applied")}finally{setWorking(false)}
   };
   const optimizeSelectedAlpha=async()=>{
@@ -2274,7 +2307,7 @@ export default function Home() {
           </span>
           <div>
             <b>Better Cricut Editor</b>
-            <small>Personal workspace · v52</small>
+            <small>Personal workspace · v53</small>
           </div>
         </div>
         <button className="brand-undo" onClick={undo} title="Undo (Ctrl+Z)"><Undo2 /> Undo</button>
@@ -2288,16 +2321,7 @@ export default function Home() {
         />
         <span className="toolbar-divider" />
         <nav className="main-actions">
-          <div className="wrap remove-bg-control">
-            <button type="button" className="remove-bg-main" onClick={()=>{if(!one)return setNotice("Select one image first");setBgMenuOpen(v=>!v)}}><Sparkles />Remove Background</button>
-            <button type="button" className="remove-bg-chevron" onClick={(e)=>{e.preventDefault();e.stopPropagation();if(!one){setNotice("Select one image for Advanced Background Removal");return}setBgMenuOpen(v=>!v)}} aria-label="Background removal options"><ChevronDown /></button>
-            {bgMenuOpen&&<div className="pop bg-options preset-picker">
-              <button onClick={()=>void applyBackgroundPreset("image")}><img src="/background-presets/image-default.png" alt=""/><span><b>Image Remove Background</b><small>Default</small></span></button>
-              <button onClick={()=>void applyBackgroundPreset("rim")}><img src="/background-presets/image-rim.png" alt=""/><span><b>Image Remove Background</b><small>Add Rim</small></span></button>
-              <button onClick={()=>void applyBackgroundPreset("text")}><img src="/background-presets/text-bw.png" alt=""/><span><b>Text Remove Background</b><small>Black and White</small></span></button>
-              <button className="advanced-preset" onClick={()=>{setBgMenuOpen(false);noBackground()}}><i><SlidersHorizontal/></i><span><b>Advanced Background Removal</b><small>Open the full control panel</small></span></button>
-            </div>}
-          </div>
+          <button type="button" className="remove-bg-main" onClick={()=>{if(!one)return setNotice("Select one image first");setBgMenuOpen(true)}}><Sparkles />Remove Background</button>
           <button
             disabled={!one || ["vector", "stroke", "acetate"].includes(one.kind)}
             onClick={() => void smoothCutoutV1()}
@@ -2430,17 +2454,15 @@ export default function Home() {
             </div>
           </div>
           <div className="zoom">
-            <button onClick={() => setZoom((v) => clamp(v - 0.1, 0.2, 4))}>
+            <div className="zoom-row"><button onClick={() => setZoom((v) => clamp(v - 0.1, 0.2, 4))}>
               <ZoomOut />
             </button>
-            <label className="zoom-value"><input aria-label="Zoom percentage" type="number" min="20" max="400" value={Math.round(zoom*100)} onChange={e=>setZoom(clamp((+e.target.value||20)/100,.2,4))}/><i>%</i></label>
-            <button onClick={() => setZoom((v) => clamp(v + 0.1, 0.8, 4))}>
+            {zoomEditing?<input autoFocus className="zoom-value-input" aria-label="Zoom percentage" inputMode="numeric" value={zoomDraft} onChange={e=>setZoomDraft(e.target.value.replace(/[^0-9]/g,""))} onKeyDown={e=>{if(e.key==="Enter")e.currentTarget.blur();if(e.key==="Escape"){setZoomEditing(false);setZoomDraft(String(Math.round(zoom*100)))}}} onBlur={()=>{const value=clamp((+zoomDraft||20)/100,.2,4);setZoom(value);setZoomDraft(String(Math.round(value*100)));setZoomEditing(false)}}/>:<button className="zoom-value" onClick={()=>{setZoomDraft(String(Math.round(zoom*100)));setZoomEditing(true)}}>{Math.round(zoom*100)}%</button>}
+            <button onClick={() => setZoom((v) => clamp(v + 0.1, 0.2, 4))}>
               <ZoomIn />
-            </button>
-            <button onClick={()=>{setZoom(1);window.setTimeout(centerDocument,30)}} title="Center document at 100%">
-              <Crosshair />
-            </button>
-            <button onClick={()=>{setCalibrationDraft(calibration);setCalibrationOpen(true)}} title="Calibrate real-world size"><Ruler /></button>
+            </button></div>
+            <div className="zoom-actions"><button onClick={()=>{setZoom(1);window.setTimeout(centerDocument,30)}} title="Center document at 100%"><Crosshair /><span>Center</span></button>
+            <button onClick={()=>{setCalibrationDraft(calibration);setCalibrationOpen(true)}} title="Calibrate real-world size"><Ruler /><span>Calibrate</span></button></div>
           </div>
           <div
             className="board"
@@ -2876,6 +2898,15 @@ export default function Home() {
         <div className="project-list">{projects.length ? projects.map(project => <article key={project.id} className={project.id === currentProjectId ? "current" : ""}><button className="project-open" onClick={() => openProject(project)}><FolderOpen/><span><b>{project.name}</b><small>Updated {new Date(project.updated_at).toLocaleString()}</small></span></button><button className="project-delete" onClick={() => void deleteProject(project.id)} title="Delete project"><Trash2/></button></article>) : <div className="projects-empty"><FolderOpen/><b>No saved projects yet</b><span>Save your current canvas to see it here.</span></div>}</div>
       </div></div>}
       {accountOpen && <div className="account-panel" role="dialog" aria-label="My Account"><button className="account-close" onClick={() => setAccountOpen(false)} aria-label="Close"><X/></button><span className="account-avatar"><User/></span><b>My Account</b><small>Signed in as</small><p>{session?.user.email || "Unknown account"}</p><div className="account-stat"><FolderOpen/><span><b>{projects.length}</b><small>Saved projects</small></span></div><button className="sign-out" onClick={() => void supabase.auth.signOut()}><LogOut/> Sign Out</button></div>}
+      {bgMenuOpen&&<div className="preset-modal" role="dialog" aria-modal="true" aria-label="Remove Background" onPointerDown={()=>setBgMenuOpen(false)}><div className="preset-dialog" onPointerDown={e=>e.stopPropagation()}>
+        <header><div><b>Remove Background</b><small>Choose the result you need for this image.</small></div><button onClick={()=>setBgMenuOpen(false)} aria-label="Close"><X/></button></header>
+        <div className="preset-grid">
+          <button onClick={()=>void applyBackgroundPreset("image")}><span className="preset-image"><img src="/background-presets/image-default.png" alt="Default image background removal preview"/></span><span><b>Image Remove Background</b><small>Default</small></span></button>
+          <button onClick={()=>void applyBackgroundPreset("rim")}><span className="preset-image"><img src="/background-presets/image-rim.png" alt="Image background removal with rim preview"/></span><span><b>Image Remove Background</b><small>Add Rim</small></span></button>
+          <button onClick={()=>void applyBackgroundPreset("text")}><span className="preset-image"><img src="/background-presets/text-bw.png" alt="Black and white text background removal preview"/></span><span><b>Text Remove Background</b><small>Black and White</small></span></button>
+        </div>
+        <button className="advanced-preset" onClick={()=>{setBgMenuOpen(false);noBackground()}}><i><SlidersHorizontal/></i><span><b>Advanced Background Removal</b><small>Open the full control panel</small></span></button>
+      </div></div>}
       {calibrationOpen&&<div className="calibration-modal" role="dialog" aria-modal="true" aria-label="Screen size calibration"><div className="calibration-dialog"><header><div><b>Calibrate Screen Size</b><small>Place a physical ruler against the screen and match its 10 cm length.</small></div><button onClick={()=>setCalibrationOpen(false)}><X/></button></header><div className="calibration-body"><div className="screen-ruler" style={{width:10*PPCM*calibrationDraft}}>{Array.from({length:101},(_,i)=><i key={i} className={i%10===0?"cm":i%5===0?"half":"mm"} style={{left:`${i}%`}}>{i%10===0&&<span>{i/10}</span>}</i>)}</div><div className="calibration-slider"><span>Shorter</span><button onClick={()=>setCalibrationDraft(v=>clamp(+(v-.001).toFixed(3),.5,2))}>←</button><input type="range" min=".5" max="2" step=".001" value={calibrationDraft} onChange={e=>setCalibrationDraft(+e.target.value)}/><button onClick={()=>setCalibrationDraft(v=>clamp(+(v+.001).toFixed(3),.5,2))}>→</button><span>Longer</span></div><p>Calibration: {(calibrationDraft*100).toFixed(1)}%</p></div><footer><button onClick={()=>setCalibrationOpen(false)}>Cancel</button><button className="confirm" onClick={()=>{setCalibration(calibrationDraft);setZoom(1);localStorage.setItem("better-cricut-screen-calibration",String(calibrationDraft));setCalibrationOpen(false);window.setTimeout(centerDocument,30);setNotice("Screen calibration saved at true 100% size")}}>Save Calibration</button></footer></div></div>}
       {notice && <div className="toast">{notice}</div>}
       {imageEditor&&(()=>{const target=layers.find(l=>l.id===imageEditor.layerId);return <div className="bg-modal image-edit-modal" role="dialog" aria-modal="true" aria-label="Image editor">
