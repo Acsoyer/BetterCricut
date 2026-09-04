@@ -100,7 +100,7 @@ const CUSTOM_SHAPES = [
   ["Tag",faTag],["Bookmark",faBookmark],["Pin",faLocationPin],["Bubble",faComment],["Puzzle",faPuzzlePiece],
 ] as const;
 const nativeShapeSvg = (viewBox:string, body:string, color:string) =>
-  `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1600" viewBox="${viewBox}" preserveAspectRatio="none" fill="${color}" stroke="#141715" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" shape-rendering="geometricPrecision" style="paint-order:stroke fill">${body}</svg>`)}`;
+  `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1600" viewBox="${viewBox}" preserveAspectRatio="none" fill="${color}" stroke="#141715" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" shape-rendering="geometricPrecision" style="paint-order:stroke fill"><style>path,rect,ellipse{vector-effect:non-scaling-stroke}</style>${body}</svg>`)}`;
 const shapeSource = (name:string,color:string) => {
   if(name==="circle") return nativeShapeSvg("-3 -3 106 106",`<ellipse cx="50" cy="50" rx="49" ry="49"/>`,color);
   if(name==="rectangle") return nativeShapeSvg("-3 -3 106 106",`<rect x="1" y="1" width="98" height="98"/>`,color);
@@ -163,6 +163,7 @@ type Layer = {
   steps: LayerStep[];
   activeStep: number;
   acetateOn: boolean;
+  isShape?: boolean;
 };
 type SavedProject = {
   id: string;
@@ -229,6 +230,7 @@ type CutoutEditor = {
   panX: number;
   panY: number;
 };
+type ClipEditor = { layerId:string; maskSrc:string; imageSrc:string; scale:number; offsetX:number; offsetY:number };
 const uid = () => Math.random().toString(36).slice(2, 10),
   clean = (n: string) => n.replace(/\.[^/.]+$/, "") || "Layer",
   fmt = (n: number) =>
@@ -884,6 +886,7 @@ export default function Home() {
     [safeOpen, setSafeOpen] = useState(false),
     [gridVisible, setGridVisible] = useState(true),
     [bgMenuOpen, setBgMenuOpen] = useState(false),
+    [clipEditor,setClipEditor]=useState<ClipEditor|null>(null),
     [shapeOpen, setShapeOpen] = useState(false),
     [shapeTool, setShapeTool] = useState<string | null>(null),
     [dragLayer, setDragLayer] = useState<string | null>(null),
@@ -916,6 +919,7 @@ export default function Home() {
     [currentProjectId, setCurrentProjectId] = useState<string | null>(null),
     [projectName, setProjectName] = useState("Untitled Project");
   const fileRef = useRef<HTMLInputElement>(null),
+    clipFileRef=useRef<HTMLInputElement>(null),
     stageRef = useRef<HTMLDivElement>(null),
     canvasRef = useRef<HTMLDivElement>(null),
     menuRef = useRef<HTMLElement>(null),
@@ -934,6 +938,7 @@ export default function Home() {
     cropDrag = useRef<{mode:string;x:number;y:number;crop:CutoutEditor["crop"];rect:DOMRect}|null>(null),
     imageCropDrag = useRef<{mode:string;x:number;y:number;crop:ImageEditor["crop"];rect:DOMRect}|null>(null),
     imageDrawing = useRef<string|null>(null),
+    clipDrag=useRef<{x:number;y:number;offsetX:number;offsetY:number;rect:DOMRect}|null>(null),
     zoomRef = useRef(.82),
     zoomAnchor = useRef<{clientX:number;clientY:number;worldX:number;worldY:number}|null>(null),
     pan = useRef<{ x: number; y: number; l: number; t: number } | null>(null);
@@ -1811,6 +1816,26 @@ export default function Home() {
       setWorking(false);
     }
   };
+  const pickShapeColor=async()=>{
+    if(!one?.isShape)return;
+    const EyeDropperCtor=(window as typeof window&{EyeDropper?:new()=>{open:()=>Promise<{sRGBHex:string}>}}).EyeDropper;
+    if(!EyeDropperCtor){setNotice("Color picker is not supported by this browser");return}
+    try{const {sRGBHex}=await new EyeDropperCtor().open();await applyColor(sRGBHex)}catch{/* User cancelled the picker. */}
+  };
+  const chooseClipImage=(e:ChangeEvent<HTMLInputElement>)=>{
+    const file=e.target.files?.[0];e.target.value="";if(!file||!one?.isShape)return;
+    const reader=new FileReader();reader.onload=()=>setClipEditor({layerId:one.id,maskSrc:one.src,imageSrc:String(reader.result),scale:1,offsetX:0,offsetY:0});reader.readAsDataURL(file);
+  };
+  const startClipDrag=(e:RPointer<HTMLDivElement>)=>{if(!clipEditor||e.button!==0)return;e.preventDefault();e.currentTarget.setPointerCapture(e.pointerId);clipDrag.current={x:e.clientX,y:e.clientY,offsetX:clipEditor.offsetX,offsetY:clipEditor.offsetY,rect:e.currentTarget.getBoundingClientRect()}};
+  const moveClipDrag=(e:RPointer<HTMLDivElement>)=>{const start=clipDrag.current;if(!start)return;setClipEditor(v=>v?{...v,offsetX:start.offsetX+(e.clientX-start.x)/start.rect.width,offsetY:start.offsetY+(e.clientY-start.y)/start.rect.height}:v)};
+  const endClipDrag=()=>{clipDrag.current=null};
+  const applyClipImage=async()=>{
+    if(!clipEditor)return;const target=layers.find(layer=>layer.id===clipEditor.layerId);if(!target)return;setWorking(true);
+    try{const mask=await getImage(clipEditor.maskSrc),photo=await getImage(clipEditor.imageSrc),w=1600,h=Math.max(1,Math.round(w*target.h/target.w)),out=document.createElement("canvas");out.width=w;out.height=h;const x=out.getContext("2d")!,cover=Math.max(w/photo.naturalWidth,h/photo.naturalHeight)*clipEditor.scale,dw=photo.naturalWidth*cover,dh=photo.naturalHeight*cover;
+      x.imageSmoothingEnabled=true;x.imageSmoothingQuality="high";x.drawImage(photo,(w-dw)/2+clipEditor.offsetX*w,(h-dh)/2+clipEditor.offsetY*h,dw,dh);x.globalCompositeOperation="destination-in";x.drawImage(mask,0,0,w,h);const src=out.toDataURL("image/png");
+      mutate(target.id,layer=>({...layer,src,originalSrc:src,naturalW:w,naturalH:h}));setClipEditor(null);setNotice("Image placed inside shape")
+    }finally{setWorking(false)}
+  };
   const choose = (e: RPointer, l: Layer) => {
     e.stopPropagation();
     if (e.shiftKey || e.ctrlKey || e.metaKey)
@@ -1977,6 +2002,7 @@ export default function Home() {
       const id=uid(),color=COLORS[Math.floor(Math.random()*21)],src=shapeSource(shapeTool,color),layer:Layer={
         id,name:shapeTool,src,originalSrc:src,visible:true,x,y,w:.1,h:.1,naturalW:1600,naturalH:1600,
         kind:"vector",strokeCm:0,fillGapsMm:0,invalid:false,rotation:0,color,steps:[],activeStep:0,acetateOn:false,
+        isShape:true,
       };
       const step:LayerStep={id:uid(),type:"cutout",label:"Cutout",locked:true,snapshot:snapshot(layer)};layer.steps=[step];
       setLayers(v=>[...v,layer]);setSelected([id]);setDrag({mode:"draw-shape",sx:e.clientX,sy:e.clientY,start:[layer],box:{x,y,w:0,h:0}});
@@ -2357,7 +2383,7 @@ export default function Home() {
           </span>
           <div>
             <b>Better Cricut Editor</b>
-            <small>Personal workspace · v56</small>
+            <small>Personal workspace · v57</small>
           </div>
         </div>
         <button className="brand-undo" onClick={undo} title="Undo (Ctrl+Z)"><Undo2 /> Undo</button>
@@ -2369,6 +2395,7 @@ export default function Home() {
           accept=".jpg,.jpeg,.png,.svg,.webp"
           onChange={add}
         />
+        <input hidden ref={clipFileRef} type="file" accept="image/png,image/jpeg,image/webp" onChange={chooseClipImage}/>
         <span className="toolbar-divider" />
         <nav className="main-actions">
           <button type="button" className="remove-bg-main" onClick={()=>{if(!one)return setNotice("Select one image first");setBgMenuOpen(true)}}><Sparkles />Remove Background</button>
@@ -2424,6 +2451,7 @@ export default function Home() {
           </button>
           {colorOpen && vectorsOnly && (
             <div className="pop palette">
+              {one?.isShape&&<button className="shape-eyedrop" onClick={()=>void pickShapeColor()} title="Pick a colour from the screen"><Pipette/><span>Pick Color</span></button>}
               {COLORS.map((c) => (
                 <button
                   key={c}
@@ -2465,6 +2493,7 @@ export default function Home() {
           <Scissors /> Edit Cutout
         </button>
         <button disabled={!one || ["vector","stroke","acetate"].includes(one.kind)} onClick={openImageEditor}><ImageIcon/> Edit Image</button>
+        <button disabled={!one?.isShape} onClick={()=>clipFileRef.current?.click()}><ImagePlus/> Image in Shape</button>
         <button className="bake-cutout" disabled={!one || !["vector", "stroke"].includes(one.kind)} onClick={() => void makeGapsPermanent()}>
           <Sparkles /> Bake Cutout
         </button>
@@ -2948,6 +2977,7 @@ export default function Home() {
         <div className="project-list">{projects.length ? projects.map(project => <article key={project.id} className={project.id === currentProjectId ? "current" : ""}><button className="project-open" onClick={() => openProject(project)}><FolderOpen/><span><b>{project.name}</b><small>Updated {new Date(project.updated_at).toLocaleString()}</small></span></button><button className="project-delete" onClick={() => void deleteProject(project.id)} title="Delete project"><Trash2/></button></article>) : <div className="projects-empty"><FolderOpen/><b>No saved projects yet</b><span>Save your current canvas to see it here.</span></div>}</div>
       </div></div>}
       {accountOpen && <div className="account-panel" role="dialog" aria-label="My Account"><button className="account-close" onClick={() => setAccountOpen(false)} aria-label="Close"><X/></button><span className="account-avatar"><User/></span><b>My Account</b><small>Signed in as</small><p>{session?.user.email || "Unknown account"}</p><div className="account-stat"><FolderOpen/><span><b>{projects.length}</b><small>Saved projects</small></span></div><button className="sign-out" onClick={() => void supabase.auth.signOut()}><LogOut/> Sign Out</button></div>}
+      {clipEditor&&(()=>{const target=layers.find(layer=>layer.id===clipEditor.layerId);return <div className="clip-modal" role="dialog" aria-modal="true" aria-label="Image in Shape"><div className="clip-dialog"><header><div><b>Image in Shape</b><small>Drag the image to position it inside the shape.</small></div><button onClick={()=>setClipEditor(null)}><X/></button></header><div className="clip-body"><div className="clip-preview"><div className="clip-mask" style={{aspectRatio:`${target?.w||1}/${target?.h||1}`,WebkitMaskImage:`url("${clipEditor.maskSrc}")`,maskImage:`url("${clipEditor.maskSrc}")`} as React.CSSProperties} onPointerDown={startClipDrag} onPointerMove={moveClipDrag} onPointerUp={endClipDrag} onPointerCancel={endClipDrag}><img src={clipEditor.imageSrc} alt="Image placement preview" draggable={false} style={{transform:`translate(${clipEditor.offsetX*100}%,${clipEditor.offsetY*100}%) scale(${clipEditor.scale})`}}/></div></div><aside><label>Image Scale <b>{Math.round(clipEditor.scale*100)}%</b></label><input type="range" min=".35" max="4" step=".01" value={clipEditor.scale} onChange={e=>setClipEditor({...clipEditor,scale:+e.target.value})}/><button onClick={()=>setClipEditor({...clipEditor,scale:1,offsetX:0,offsetY:0})}><Crosshair/> Reset Position</button><p>The shape remains the cutting boundary. The image cannot render outside it.</p></aside></div><footer><button className="cancel" onClick={()=>setClipEditor(null)}>Cancel</button><button className="confirm" onClick={()=>void applyClipImage()}>Apply Image</button></footer></div></div>})()}
       {bgMenuOpen&&<div className="preset-modal" role="dialog" aria-modal="true" aria-label="Remove Background" onPointerDown={()=>setBgMenuOpen(false)}><div className="preset-dialog" onPointerDown={e=>e.stopPropagation()}>
         <header><div><b>Remove Background</b><small>Choose the result you need for this image.</small></div><button onClick={()=>setBgMenuOpen(false)} aria-label="Close"><X/></button></header>
         <div className="preset-grid">
