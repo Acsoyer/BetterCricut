@@ -12,10 +12,10 @@ self.onmessage = async (event) => {
       binaryThreshold: 180,
       filterSpeckle: 12,
       cornerThreshold: 60,
-      lengthThreshold: 8,
+      lengthThreshold: 4,
       maxIterations: 10,
       spliceThreshold: 45,
-      simplify: 2.5,
+      simplify: 1.25,
       pathPrecision: 2,
       optimize: 2,
     });

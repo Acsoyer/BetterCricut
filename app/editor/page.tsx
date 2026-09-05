@@ -818,6 +818,28 @@ async function trimTransparent(src: string) {
     height: h / c.height,
   };
 }
+async function trimUniformBorder(src: string) {
+  const img=await getImage(src),c=document.createElement("canvas");c.width=img.naturalWidth;c.height=img.naturalHeight;
+  const x=c.getContext("2d")!;x.drawImage(img,0,0);const data=x.getImageData(0,0,c.width,c.height),d=data.data;
+  const corners=[[0,0],[c.width-1,0],[0,c.height-1],[c.width-1,c.height-1]].map(([px,py])=>{const i=(py*c.width+px)*4;return[d[i],d[i+1],d[i+2],d[i+3]]});
+  const bg=corners[0],distance=(a:number[],b:number[])=>Math.max(Math.abs(a[0]-b[0]),Math.abs(a[1]-b[1]),Math.abs(a[2]-b[2]),Math.abs(a[3]-b[3]));
+  if(corners.some(color=>distance(color,bg)>18))return{src,left:0,top:0,width:1,height:1};
+  let minX=c.width,minY=c.height,maxX=-1,maxY=-1;
+  for(let py=0;py<c.height;py++)for(let px=0;px<c.width;px++){const i=(py*c.width+px)*4,current=[d[i],d[i+1],d[i+2],d[i+3]];if(distance(current,bg)>22){minX=Math.min(minX,px);minY=Math.min(minY,py);maxX=Math.max(maxX,px);maxY=Math.max(maxY,py)}}
+  if(maxX<minX)return{src,left:0,top:0,width:1,height:1};
+  const pad=1;minX=Math.max(0,minX-pad);minY=Math.max(0,minY-pad);maxX=Math.min(c.width-1,maxX+pad);maxY=Math.min(c.height-1,maxY+pad);
+  if(minX===0&&minY===0&&maxX===c.width-1&&maxY===c.height-1)return{src,left:0,top:0,width:1,height:1};
+  const w=maxX-minX+1,h=maxY-minY+1,out=document.createElement("canvas");out.width=w;out.height=h;out.getContext("2d")!.drawImage(c,minX,minY,w,h,0,0,w,h);
+  return{src:out.toDataURL("image/png"),left:minX/c.width,top:minY/c.height,width:w/c.width,height:h/c.height};
+}
+async function selectedEdgeOverlay(src:string,stroke:EditStroke,color:string){
+  const img=await getImage(src),c=document.createElement("canvas"),mask=document.createElement("canvas");c.width=mask.width=img.naturalWidth;c.height=mask.height=img.naturalHeight;
+  const cx=c.getContext("2d")!,mx=mask.getContext("2d")!;cx.drawImage(img,0,0);mx.lineCap="round";mx.lineJoin="round";mx.strokeStyle="#fff";mx.lineWidth=Math.max(4,stroke.brush/100*Math.min(c.width,c.height));mx.beginPath();
+  stroke.points.forEach((p,i)=>i?mx.lineTo(p.x*c.width,p.y*c.height):mx.moveTo(p.x*c.width,p.y*c.height));if(stroke.points.length===1)mx.lineTo(stroke.points[0].x*c.width+.01,stroke.points[0].y*c.height);mx.stroke();
+  const source=cx.getImageData(0,0,c.width,c.height),selection=mx.getImageData(0,0,c.width,c.height),out=cx.createImageData(c.width,c.height),rgb=color==="green"?[22,163,74]:[239,43,45],radius=Math.max(1,Math.round(Math.min(c.width,c.height)/350));
+  for(let y=1;y<c.height-1;y++)for(let x=1;x<c.width-1;x++){const p=y*c.width+x,i=p*4;if(selection.data[i+3]<20||source.data[i+3]<96)continue;const edge=[p-1,p+1,p-c.width,p+c.width].some(q=>source.data[q*4+3]<96);if(!edge)continue;for(let oy=-radius;oy<=radius;oy++)for(let ox=-radius;ox<=radius;ox++){if(ox*ox+oy*oy>radius*radius)continue;const k=((y+oy)*c.width+x+ox)*4;out.data[k]=rgb[0];out.data[k+1]=rgb[1];out.data[k+2]=rgb[2];out.data[k+3]=255}}
+  cx.clearRect(0,0,c.width,c.height);cx.putImageData(out,0,0);return c.toDataURL("image/png");
+}
 const lighten = (hex: string, amount = 0.34) => {
   const n = parseInt(hex.slice(1), 16),
     r = n >> 16,
@@ -907,6 +929,8 @@ export default function Home() {
     [cutPreview, setCutPreview] = useState(""),
     [cutImageSize, setCutImageSize] = useState({ w: 0, h: 0 }),
     [cutActiveStroke, setCutActiveStroke] = useState<string | null>(null),
+    [cutFinishedStroke, setCutFinishedStroke] = useState<string | null>(null),
+    [cutEdgeOverlay, setCutEdgeOverlay] = useState(""),
     [cutCursor, setCutCursor] = useState<{x:number;y:number;visible:boolean}>({x:0,y:0,visible:false}),
     [imageEditor,setImageEditor]=useState<ImageEditor|null>(null),
     [imageEditorSize,setImageEditorSize]=useState({w:0,h:0}),
@@ -1034,6 +1058,12 @@ export default function Home() {
     const timer = window.setTimeout(() => void renderCutoutEdit(cutEditor).then((r) => { if (!cancelled) setCutPreview(r.src); }), 80);
     return () => { cancelled = true; window.clearTimeout(timer); };
   }, [cutEditor?.source, cutEditor?.strokes, cutEditor?.color]);
+  useEffect(()=>{
+    const id=cutActiveStroke||cutFinishedStroke,stroke=cutEditor?.strokes.find(item=>item.id===id);
+    if(!stroke||stroke.tool!=="smooth"||!cutPreview){setCutEdgeOverlay("");return}
+    let cancelled=false;void selectedEdgeOverlay(cutPreview,stroke,cutFinishedStroke===id?"green":"red").then(src=>{if(!cancelled)setCutEdgeOverlay(src)});
+    return()=>{cancelled=true};
+  },[cutActiveStroke,cutFinishedStroke,cutEditor?.strokes,cutPreview]);
   useEffect(() => {
     if (undoing.current) {
       undoing.current = false;
@@ -1123,10 +1153,7 @@ export default function Home() {
     return () => document.removeEventListener("keydown", onKey);
   }, [selected,bgEditor,imageEditor]);
   useEffect(() => {
-    const stopBrowserZoom = (e: WheelEvent) => {
-      if (!e.ctrlKey) return;
-      e.preventDefault();
-    };
+    const stopBrowserZoom = (e: WheelEvent) => {if(stageRef.current?.contains(e.target as Node)||e.ctrlKey)e.preventDefault()};
     window.addEventListener("wheel", stopBrowserZoom, { passive: false });
     return () => window.removeEventListener("wheel", stopBrowserZoom);
   }, []);
@@ -1135,7 +1162,7 @@ export default function Home() {
     if(e.ctrlKey){stage.scrollTop+=e.deltaY;stage.scrollLeft+=e.deltaX;updateRulers();return}
     const clientX=e.clientX,clientY=e.clientY,before=canvas.getBoundingClientRect(),oldScale=before.width/A4.w,
       worldX=(clientX-before.left)/oldScale,worldY=(clientY-before.top)/oldScale,
-      nextZoom=clamp(zoomRef.current*Math.exp(-e.deltaY*.0012),.2,5);
+      nextZoom=clamp(zoomRef.current*Math.exp(-e.deltaY*.0012),.2,7);
     if(Math.abs(nextZoom-zoomRef.current)<.0001)return;
     zoomAnchor.current={clientX,clientY,worldX,worldY};zoomRef.current=nextZoom;setZoom(nextZoom);
   };
@@ -1178,11 +1205,11 @@ export default function Home() {
   const importFiles = async (files: File[]) => {
     for (const f of files) {
       if (!/image\/(jpeg|png|svg\+xml|webp)/.test(f.type)) continue;
-      const src = await new Promise<string>((ok) => {
+      const rawSrc = await new Promise<string>((ok) => {
           const r = new FileReader();
           r.onload = () => ok(String(r.result));
           r.readAsDataURL(f);
-        }),
+        }), prepared=f.type==="image/svg+xml"?{src:rawSrc,left:0,top:0,width:1,height:1}:await trimUniformBorder(rawSrc),src=prepared.src,
         img = await getImage(src),
         ratio = img.naturalWidth / img.naturalHeight;
       let w = Math.min(10, SAFE.w),
@@ -1422,7 +1449,7 @@ export default function Home() {
   const startCutEdit = (e: RPointer<HTMLImageElement>) => {
     if (!cutEditor || !cutEditor.tool || e.button !== 0) return;
     e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId);
-    const id = uid(); cutDrawing.current = id; setCutActiveStroke(id);
+    const id = uid(); cutDrawing.current = id; setCutFinishedStroke(null);setCutEdgeOverlay("");setCutActiveStroke(id);
     const stroke: EditStroke = { id, tool: cutEditor.tool, brush: cutEditor.brush, points: [cutPoint(e)] };
     setCutEditor({ ...cutEditor, strokes: [...cutEditor.strokes, stroke] });
   };
@@ -1435,7 +1462,7 @@ export default function Home() {
       return last && Math.hypot(p.x-last.x,p.y-last.y)<.003 ? s : { ...s, points:[...s.points,p] };
     }) } : v);
   };
-  const endCutEdit = () => { cutDrawing.current = null; setCutActiveStroke(null); };
+  const endCutEdit = () => {const id=cutDrawing.current;cutDrawing.current=null;setCutActiveStroke(null);if(id){setCutFinishedStroke(id);window.setTimeout(()=>setCutFinishedStroke(value=>value===id?null:value),1000)}};
   const startCropDrag = (e:RPointer<HTMLButtonElement>,mode:string) => {
     if(!cutEditor)return; e.preventDefault();e.stopPropagation();e.currentTarget.setPointerCapture(e.pointerId);
     const rect=e.currentTarget.closest(".cut-image-wrap")!.getBoundingClientRect();
@@ -2533,11 +2560,11 @@ export default function Home() {
             </div>
           </div>
           <div className="zoom">
-            <div className="zoom-row"><button onClick={() => setZoom((v) => clamp(v - 0.1, 0.2, 5))}>
+            <div className="zoom-row"><button onClick={() => setZoom((v) => clamp(v - 0.1, 0.2, 7))}>
               <ZoomOut />
             </button>
-            {zoomEditing?<input autoFocus className="zoom-value-input" aria-label="Zoom percentage" inputMode="numeric" value={zoomDraft} onChange={e=>setZoomDraft(e.target.value.replace(/[^0-9]/g,""))} onKeyDown={e=>{if(e.key==="Enter")e.currentTarget.blur();if(e.key==="Escape"){setZoomEditing(false);setZoomDraft(String(Math.round(zoom*100)))}}} onBlur={()=>{const value=clamp((+zoomDraft||20)/100,.2,5);setZoom(value);setZoomDraft(String(Math.round(value*100)));setZoomEditing(false)}}/>:<button className="zoom-value" onClick={()=>{setZoomDraft(String(Math.round(zoom*100)));setZoomEditing(true)}}>{Math.round(zoom*100)}%</button>}
-            <button onClick={() => setZoom((v) => clamp(v + 0.1, 0.2, 5))}>
+            {zoomEditing?<input autoFocus className="zoom-value-input" aria-label="Zoom percentage" inputMode="numeric" value={zoomDraft} onChange={e=>setZoomDraft(e.target.value.replace(/[^0-9]/g,""))} onKeyDown={e=>{if(e.key==="Enter")e.currentTarget.blur();if(e.key==="Escape"){setZoomEditing(false);setZoomDraft(String(Math.round(zoom*100)))}}} onBlur={()=>{const value=clamp((+zoomDraft||20)/100,.2,7);setZoom(value);setZoomDraft(String(Math.round(value*100)));setZoomEditing(false)}}/>:<button className="zoom-value" onClick={()=>{setZoomDraft(String(Math.round(zoom*100)));setZoomEditing(true)}}>{Math.round(zoom*100)}%</button>}
+            <button onClick={() => setZoom((v) => clamp(v + 0.1, 0.2, 7))}>
               <ZoomIn />
             </button></div>
             <div className="zoom-actions"><button onClick={()=>{setZoom(1);window.setTimeout(centerDocument,30)}} title="Center document at 100%"><Crosshair /><span>Center</span></button>
@@ -3004,15 +3031,16 @@ export default function Home() {
               <div className="bg-preview cutout-preview" ref={cutPreviewRef} onWheel={zoomCutout} onPointerDown={startCutoutPan} onPointerMove={moveCutoutPan} onPointerUp={endCutoutPan} onPointerCancel={endCutoutPan}>
                 {cutPreview && <div className="cut-image-wrap" style={{"--fit-w":cutImageSize.w?`${cutImageSize.w}px`:"auto","--fit-h":cutImageSize.h?`${cutImageSize.h}px`:"auto",transform:`translate(${cutEditor.panX}px,${cutEditor.panY}px) scale(${cutEditor.zoom})`} as React.CSSProperties}>
                   <img className={`cut-tool-${cutEditor.tool}`} src={cutPreview} alt="Cutout edit preview" draggable={false} onLoad={e=>setCutImageSize(fitEditorImage(e.currentTarget,cutPreviewRef.current))} onPointerDown={startCutEdit} onPointerMove={moveCutEdit} onPointerUp={endCutEdit} onPointerCancel={endCutEdit} onPointerEnter={()=>setCutCursor(v=>({...v,visible:true}))} onPointerLeave={()=>setCutCursor(v=>({...v,visible:false}))}/>
+                  {cutEdgeOverlay&&<img className="cut-selected-edge" src={cutEdgeOverlay} alt="" draggable={false}/>} 
                   <svg className="cut-edit-overlay" viewBox="0 0 100 100" preserveAspectRatio="none">
-                    {cutEditor.strokes.filter(s=>s.id===cutActiveStroke||s.tool==="smooth").map(s=>{
+                    {cutEditor.strokes.filter(s=>s.id===cutActiveStroke&&s.tool!=="smooth").map(s=>{
                       const first=s.points[0],last=s.points.at(-1)!,pts=s.points.map(p=>`${p.x*100},${p.y*100}`).join(" ");
                       if(s.tool==="rectangle")return <rect key={s.id} x={Math.min(first.x,last.x)*100} y={Math.min(first.y,last.y)*100} width={Math.abs(last.x-first.x)*100} height={Math.abs(last.y-first.y)*100} className="eraser-selection"/>;
                       if(s.tool==="lasso")return <polyline key={s.id} points={pts} className="eraser-selection lasso-selection"/>;
                       return <polyline key={s.id} points={pts} className={`edit-brush-stroke ${s.tool}`} style={{strokeWidth:s.brush}}/>;
                     })}
-                    {cutCursor.visible&&cutEditor.tool&&["bridge","erase","smooth"].includes(cutEditor.tool)&&<circle cx={cutCursor.x*100} cy={cutCursor.y*100} r={cutEditor.brush/2} className="cut-brush-cursor"/>}
                   </svg>
+                  {cutCursor.visible&&cutEditor.tool&&["bridge","erase","smooth"].includes(cutEditor.tool)&&<i className="cut-round-cursor" style={{left:`${cutCursor.x*100}%`,top:`${cutCursor.y*100}%`,width:`${Math.max(4,cutEditor.brush/100*Math.min(cutImageSize.w,cutImageSize.h))}px`,aspectRatio:"1"}}/>}
                   <div className="crop-guide" style={{left:`${cutEditor.crop.left}%`,top:`${cutEditor.crop.top}%`,right:`${cutEditor.crop.right}%`,bottom:`${cutEditor.crop.bottom}%`}}>
                     {["nw","n","ne","e","se","s","sw","w"].map(h=><button key={h} className={`crop-handle crop-${h}`} onPointerDown={e=>startCropDrag(e,h)} onPointerMove={moveCropDrag} onPointerUp={endCropDrag} onPointerCancel={endCropDrag}/>) }
                   </div>
