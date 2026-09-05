@@ -1756,7 +1756,7 @@ export default function Home() {
       setWorking(false);
     }
   };
-  const smoothCutoutV1 = async () => {
+  const smoothCutoutV4 = async () => {
     if (!one || ["vector", "stroke", "acetate"].includes(one.kind)) return;
     setBgMenuOpen(false); setVTracerStartedAt(Date.now()); setWorking(true);
     try {
@@ -1766,9 +1766,9 @@ export default function Home() {
         noBgLayer: Layer = { ...one, src: trimmed.src, x: one.x + one.w * trimmed.left, y: one.y + one.h * trimmed.top, w: one.w * trimmed.width, h: one.h * trimmed.height, kind: "nobg" },
         finalLayer: Layer = { ...noBgLayer, name: `${one.name.replace(/_(NoBG|Cutout|SmoothCutout)$/i, "")}_SmoothCutout`, src: vectorSrc, color, kind: "vector" };
       const removeStep: LayerStep = { id: uid(), type: "remove-bg", label: "Remove Background", snapshot: snapshot(noBgLayer) },
-        cutoutStep: LayerStep = { id: uid(), type: "cutout", label: "Smooth Cutout v3", snapshot: snapshot(finalLayer) };
+        cutoutStep: LayerStep = { id: uid(), type: "cutout", label: "Smooth Cutout v4", snapshot: snapshot(finalLayer) };
       mutate(one.id, () => ({ ...finalLayer, steps: [...one.steps, removeStep, cutoutStep], activeStep: one.steps.length + 1 }));
-      setNotice("Smooth Cutout v3 created with VTracer");
+      setNotice("Smooth Cutout v4 created with Cricut-optimized curves");
     } catch (error) { setNotice(`Smooth Cutout could not be created: ${error instanceof Error ? error.message : "Unknown error"}`); }
     finally { setWorking(false); setVTracerStartedAt(null); }
   };
@@ -2401,7 +2401,7 @@ export default function Home() {
           <button type="button" className="remove-bg-main" onClick={()=>{if(!one)return setNotice("Select one image first");setBgMenuOpen(true)}}><Sparkles />Remove Background</button>
           <button
             disabled={!one || ["vector", "stroke", "acetate"].includes(one.kind)}
-            onClick={() => void smoothCutoutV1()}
+            onClick={() => void smoothCutoutV4()}
           >
             <Scissors />
             Make Cutout

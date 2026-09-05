@@ -10,14 +10,14 @@ self.onmessage = async (event) => {
       hierarchical: "cutout",
       mode: "spline",
       binaryThreshold: 180,
-      filterSpeckle: 8,
+      filterSpeckle: 12,
       cornerThreshold: 60,
-      lengthThreshold: 4,
+      lengthThreshold: 8,
       maxIterations: 10,
-      spliceThreshold: 4,
-      simplify: 1.2,
-      pathPrecision: 3,
-      optimize: 1,
+      spliceThreshold: 45,
+      simplify: 2.5,
+      pathPrecision: 2,
+      optimize: 2,
     });
     self.postMessage({ svg });
   } catch (error) {
