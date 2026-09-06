@@ -925,38 +925,83 @@ async function analyzeCutSafety(src: string, widthCm: number) {
   };
   scan(true);
   scan(false);
-  let thinHits = 0,
-    minThinRun = Number.POSITIVE_INFINITY;
+  const thinMask = new Uint8Array(w * h),
+    thinWidth = new Uint16Array(w * h);
+  const markThinRun = (positions: number[], run: number) => {
+    if (run <= 0 || run >= threshold) return;
+    for (const position of positions) {
+      thinMask[position] = 1;
+      thinWidth[position] = thinWidth[position] ? Math.min(thinWidth[position], run) : run;
+    }
+  };
   for (let y = 0; y < h; y += 2) {
-    let run = 0;
+    let run = 0,
+      positions: number[] = [];
     for (let xx = 0; xx <= w; xx++) {
-      if (xx < w && solid[y * w + xx]) run++;
+      if (xx < w && solid[y * w + xx]) {
+        run++;
+        positions.push(y * w + xx);
+      }
       else {
-        if (run > 0 && run < threshold) {
-          thinHits++;
-          minThinRun = Math.min(minThinRun, run);
-        }
+        markThinRun(positions, run);
         run = 0;
+        positions = [];
       }
     }
   }
   for (let xx = 0; xx < w; xx += 2) {
-    let run = 0;
+    let run = 0,
+      positions: number[] = [];
     for (let y = 0; y <= h; y++) {
-      if (y < h && solid[y * w + xx]) run++;
+      if (y < h && solid[y * w + xx]) {
+        run++;
+        positions.push(y * w + xx);
+      }
       else {
-        if (run > 0 && run < threshold) {
-          thinHits++;
-          minThinRun = Math.min(minThinRun, run);
-        }
+        markThinRun(positions, run);
         run = 0;
+        positions = [];
       }
     }
   }
-  const thin = thinHits > Math.max(5, threshold * 1.5),
-    minThinMm = Number.isFinite(minThinRun) ? (minThinRun / w) * widthCm * 10 : 0,
+  seen.fill(0);
+  let thinRegionCount = 0,
+    minStructuralWidth = Number.POSITIVE_INFINITY;
+  for (let start = 0; start < thinMask.length; start++) {
+    if (!thinMask[start] || seen[start]) continue;
+    const stack = [start];
+    let minX = w,
+      maxX = 0,
+      minY = h,
+      maxY = 0,
+      minWidth = Number.POSITIVE_INFINITY,
+      count = 0;
+    seen[start] = 1;
+    while (stack.length) {
+      const p = stack.pop()!,
+        px = p % w,
+        py = (p / w) | 0;
+      count++;
+      minX = Math.min(minX, px);
+      maxX = Math.max(maxX, px);
+      minY = Math.min(minY, py);
+      maxY = Math.max(maxY, py);
+      if (thinWidth[p]) minWidth = Math.min(minWidth, thinWidth[p]);
+      for (const n of [p - 1, p + 1, p - w, p + w])
+        if (n >= 0 && n < thinMask.length && !seen[n] && thinMask[n] && Math.abs((n % w) - px) <= 1) {
+          seen[n] = 1;
+          stack.push(n);
+        }
+    }
+    const span = Math.max(maxX - minX + 1, maxY - minY + 1);
+    if (span >= threshold * 2 && count >= threshold) {
+      thinRegionCount++;
+      minStructuralWidth = Math.min(minStructuralWidth, minWidth);
+    }
+  }
+  const minThinMm = Number.isFinite(minStructuralWidth) ? (minStructuralWidth / w) * widthCm * 10 : 0,
     reasons = [
-      thin && `${thinHits} narrow cross-sections detected; thinnest is approximately ${minThinMm.toFixed(1)} mm (minimum 2.0 mm)`,
+      thinRegionCount > 0 && `${thinRegionCount} structurally thin region${thinRegionCount === 1 ? "" : "s"} detected; thinnest is approximately ${minThinMm.toFixed(1)} mm (minimum 2.0 mm)`,
       tinyIslandCount > 0 && `${tinyIslandCount} detached positive island${tinyIslandCount === 1 ? "" : "s"} smaller than 2 mm`,
       tinyHoleCount > 0 && `${tinyHoleCount} enclosed gap${tinyHoleCount === 1 ? "" : "s"} smaller than 2 mm`,
     ].filter(Boolean) as string[];
