@@ -1022,6 +1022,7 @@ export default function Home() {
     imageCropDrag = useRef<{mode:string;x:number;y:number;crop:ImageEditor["crop"];rect:DOMRect}|null>(null),
     imageDrawing = useRef<string|null>(null),
     clipDrag=useRef<{x:number;y:number;offsetX:number;offsetY:number;rect:DOMRect}|null>(null),
+    imageOnShapeTargetRef=useRef<string|null>(null),
     shapeImageDrag=useRef<{mode:string;x:number;y:number;offsetX:number;offsetY:number;widthScale:number;heightScale:number}|null>(null),
     zoomRef = useRef(.82),
     zoomAnchor = useRef<{clientX:number;clientY:number;worldX:number;worldY:number}|null>(null),
@@ -1198,7 +1199,7 @@ export default function Home() {
         );
         return;
       }
-      if(e.key==="Escape"&&(imageOnShapeTarget||shapeImageEditing)){setImageOnShapeTarget(null);setShapeImageEditing(null);setNotice("Image on Shape cancelled");return}
+      if(e.key==="Escape"&&(imageOnShapeTarget||shapeImageEditing)){imageOnShapeTargetRef.current=null;setImageOnShapeTarget(null);setShapeImageEditing(null);setNotice("Image on Shape cancelled");return}
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
         e.preventDefault();
         if (imageEditor) { undoImageStage(); return; }
@@ -1946,18 +1947,18 @@ export default function Home() {
     return out.toDataURL("image/png");
   };
   const attachImageOnShape=async(source:Layer)=>{
-    const target=layers.find(l=>l.id===imageOnShapeTarget);
-    if(!target?.isShape)return;
+    const targetId=imageOnShapeTargetRef.current||imageOnShapeTarget,target=layers.find(l=>l.id===targetId);
+    if(!target?.isShape){imageOnShapeTargetRef.current=null;setImageOnShapeTarget(null);setNotice("Select a shape before choosing Image on Shape");return}
     if(source.id===target.id||source.isShape||!["original","nobg"].includes(source.kind)){setNotice("Choose a regular image layer — cutouts and shapes cannot be placed here");return}
     const placed:NonNullable<Layer["shapeImage"]>={source:{...source},offsetX:(source.x-target.x)/target.w,offsetY:(source.y-target.y)/target.h,widthScale:source.w/target.w,heightScale:source.h/target.h,rotation:source.rotation-target.rotation,visible:true};
     setWorking(true);
-    try{const draft={...target,shapeBaseSrc:target.shapeBaseSrc||target.src,shapeImage:placed},src=await renderShapeImage(draft,placed);setLayers(items=>items.filter(l=>l.id!==source.id).map(l=>l.id===target.id?{...draft,src,originalSrc:src,naturalW:1800,naturalH:Math.max(1,Math.round(1800*target.h/target.w))}:l));setSelected([target.id]);setShapeImageEditing(target.id);setImageOnShapeTarget(null);setNotice("Image placed on shape — drag its frame to reposition it")}
+    try{const draft={...target,shapeBaseSrc:target.shapeBaseSrc||target.src,shapeImage:placed},src=await renderShapeImage(draft,placed);setLayers(items=>items.filter(l=>l.id!==source.id).map(l=>l.id===target.id?{...draft,src,originalSrc:src,naturalW:1800,naturalH:Math.max(1,Math.round(1800*target.h/target.w))}:l));setSelected([target.id]);setShapeImageEditing(target.id);imageOnShapeTargetRef.current=null;setImageOnShapeTarget(null);setNotice("Image placed on shape — drag its frame to reposition it")}
     finally{setWorking(false)}
   };
   const startImageOnShape=()=>{
     if(!one?.isShape)return;
-    if(one.shapeImage){setImageOnShapeTarget(null);setShapeImageEditing(v=>v===one.id?null:one.id);return}
-    setShapeImageEditing(null);setImageOnShapeTarget(v=>v===one.id?null:one.id);setNotice(imageOnShapeTarget===one.id?"Image selection cancelled":"Now choose an image from the canvas or Layers")
+    if(one.shapeImage){imageOnShapeTargetRef.current=null;setImageOnShapeTarget(null);setShapeImageEditing(v=>v===one.id?null:one.id);return}
+    const next=imageOnShapeTargetRef.current===one.id?null:one.id;imageOnShapeTargetRef.current=next;setShapeImageEditing(null);setImageOnShapeTarget(next);setNotice(next?"Now choose an image from the canvas or Layers":"Image selection cancelled")
   };
   const refreshShapeImage=async(id:string)=>{const shape=layers.find(l=>l.id===id);if(!shape?.shapeImage)return;const src=await renderShapeImage(shape,shape.shapeImage);mutate(id,l=>({...l,src,originalSrc:src}))};
   const toggleShapeImage=async(id:string)=>{const shape=layers.find(l=>l.id===id);if(!shape?.shapeImage)return;const placed={...shape.shapeImage,visible:!shape.shapeImage.visible},src=await renderShapeImage(shape,placed);mutate(id,l=>({...l,shapeImage:placed,src,originalSrc:src}))};
@@ -1981,7 +1982,7 @@ export default function Home() {
   };
   const choose = async (e: RPointer, l: Layer) => {
     e.stopPropagation();
-    if(imageOnShapeTarget){await attachImageOnShape(l);return}
+    if(imageOnShapeTargetRef.current||imageOnShapeTarget){await attachImageOnShape(l);return}
     if(l.isShape){const rect=e.currentTarget.getBoundingClientRect(),px=clamp((e.clientX-rect.left)/rect.width,0,1),py=clamp((e.clientY-rect.top)/rect.height,0,1),img=await getImage(l.src),c=document.createElement("canvas");c.width=c.height=1;const x=c.getContext("2d")!;x.drawImage(img,px*img.naturalWidth,py*img.naturalHeight,1,1,0,0,1,1);if(x.getImageData(0,0,1,1).data[3]<64)return}
     if (e.shiftKey || e.ctrlKey || e.metaKey)
       setSelected((v) =>
@@ -2710,7 +2711,7 @@ export default function Home() {
             </div>
             <div
               ref={canvasRef}
-              className={`canvas ${zoom > 1.5 ? "mm-grid" : ""} ${gridVisible ? "" : "grid-off"}`}
+              className={`canvas ${zoom > 1.5 ? "mm-grid" : ""} ${gridVisible ? "" : "grid-off"} ${imageOnShapeTarget?"image-on-shape-picking":""}`}
               onPointerDown={canvasDown}
               style={{
                 left: 42,
@@ -3015,8 +3016,8 @@ export default function Home() {
                 }}
                 onDragEnd={() => setDragLayer(null)}
                 onDrop={() => setDragLayer(null)}
+                onClickCapture={(e)=>{if(imageOnShapeTargetRef.current||imageOnShapeTarget){e.preventDefault();e.stopPropagation();void attachImageOnShape(l)}}}
                 onClick={(e) => {
-                  if(imageOnShapeTarget){e.stopPropagation();void attachImageOnShape(l);return}
                   if (e.shiftKey || e.ctrlKey || e.metaKey)
                     setSelected((v) =>
                       v.includes(l.id)
