@@ -111,8 +111,10 @@ type SavedProject = {
     pageMode?: PageMode;
     safeMargin: number;
     thumbnail?: string;
+    sessionLog?: SessionLogEntry[];
   };
 };
+type SessionLogEntry = { id: string; at: string; action: string; details: string };
 type PageMode = "portrait" | "landscape" | "full";
 type PageColor = "white" | "offwhite" | "warm" | "lightgray" | "darkgray" | "canson";
 const PAGE_COLORS: Record<PageColor, { label: string; color: string }> = {
@@ -852,9 +854,13 @@ async function vTracerCutout(src: string, color: string, physicalWidthCm?: numbe
     output = doc.documentElement as unknown as SVGSVGElement;
   if (output.tagName.toLowerCase() !== "svg" || output.querySelector("parsererror")) throw new Error("VTracer returned an invalid SVG");
   const outputWidth = Number(output.getAttribute("width")) || canvas.width,
-    outputHeight = Number(output.getAttribute("height")) || canvas.height;
+    outputHeight = Number(output.getAttribute("height")) || canvas.height,
+    framePaddingX = 3,
+    framePaddingY = framePaddingX * (outputHeight / Math.max(1, outputWidth));
   output.setAttribute("preserveAspectRatio", "none");
-  output.setAttribute("viewBox", `0 0 ${outputWidth} ${outputHeight}`);
+  output.setAttribute("width", String(outputWidth + framePaddingX * 2));
+  output.setAttribute("height", String(outputHeight + framePaddingY * 2));
+  output.setAttribute("viewBox", `${-framePaddingX} ${-framePaddingY} ${outputWidth + framePaddingX * 2} ${outputHeight + framePaddingY * 2}`);
   output.setAttribute("shape-rendering", "geometricPrecision");
   output.querySelectorAll("path").forEach((path) => {
     path.setAttribute("fill", color);
@@ -881,8 +887,8 @@ async function analyzeCutSafety(src: string, widthCm: number) {
   for (let i = 0; i < solid.length; i++) solid[i] = data[i * 4 + 3] >= 96 ? 1 : 0;
   const threshold = Math.max(1, (0.2 / Math.max(widthCm, 0.01)) * w),
     seen = new Uint8Array(w * h);
-  let tinyIsland = false,
-    tinyHole = false;
+  let tinyIslandCount = 0,
+    tinyHoleCount = 0;
   const scan = (foreground: boolean) => {
     seen.fill(0);
     for (let start = 0; start < solid.length; start++) {
@@ -913,19 +919,23 @@ async function analyzeCutSafety(src: string, widthCm: number) {
       }
       const bw = maxX - minX + 1,
         bh = maxY - minY + 1;
-      if (foreground && count > 1 && Math.min(bw, bh) < threshold && Math.max(bw, bh) < threshold * 5) tinyIsland = true;
-      if (!foreground && !touches && Math.min(bw, bh) < threshold * 1.5) tinyHole = true;
+      if (foreground && count > 1 && Math.min(bw, bh) < threshold && Math.max(bw, bh) < threshold * 5) tinyIslandCount++;
+      if (!foreground && !touches && Math.min(bw, bh) < threshold * 1.5) tinyHoleCount++;
     }
   };
   scan(true);
   scan(false);
-  let thinHits = 0;
+  let thinHits = 0,
+    minThinRun = Number.POSITIVE_INFINITY;
   for (let y = 0; y < h; y += 2) {
     let run = 0;
     for (let xx = 0; xx <= w; xx++) {
       if (xx < w && solid[y * w + xx]) run++;
       else {
-        if (run > 0 && run < threshold) thinHits++;
+        if (run > 0 && run < threshold) {
+          thinHits++;
+          minThinRun = Math.min(minThinRun, run);
+        }
         run = 0;
       }
     }
@@ -935,13 +945,21 @@ async function analyzeCutSafety(src: string, widthCm: number) {
     for (let y = 0; y <= h; y++) {
       if (y < h && solid[y * w + xx]) run++;
       else {
-        if (run > 0 && run < threshold) thinHits++;
+        if (run > 0 && run < threshold) {
+          thinHits++;
+          minThinRun = Math.min(minThinRun, run);
+        }
         run = 0;
       }
     }
   }
   const thin = thinHits > Math.max(5, threshold * 1.5),
-    reasons = [thin && "areas thinner than 2 mm", tinyIsland && "tiny positive islands", tinyHole && "tiny interior gaps"].filter(Boolean) as string[];
+    minThinMm = Number.isFinite(minThinRun) ? (minThinRun / w) * widthCm * 10 : 0,
+    reasons = [
+      thin && `${thinHits} narrow cross-sections detected; thinnest is approximately ${minThinMm.toFixed(1)} mm (minimum 2.0 mm)`,
+      tinyIslandCount > 0 && `${tinyIslandCount} detached positive island${tinyIslandCount === 1 ? "" : "s"} smaller than 2 mm`,
+      tinyHoleCount > 0 && `${tinyHoleCount} enclosed gap${tinyHoleCount === 1 ? "" : "s"} smaller than 2 mm`,
+    ].filter(Boolean) as string[];
   return { cutRisk: reasons.length > 0, cutRiskReason: reasons.join(", ") };
 }
 async function renderCutoutEdit(editor: CutoutEditor, applyCrop = false) {
@@ -1608,6 +1626,10 @@ export default function Home() {
     [saveAsMode, setSaveAsMode] = useState(false),
     [accountOpen, setAccountOpen] = useState(false),
     [devLogOpen, setDevLogOpen] = useState(false),
+    [sessionLogOpen, setSessionLogOpen] = useState(false),
+    [sessionLog, setSessionLog] = useState<SessionLogEntry[]>([
+      { id: uid(), at: new Date().toISOString(), action: "Project started", details: "A new editing session was created." },
+    ]),
     [lastSavedSignature, setLastSavedSignature] = useState(projectSignature([], "portrait", 1)),
     [saveStatus, setSaveStatus] = useState<"saving" | "saved" | null>(null),
     [savedCountdown, setSavedCountdown] = useState<number | null>(null),
@@ -1685,6 +1707,9 @@ export default function Home() {
       worldY: number;
     } | null>(null),
     pan = useRef<{ x: number; y: number; l: number; t: number } | null>(null);
+  const loggedLayers = useRef<Layer[]>([]),
+    logTimer = useRef<number | null>(null),
+    suppressLayerLog = useRef(false);
   const saveToastDismissed = useRef(false);
   const landscape = pageMode === "landscape",
     A4 = pageMode === "full" ? { w: 100, h: 100 } : landscape ? { w: PORTRAIT.h, h: PORTRAIT.w } : PORTRAIT,
@@ -1702,6 +1727,48 @@ export default function Home() {
     vectorsOnly = picked.length > 0 && picked.every((l) => ["stroke", "vector"].includes(l.kind));
   const currentSignature = useMemo(() => projectSignature(layers, pageMode, safeMargin), [layers, pageMode, safeMargin]),
     projectDirty = currentSignature !== lastSavedSignature;
+  const addSessionLog = (action: string, details: string) =>
+    setSessionLog((items) => [...items, { id: uid(), at: new Date().toISOString(), action, details }].slice(-1000));
+  useEffect(() => {
+    if (!notice) return;
+    addSessionLog("Editor message", notice);
+  }, [notice]);
+  useEffect(() => {
+    if (suppressLayerLog.current) {
+      suppressLayerLog.current = false;
+      loggedLayers.current = layers;
+      return;
+    }
+    if (logTimer.current) window.clearTimeout(logTimer.current);
+    logTimer.current = window.setTimeout(() => {
+      const before = loggedLayers.current,
+        prior = new Map(before.map((layer) => [layer.id, layer])),
+        current = new Map(layers.map((layer) => [layer.id, layer])),
+        added = layers.filter((layer) => !prior.has(layer.id)),
+        removed = before.filter((layer) => !current.has(layer.id)),
+        changed = layers.filter((layer) => {
+          const old = prior.get(layer.id);
+          return old && JSON.stringify({ name: old.name, x: old.x, y: old.y, w: old.w, h: old.h, rotation: old.rotation, visible: old.visible, kind: old.kind, color: old.color, steps: old.steps.length, risk: old.cutRiskReason }) !== JSON.stringify({ name: layer.name, x: layer.x, y: layer.y, w: layer.w, h: layer.h, rotation: layer.rotation, visible: layer.visible, kind: layer.kind, color: layer.color, steps: layer.steps.length, risk: layer.cutRiskReason });
+        });
+      added.forEach((layer) => addSessionLog("Layer added", `${layer.name} · ${layer.kind} · ${layer.w.toFixed(2)} × ${layer.h.toFixed(2)} cm`));
+      removed.forEach((layer) => addSessionLog("Layer removed", `${layer.name} · ${layer.kind}`));
+      changed.forEach((layer) => {
+        const old = prior.get(layer.id)!;
+        const details = [old.name !== layer.name && `renamed ${old.name} → ${layer.name}`, old.kind !== layer.kind && `type ${old.kind} → ${layer.kind}`, (old.x !== layer.x || old.y !== layer.y) && `position (${old.x.toFixed(2)}, ${old.y.toFixed(2)}) → (${layer.x.toFixed(2)}, ${layer.y.toFixed(2)}) cm`, (old.w !== layer.w || old.h !== layer.h) && `size ${old.w.toFixed(2)} × ${old.h.toFixed(2)} → ${layer.w.toFixed(2)} × ${layer.h.toFixed(2)} cm`, old.rotation !== layer.rotation && `rotation ${old.rotation.toFixed(1)}° → ${layer.rotation.toFixed(1)}°`, old.visible !== layer.visible && `${layer.visible ? "shown" : "hidden"}`, old.steps.length !== layer.steps.length && `operations ${old.steps.length} → ${layer.steps.length}`, old.cutRiskReason !== layer.cutRiskReason && `cut warning: ${layer.cutRiskReason || "cleared"}`].filter(Boolean);
+        if (details.length) addSessionLog("Layer changed", `${layer.name} · ${details.join("; ")}`);
+      });
+      loggedLayers.current = layers;
+    }, 350);
+    return () => {
+      if (logTimer.current) window.clearTimeout(logTimer.current);
+    };
+  }, [layers]);
+  useEffect(() => {
+    if (!selected.length) addSessionLog("Selection cleared", "No layer is selected.");
+    else addSessionLog("Layer selected", layers.filter((layer) => selected.includes(layer.id)).map((layer) => layer.name).join(", "));
+    // Selection changes are the event being recorded; layer mutations are logged separately above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected]);
   const mutate = (id: string, fn: (l: Layer) => Layer) => setLayers((v) => v.map((l) => (l.id === id ? fn(l) : l)));
   const refreshProjects = async (showLoading = projects.length === 0) => {
     if (showLoading) setProjectsLoading(true);
@@ -1723,7 +1790,9 @@ export default function Home() {
     setSavedCountdown(null);
     const name = (targetName ?? projectName).trim() || "Untitled Project",
       thumbnail = await createProjectThumbnail(layers),
-      projectData = { layers, landscape, pageMode, safeMargin, thumbnail },
+      saveEntry: SessionLogEntry = { id: uid(), at: new Date().toISOString(), action: "Project saved", details: `${name} was ${asNew ? "saved as a new project" : "saved"}.` },
+      nextSessionLog = [...sessionLog, saveEntry].slice(-1000),
+      projectData = { layers, landscape, pageMode, safeMargin, thumbnail, sessionLog: nextSessionLog },
       payload = {
         name,
         data: projectData,
@@ -1742,6 +1811,7 @@ export default function Home() {
       return false;
     }
     setCurrentProjectId(data.id);
+    setSessionLog(nextSessionLog);
     setProjectName(data.name);
     setLastSavedSignature(projectSignature(layers, pageMode, safeMargin));
     setProjects((items) => [data as SavedProject, ...items.filter((project) => project.id !== data.id)]);
@@ -1755,7 +1825,9 @@ export default function Home() {
     return true;
   };
   const openProject = (project: SavedProject) => {
+    suppressLayerLog.current = true;
     setLayers(project.data.layers || []);
+    setSessionLog([...(project.data.sessionLog || []), { id: uid(), at: new Date().toISOString(), action: "Project opened", details: `${project.name} was opened.` }]);
     setPageMode(project.data.pageMode || (project.data.landscape ? "landscape" : "portrait"));
     setSafeMargin(project.data.safeMargin ?? 1);
     setSelected([]);
@@ -1789,7 +1861,9 @@ export default function Home() {
     setNotice("Project deleted");
   };
   const createNewProject = () => {
+    suppressLayerLog.current = true;
     setLayers([]);
+    setSessionLog([{ id: uid(), at: new Date().toISOString(), action: "Project started", details: "A new editing session was created." }]);
     setSelected([]);
     setCurrentProjectId(null);
     setProjectName("Untitled Project");
@@ -2813,19 +2887,29 @@ export default function Home() {
     setRiskLayerId(null);
     setWorking(true);
     try {
-      let src: string;
+      let src: string,
+        geometry = { x: target.x, y: target.y, w: target.w, h: target.h };
       if (["vector", "stroke"].includes(target.kind)) {
-        const solid = await silhouette(target.src, target.color, 255);
-        src = await vTracerCutout(solid, target.color, target.w, 2.7);
+        const solid = await silhouette(target.src, target.color, 255),
+          rim = await addProtectiveRim(solid, solid, target.w);
+        geometry = {
+          x: target.x + target.w * rim.left,
+          y: target.y + target.h * rim.top,
+          w: target.w * rim.width,
+          h: target.h * rim.height,
+        };
+        src = await vTracerCutout(rim.src, target.color, geometry.w, 2.7);
       } else src = await optimizeAlphaChannel(target.src);
-      const safety = await analyzeCutSafety(src, target.w);
+      const safety = await analyzeCutSafety(src, geometry.w);
       mutate(target.id, (layer) => ({
         ...layer,
         ...safety,
+        ...geometry,
         src,
         originalSrc: src,
       }));
-      setNotice(safety.cutRisk ? "Quick Fix reduced contour noise, but a sub-2 mm area still needs review" : "Cut safety issue fixed");
+      addSessionLog("Quick Fix applied", `${target.name} · protective 1.1 mm expansion and contour smoothing · ${safety.cutRisk ? `remaining warning: ${safety.cutRiskReason}` : "warning cleared"}`);
+      setNotice(safety.cutRisk ? `Quick Fix widened and smoothed the contour, but this remains: ${safety.cutRiskReason}` : "Cut safety issue fixed with a protective 1.1 mm expansion");
     } finally {
       setWorking(false);
     }
@@ -5295,7 +5379,9 @@ export default function Home() {
                 </>
               )}
             </span>
-            <small>150 DPI output</small>
+            <button className="session-log-trigger" onClick={() => setSessionLogOpen(true)} title="Open this project's action history">
+              <File /> Session Log
+            </button>
           </footer>
         </aside>
       </section>
@@ -5750,9 +5836,11 @@ export default function Home() {
                 <AlertTriangle />
                 <h3>Cut safety issue</h3>
                 <p>
-                  <b>Too thin or broken edges.</b>
+                  <b>The detected measurements are listed below.</b>
                   <br />
                   {risk.cutRiskReason || "This layer contains details smaller than 2 mm."}
+                  <br />
+                  <small>Quick Fix widens the outside contour by 1.1 mm, smooths it, and then measures it again. If a warning remains, the message will show what still needs manual editing.</small>
                 </p>
                 <footer>
                   <button onClick={() => setRiskLayerId(null)}>Cancel</button>
@@ -6772,6 +6860,32 @@ export default function Home() {
               <button className="confirm" onClick={() => void confirmSeparateLayers()}>
                 Create {splitPreview.parts.length} Layers
               </button>
+            </footer>
+          </div>
+        </div>
+      )}
+      {sessionLogOpen && (
+        <div className="editor-devlog-modal session-log-modal" role="dialog" aria-modal="true" aria-label="Project session log">
+          <div className="editor-devlog-dialog">
+            <header>
+              <div>
+                <span>PROJECT ACTION HISTORY</span>
+                <b>{projectName}</b>
+                <small>Selections, layer changes and editor operations in chronological order.</small>
+              </div>
+              <button onClick={() => setSessionLogOpen(false)}><X /></button>
+            </header>
+            <div className="editor-devlog-scroll">
+              {sessionLog.length ? sessionLog.map((entry, index) => (
+                <article key={entry.id}>
+                  <div><b>#{String(index + 1).padStart(3, "0")}</b><span>{entry.action}</span></div>
+                  <ul><li>{new Date(entry.at).toLocaleString()} · {entry.details}</li></ul>
+                </article>
+              )) : <article><div><span>No actions recorded yet.</span></div></article>}
+            </div>
+            <footer>
+              <span>{sessionLog.length} recorded actions · saved with this project</span>
+              <button onClick={() => void navigator.clipboard.writeText(sessionLog.map((entry, index) => `#${index + 1} ${new Date(entry.at).toLocaleString()} — ${entry.action}\n${entry.details}`).join("\n\n")).then(() => setNotice("Session Log copied"))}>Copy All</button>
             </footer>
           </div>
         </div>
