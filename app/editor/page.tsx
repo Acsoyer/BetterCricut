@@ -271,7 +271,10 @@ async function removeBg(src: string, tolerance = 46) {
   const d = x.getImageData(0, 0, w, h),
     p = [0, (w - 1) * 4, (h - 1) * w * 4, (w * h - 1) * 4],
     cornerAlpha = p.reduce((sum, q) => sum + d.data[q + 3], 0) / p.length,
-    bg = p.reduce((a, q) => [a[0] + d.data[q], a[1] + d.data[q + 1], a[2] + d.data[q + 2]], [0, 0, 0]).map((v) => v / 4);
+    // Presets are designed for light paper backgrounds. Choosing the lightest
+    // corner prevents artwork touching another corner from poisoning the sample.
+    backgroundAt = p.reduce((best, q) => (d.data[q] + d.data[q + 1] + d.data[q + 2] > d.data[best] + d.data[best + 1] + d.data[best + 2] ? q : best), p[0]),
+    bg = [d.data[backgroundAt], d.data[backgroundAt + 1], d.data[backgroundAt + 2]];
   const alreadyTransparent = cornerAlpha < 80;
   for (let i = 0; i < w * h; i++) {
     const q = i * 4,
@@ -319,16 +322,9 @@ async function optimizeAlphaChannel(src: string) {
     source = new Uint8ClampedArray(data.data),
     alpha = new Uint8Array(count);
   for (let i = 0; i < count; i++) alpha[i] = source[i * 4 + 3] >= 128 ? 1 : 0;
-  // A conservative majority pass removes one-pixel edge chatter without rounding real corners.
+  // Preserve the original antialiased contour. Optimization only removes truly
+  // microscopic detached speckles and fills microscopic enclosed pinholes.
   const settled = new Uint8Array(alpha);
-  for (let py = 1; py < c.height - 1; py++)
-    for (let px = 1; px < c.width - 1; px++) {
-      const at = py * c.width + px;
-      let opaque = 0;
-      for (let oy = -1; oy <= 1; oy++) for (let ox = -1; ox <= 1; ox++) if (ox || oy) opaque += alpha[at + oy * c.width + ox];
-      if (alpha[at] && opaque <= 2) settled[at] = 0;
-      else if (!alpha[at] && opaque >= 6) settled[at] = 1;
-    }
   const walkComponents = (foreground: boolean, maxArea: number, fill: number) => {
     const seen = new Uint8Array(count),
       queue = new Int32Array(count);
@@ -356,8 +352,8 @@ async function optimizeAlphaChannel(src: string) {
       if (removable) for (let i = 0; i < tail; i++) settled[queue[i]] = fill;
     }
   };
-  const islandLimit = Math.min(180, Math.max(12, Math.round(count / 50000))),
-    holeLimit = Math.min(260, Math.max(18, Math.round(count / 35000)));
+  const islandLimit = Math.min(8, Math.max(2, Math.round(count / 900000))),
+    holeLimit = Math.min(8, Math.max(2, Math.round(count / 900000)));
   walkComponents(true, islandLimit, 0);
   walkComponents(false, holeLimit, 1);
   for (let i = 0; i < count; i++) {
@@ -366,7 +362,7 @@ async function optimizeAlphaChannel(src: string) {
       data.data[q] = source[q];
       data.data[q + 1] = source[q + 1];
       data.data[q + 2] = source[q + 2];
-      data.data[q + 3] = 255;
+      data.data[q + 3] = source[q + 3] >= 128 ? source[q + 3] : 255;
     } else data.data[q + 3] = 0;
   }
   x.putImageData(data, 0, 0);
@@ -2263,16 +2259,22 @@ export default function Home() {
     let strokes: BgStroke[] = [],
       colors: EraseColor[] = [];
     const edgeRefine = 0;
-    let
-      edgeSmooth = 2;
+    let edgeSmooth = 2;
     const img = await getImage(source),
       sample = document.createElement("canvas");
     sample.width = img.naturalWidth;
     sample.height = img.naturalHeight;
     const sx = sample.getContext("2d")!;
     sx.drawImage(img, 0, 0);
-    const p = sx.getImageData(0, 0, 1, 1).data,
-      backgroundColor = `#${[p[0], p[1], p[2]].map((v) => v.toString(16).padStart(2, "0")).join("")}`;
+    const pixels = sx.getImageData(0, 0, sample.width, sample.height).data,
+      corners = [
+        { x: 0.005, y: 0.005, q: 0 },
+        { x: 0.995, y: 0.005, q: (sample.width - 1) * 4 },
+        { x: 0.005, y: 0.995, q: (sample.height - 1) * sample.width * 4 },
+        { x: 0.995, y: 0.995, q: (sample.width * sample.height - 1) * 4 },
+      ],
+      backgroundCorner = corners.reduce((best, entry) => (pixels[entry.q] + pixels[entry.q + 1] + pixels[entry.q + 2] > pixels[best.q] + pixels[best.q + 1] + pixels[best.q + 2] ? entry : best), corners[0]),
+      backgroundColor = `#${[pixels[backgroundCorner.q], pixels[backgroundCorner.q + 1], pixels[backgroundCorner.q + 2]].map((v) => v.toString(16).padStart(2, "0")).join("")}`;
     if (type === "text") {
       colors = [{ color: backgroundColor, sensitivity: 30 }];
       edgeSmooth = 1;
@@ -2284,7 +2286,7 @@ export default function Home() {
           brush: 4,
           bleed: 10,
           reach: null,
-          points: [{ x: 0.005, y: 0.005 }],
+          points: [{ x: backgroundCorner.x, y: backgroundCorner.y }],
         },
       ];
       if (type === "rim") edgeSmooth = 8;
@@ -2459,6 +2461,11 @@ export default function Home() {
           source: t.src,
           strokes: [],
           crop: { left: 0, top: 0, right: 0, bottom: 0 },
+          history: [],
+          offsetX: 0,
+          offsetY: 0,
+          widthScale: 1,
+          heightScale: 1,
         });
         setImageTab("edit");
       }
@@ -2955,6 +2962,54 @@ export default function Home() {
       naturalW: sw,
       naturalH: sh,
     };
+  };
+  const enterAdvancedBackground = async () => {
+    if (!imageEditor) return;
+    const target = layers.find((layer) => layer.id === imageEditor.layerId);
+    if (!target) return;
+    const pending = imageEditor.strokes.length > 0 || Object.values(imageEditor.crop).some(Boolean),
+      hasCommittedImageEdit = imageEditor.history.length > 0 || imageEditor.offsetX !== 0 || imageEditor.offsetY !== 0 || imageEditor.widthScale !== 1 || imageEditor.heightScale !== 1;
+    if (!pending && !hasCommittedImageEdit) {
+      noBackground(target);
+      setImageTab("background");
+      return;
+    }
+    const rendered = pending
+        ? await renderImageStage(imageEditor)
+        : {
+            src: imageEditor.source,
+            l: 0,
+            t: 0,
+            w: 1,
+            h: 1,
+            naturalW: (await getImage(imageEditor.source)).naturalWidth,
+            naturalH: (await getImage(imageEditor.source)).naturalHeight,
+          },
+      virtual: Layer = {
+        ...target,
+        src: rendered.src,
+        originalSrc: rendered.src,
+        x: target.x + target.w * (imageEditor.offsetX + imageEditor.widthScale * rendered.l),
+        y: target.y + target.h * (imageEditor.offsetY + imageEditor.heightScale * rendered.t),
+        w: target.w * imageEditor.widthScale * rendered.w,
+        h: target.h * imageEditor.heightScale * rendered.h,
+        naturalW: rendered.naturalW,
+        naturalH: rendered.naturalH,
+        steps: target.steps.filter((step) => step.type !== "remove-bg"),
+      };
+    setImageEditor({
+      ...imageEditor,
+      source: rendered.src,
+      strokes: [],
+      crop: { left: 0, top: 0, right: 0, bottom: 0 },
+      history: [],
+      offsetX: 0,
+      offsetY: 0,
+      widthScale: 1,
+      heightScale: 1,
+    });
+    noBackground(virtual);
+    setImageTab("background");
   };
   const commitImageStage = async () => {
     if (!imageEditor || (!imageEditor.strokes.length && !Object.values(imageEditor.crop).some(Boolean))) return;
@@ -4427,8 +4482,8 @@ export default function Home() {
     invalid = layers.some((l) => l.visible && l.invalid),
     gridImage = zoom >= 2.3 ? "linear-gradient(#aeb6b066 1px,transparent 1px),linear-gradient(90deg,#aeb6b066 1px,transparent 1px),linear-gradient(#bec6c044 1px,transparent 1px),linear-gradient(90deg,#bec6c044 1px,transparent 1px),linear-gradient(#cbd2ce2b 1px,transparent 1px),linear-gradient(90deg,#cbd2ce2b 1px,transparent 1px)" : zoom >= 1.3 ? "linear-gradient(#aeb6b05c 1px,transparent 1px),linear-gradient(90deg,#aeb6b05c 1px,transparent 1px),linear-gradient(#c7ceca35 1px,transparent 1px),linear-gradient(90deg,#c7ceca35 1px,transparent 1px)" : "linear-gradient(#9fa8a255 1px,transparent 1px),linear-gradient(90deg,#9fa8a255 1px,transparent 1px),linear-gradient(#c7ceca33 1px,transparent 1px),linear-gradient(90deg,#c7ceca33 1px,transparent 1px)",
     gridSize = zoom >= 2.3 ? `${scale}px ${scale}px,${scale}px ${scale}px,${scale / 2}px ${scale / 2}px,${scale / 2}px ${scale / 2}px,${scale / 10}px ${scale / 10}px,${scale / 10}px ${scale / 10}px` : zoom >= 1.3 ? `${scale}px ${scale}px,${scale}px ${scale}px,${scale / 2}px ${scale / 2}px,${scale / 2}px ${scale / 2}px` : `${scale * 10}px ${scale * 10}px,${scale * 10}px ${scale * 10}px,${scale}px ${scale}px,${scale}px ${scale}px`,
-    canvasBackgroundImage=pageColor==="canson"?`url("/textures/canson-paper-yellow.png"),${gridImage}`:gridImage,
-    canvasBackgroundSize=pageColor==="canson"?`640px 640px,${gridSize}`:gridSize,
+    canvasBackgroundImage=pageColor==="canson"?`${gridImage},url("/textures/canson-paper-yellow.png")`:gridImage,
+    canvasBackgroundSize=pageColor==="canson"?`${gridSize},640px 640px`:gridSize,
     labelBelow = box.y < 2.7;
   return (
     <main
@@ -5817,7 +5872,7 @@ export default function Home() {
                   <button className={imageTab === "edit" ? "active" : ""} onClick={() => setImageTab("edit")}>
                     1. Edit Image
                   </button>
-                  <button className={imageTab === "background" ? "active" : ""} onClick={() => setImageTab("background")}>
+                  <button className={imageTab === "background" ? "active" : ""} onClick={() => void enterAdvancedBackground()}>
                     2. Advanced Background Removal
                   </button>
                   <button className={imageTab === "preset" ? "active" : ""} onClick={() => setImageTab("preset")}>
@@ -6440,7 +6495,6 @@ export default function Home() {
                     setBgEditor({
                       ...bgEditor,
                       optimizeAlpha: !bgEditor.optimizeAlpha,
-                      alphaView: true,
                     })
                   }
                 >
