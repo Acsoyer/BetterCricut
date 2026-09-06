@@ -30,6 +30,7 @@ import {
   Grid3X3,
   Link as LinkIcon,
   Link2Off,
+  Layers3,
   Maximize2,
   Palette,
   Pipette,
