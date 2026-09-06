@@ -167,6 +167,8 @@ type Layer = {
   activeStep: number;
   acetateOn: boolean;
   isShape?: boolean;
+  cutRisk?: boolean;
+  cutRiskReason?: string;
 };
 type SavedProject = {
   id: string;
@@ -252,6 +254,7 @@ const save = (url: string, name: string) => {
   a.click();
   if (url.startsWith("blob:")) setTimeout(() => URL.revokeObjectURL(url), 1000);
 };
+const scalableSvgPreview=(src:string)=>src.startsWith("data:image/svg+xml,")?`data:image/svg+xml,${encodeURIComponent(decodeURIComponent(src.slice(src.indexOf(",")+1)).replace(/\s*vector-effect=["']non-scaling-stroke["']/gi,""))}`:src;
 const getImage = (src: string) =>
   new Promise<HTMLImageElement>((ok, no) => {
     const i = new Image();
@@ -604,6 +607,13 @@ async function vTracerCutout(src: string, color: string, physicalWidthCm?:number
   output.querySelectorAll("path").forEach((path) => { path.setAttribute("fill", color); path.setAttribute("stroke", "#141715"); path.setAttribute("stroke-width", "1.1"); path.setAttribute("stroke-linecap", "round"); path.setAttribute("stroke-linejoin", "round"); path.setAttribute("vector-effect", "non-scaling-stroke"); path.setAttribute("paint-order", "stroke fill"); });
   return `data:image/svg+xml,${encodeURIComponent(new XMLSerializer().serializeToString(output))}`;
 }
+async function analyzeCutSafety(src:string,widthCm:number){
+  const img=await getImage(src),w=Math.min(700,img.naturalWidth),h=Math.max(1,Math.round(w*img.naturalHeight/Math.max(1,img.naturalWidth))),c=document.createElement("canvas");c.width=w;c.height=h;const x=c.getContext("2d",{willReadFrequently:true})!;x.drawImage(img,0,0,w,h);const data=x.getImageData(0,0,w,h).data,solid=new Uint8Array(w*h);for(let i=0;i<solid.length;i++)solid[i]=data[i*4+3]>=96?1:0;
+  const threshold=Math.max(1,.2/Math.max(widthCm,.01)*w),seen=new Uint8Array(w*h);let tinyIsland=false,tinyHole=false;
+  const scan=(foreground:boolean)=>{seen.fill(0);for(let start=0;start<solid.length;start++){if(seen[start]||Boolean(solid[start])!==foreground)continue;let stack=[start],minX=w,maxX=0,minY=h,maxY=0,touches=false,count=0;seen[start]=1;while(stack.length){const p=stack.pop()!,px=p%w,py=(p/w)|0;count++;minX=Math.min(minX,px);maxX=Math.max(maxX,px);minY=Math.min(minY,py);maxY=Math.max(maxY,py);if(!px||!py||px===w-1||py===h-1)touches=true;for(const n of [p-1,p+1,p-w,p+w])if(n>=0&&n<solid.length&&!seen[n]&&Math.abs(n%w-px)<=1&&Boolean(solid[n])===foreground){seen[n]=1;stack.push(n)}}const bw=maxX-minX+1,bh=maxY-minY+1;if(foreground&&count>1&&Math.min(bw,bh)<threshold&&Math.max(bw,bh)<threshold*5)tinyIsland=true;if(!foreground&&!touches&&Math.min(bw,bh)<threshold*1.5)tinyHole=true;}};scan(true);scan(false);
+  let thinHits=0;for(let y=0;y<h;y+=2){let run=0;for(let xx=0;xx<=w;xx++){if(xx<w&&solid[y*w+xx])run++;else{if(run>0&&run<threshold)thinHits++;run=0}}}for(let xx=0;xx<w;xx+=2){let run=0;for(let y=0;y<=h;y++){if(y<h&&solid[y*w+xx])run++;else{if(run>0&&run<threshold)thinHits++;run=0}}}
+  const thin=thinHits>Math.max(5,threshold*1.5),reasons=[thin&&"areas thinner than 2 mm",tinyIsland&&"tiny positive islands",tinyHole&&"tiny interior gaps"].filter(Boolean) as string[];return{cutRisk:reasons.length>0,cutRiskReason:reasons.join(", ")};
+}
 async function renderCutoutEdit(editor: CutoutEditor, applyCrop = false) {
   const img = await getImage(editor.source), c = document.createElement("canvas");
   c.width = img.naturalWidth; c.height = img.naturalHeight;
@@ -931,6 +941,8 @@ export default function Home() {
     [safeOpen, setSafeOpen] = useState(false),
     [gridVisible, setGridVisible] = useState(true),
     [bgMenuOpen, setBgMenuOpen] = useState(false),
+    [cutoutMenuOpen,setCutoutMenuOpen]=useState(false),
+    [svgWarningOpen,setSvgWarningOpen]=useState(false),
     [clipEditor,setClipEditor]=useState<ClipEditor|null>(null),
     [shapeOpen, setShapeOpen] = useState(false),
     [shapeTool, setShapeTool] = useState<string | null>(null),
@@ -1329,7 +1341,7 @@ export default function Home() {
   const quickBackground = async (chosen?:Layer|null) => {
     const targets=chosen?[chosen]:picked;if(!targets.length){setNotice("Select at least one image first");return}setBgMenuOpen(false);setNotice("Removing background…");setWorking(true);
     try{
-      const results=await Promise.all(targets.map(async target=>{const before=snapshot(target),refined=await removeBg(target.src),t=await trimTransparent(refined),next={...target,src:t.src,x:target.x+target.w*t.left,y:target.y+target.h*t.top,w:target.w*t.width,h:target.h*t.height,kind:"nobg" as Kind};const step:LayerStep={id:uid(),type:"remove-bg",label:"Remove Background",before,backgroundColor:"#ffffff",snapshot:snapshot(next)};return {...next,steps:[...target.steps,step],activeStep:target.steps.length}}));
+      const results=await Promise.all(targets.map(async target=>{const before=snapshot(target),refined=await removeBg(target.src),t=await trimTransparent(refined),nextWidth=target.w*t.width,safety=await analyzeCutSafety(t.src,nextWidth),next={...target,...safety,src:t.src,x:target.x+target.w*t.left,y:target.y+target.h*t.top,w:nextWidth,h:target.h*t.height,kind:"nobg" as Kind};const step:LayerStep={id:uid(),type:"remove-bg",label:"Remove Background",before,backgroundColor:"#ffffff",snapshot:snapshot(next)};return {...next,steps:[...target.steps,step],activeStep:target.steps.length}}));
       const byId=new Map(results.map(l=>[l.id,l]));setLayers(items=>items.map(l=>byId.get(l.id)||l));setNotice(`${results.length} background${results.length>1?"s":""} removed`);
     }catch{setNotice("Background removal could not be applied");}finally{setWorking(false)}
   };
@@ -1342,7 +1354,7 @@ export default function Home() {
       if(type==="text"){colors=[{color:backgroundColor,sensitivity:30}];edgeSmooth=1}
       else{strokes=[{id:uid(),mode:"remove",brush:4,bleed:10,reach:null,points:[{x:.005,y:.005}]}];if(type==="rim"){edgeRefine=-8;edgeSmooth=8}}
       let refined=await refineBackground(source,0,strokes,0,edgeRefine,colors,edgeSmooth,true);if(type!=="text")refined=await featherAlphaInside(refined);
-      const t=await trimTransparent(refined),next={...one,src:t.src,x:before.x+before.w*t.left,y:before.y+before.h*t.top,w:before.w*t.width,h:before.h*t.height,kind:"nobg" as Kind},label=type==="image"?"Image Remove Background":type==="rim"?"Image Background + Rim":"Text Background Removal",
+      const t=await trimTransparent(refined),nextWidth=before.w*t.width,safety=await analyzeCutSafety(t.src,nextWidth),next={...one,...safety,src:t.src,x:before.x+before.w*t.left,y:before.y+before.h*t.top,w:nextWidth,h:before.h*t.height,kind:"nobg" as Kind},label=type==="image"?"Image Remove Background":type==="rim"?"Image Background + Rim":"Text Background Removal",
         removalSettings={strokes,speckles:0,edgeRefine,edgeSmooth,optimizeAlpha:true,eraseColors:colors},step:LayerStep={id:uid(),type:"remove-bg",label,before,backgroundColor,removalSettings,snapshot:snapshot(next)},steps=removalIndex>=0?one.steps.slice(0,removalIndex):one.steps;
       mutate(one.id,()=>({...next,steps:[...steps,step],activeStep:steps.length}));setNotice(`${label} applied`)
     }catch{setNotice("Background removal preset could not be applied")}finally{setWorking(false)}
@@ -1350,7 +1362,7 @@ export default function Home() {
   const optimizeSelectedAlpha=async()=>{
     if(!one||!["nobg","vector","stroke","acetate"].includes(one.kind)){setNotice("Select one background-removed image or Cutout first");return}
     setBgMenuOpen(false);setWorking(true);setNotice("Optimizing alpha channel…");
-    try{const cleaned=await optimizeAlphaChannel(one.src),trimmed=await trimTransparent(cleaned),next={...one,src:trimmed.src,x:one.x+one.w*trimmed.left,y:one.y+one.h*trimmed.top,w:one.w*trimmed.width,h:one.h*trimmed.height},step:LayerStep={id:uid(),type:"optimize-alpha",label:"Optimize Alpha",snapshot:snapshot(next)};mutate(one.id,()=>({...next,steps:[...one.steps,step],activeStep:one.steps.length}));setNotice("Alpha channel optimized for cleaner Cricut cutting paths")}
+    try{const cleaned=await optimizeAlphaChannel(one.src),trimmed=await trimTransparent(cleaned),nextWidth=one.w*trimmed.width,safety=await analyzeCutSafety(trimmed.src,nextWidth),next={...one,...safety,src:trimmed.src,x:one.x+one.w*trimmed.left,y:one.y+one.h*trimmed.top,w:nextWidth,h:one.h*trimmed.height},step:LayerStep={id:uid(),type:"optimize-alpha",label:"Optimize Alpha",snapshot:snapshot(next)};mutate(one.id,()=>({...next,steps:[...one.steps,step],activeStep:one.steps.length}));setNotice("Alpha channel optimized for cleaner Cricut cutting paths")}
     catch{setNotice("Alpha channel could not be optimized")}
     finally{setWorking(false)}
   };
@@ -1365,8 +1377,9 @@ export default function Home() {
       );
       const t = await trimTransparent(refined);
       const base=bgEditor.base;
-      const next = {
+      const safety=await analyzeCutSafety(t.src,base.w*t.width),next = {
         ...target,
+        ...safety,
         src: t.src,
         x: base.x + base.w * t.left,
         y: base.y + base.h * t.top,
@@ -1466,7 +1479,7 @@ export default function Home() {
   const zoomCutout = (e: RWheel<HTMLDivElement>) => {
     e.preventDefault(); e.stopPropagation();
     if (!cutEditor) return;
-    setCutEditor({ ...cutEditor, zoom: clamp(cutEditor.zoom * (e.deltaY < 0 ? 1.12 : .89), .5, 5) });
+    setCutEditor({ ...cutEditor, zoom: clamp(cutEditor.zoom * (e.deltaY < 0 ? 1.12 : .89), .5, 10) });
   };
   const startCutoutPan = (e: RPointer<HTMLDivElement>) => {
     if (!cutEditor || e.button !== 1) return;
@@ -1479,11 +1492,11 @@ export default function Home() {
     setCutEditor({ ...cutEditor, panX: start.panX + e.clientX - start.x, panY: start.panY + e.clientY - start.y });
   };
   const endCutoutPan = () => { cutPanDrag.current = null; };
-  const openCutoutEditor = () => {
-    if (!one || !["vector", "stroke"].includes(one.kind)) return;
-    setCutPreview(one.src);setCutCropActive(false);
+  const openCutoutEditor = (chosen:Layer|null=one) => {
+    if (!chosen || !["vector", "stroke"].includes(chosen.kind)) return;
+    const previewSrc=scalableSvgPreview(chosen.src);setCutPreview(previewSrc);setCutCropActive(false);
     setCutImageSize({ w: 0, h: 0 });
-    setCutEditor({ layerId: one.id, source: one.src, color: one.color, tool: null, brush: 3, strokes: [], crop: { left: 0, top: 0, right: 0, bottom: 0 }, zoom: 1, panX: 0, panY: 0, smoothPasses:0 });
+    setCutEditor({ layerId: chosen.id, source: previewSrc, color: chosen.color, tool: null, brush: 3, strokes: [], crop: { left: 0, top: 0, right: 0, bottom: 0 }, zoom: 1, panX: 0, panY: 0, smoothPasses:0 });
   };
   const cutPoint = (e: RPointer<HTMLImageElement>) => {
     const r = e.currentTarget.getBoundingClientRect();
@@ -1526,8 +1539,9 @@ export default function Home() {
     const target = layers.find((l) => l.id === cutEditor.layerId); if (!target) return;
     setWorking(true);
     try {
-      const result = await renderCutoutEdit(cutEditor, true), baked = await silhouette(result.src,target.color,255),hasEdgeFix=cutEditor.strokes.some(stroke=>stroke.tool==="smooth"),finalSrc=hasEdgeFix?await vTracerCutout(baked,target.color,target.w,1.8):baked,next: Layer = {
+      const result = await renderCutoutEdit(cutEditor, true), baked = await silhouette(result.src,target.color,255),hasEdgeFix=cutEditor.strokes.some(stroke=>stroke.tool==="smooth"),finalSrc=hasEdgeFix?await vTracerCutout(baked,target.color,target.w,1.8):baked,safety=await analyzeCutSafety(finalSrc,target.w*result.width),next: Layer = {
         ...target, src: finalSrc, originalSrc: finalSrc, kind: "vector", strokeCm: 0, fillGapsMm: 0,
+        ...safety,
         parentId: undefined, innerSrc: undefined, acetateOn: false, invalid: false,
         x: target.x + target.w*result.left, y: target.y + target.h*result.top,
         w: target.w*result.width, h: target.h*result.height, steps: [], activeStep: 0,
@@ -1829,22 +1843,23 @@ export default function Home() {
       setWorking(false);
     }
   };
-  const smoothCutoutV4 = async () => {
+  const smoothCutoutV4 = async (extraSmooth=false,openEditor=false) => {
     const targets=picked.filter(layer=>!["vector", "stroke", "acetate"].includes(layer.kind));
     if (!targets.length) return;
-    setBgMenuOpen(false); setVTracerStartedAt(Date.now()); setWorking(true);
+    setBgMenuOpen(false);setCutoutMenuOpen(false); setVTracerStartedAt(Date.now()); setWorking(true);
     try {
       const converted:Layer[]=[];
       for(const target of targets){
-        const refined=await refineBackground(target.src,46,[],12,0),trimmed=await trimTransparent(refined),color=COLORS[Math.floor(Math.random()*21)],solid=await silhouette(trimmed.src,color,255),vectorSrc=await vTracerCutout(solid,color,target.w*trimmed.width),
+        const refined=await refineBackground(target.src,46,[],12,0),trimmed=await trimTransparent(refined),color=COLORS[Math.floor(Math.random()*21)],solid=await silhouette(trimmed.src,color,255),vectorSrc=await vTracerCutout(solid,color,target.w*trimmed.width,extraSmooth?2.25:1.25),safety=await analyzeCutSafety(vectorSrc,target.w*trimmed.width),
           noBgLayer:Layer={...target,src:trimmed.src,x:target.x+target.w*trimmed.left,y:target.y+target.h*trimmed.top,w:target.w*trimmed.width,h:target.h*trimmed.height,kind:"nobg"},
-          finalLayer:Layer={...noBgLayer,name:`${target.name.replace(/_(NoBG|Cutout|SmoothCutout)$/i,"")}_SmoothCutout`,src:vectorSrc,color,kind:"vector"},
+          finalLayer:Layer={...noBgLayer,...safety,name:`${target.name.replace(/_(NoBG|Cutout|SmoothCutout)$/i,"")}_${extraSmooth?"SmoothCutout":"DetailedCutout"}`,src:vectorSrc,color,kind:"vector"},
           removeStep:LayerStep={id:uid(),type:"remove-bg",label:"Remove Background",snapshot:snapshot(noBgLayer)},
           cutoutStep:LayerStep={id:uid(),type:"cutout",label:"Smooth Cutout v5",snapshot:snapshot(finalLayer)};
         converted.push({...finalLayer,steps:[...target.steps,removeStep,cutoutStep],activeStep:target.steps.length+1});
       }
       const replacements=new Map(converted.map(layer=>[layer.id,layer]));setLayers(items=>items.map(layer=>replacements.get(layer.id)||layer));setSelected(converted.map(layer=>layer.id));
       setNotice(`${converted.length} ${converted.length===1?"cutout":"cutouts"} created with Cricut-optimized curves`);
+      if(openEditor&&converted.length===1)openCutoutEditor(converted[0]);
     } catch (error) { setNotice(`Smooth Cutout could not be created: ${error instanceof Error ? error.message : "Unknown error"}`); }
     finally { setWorking(false); setVTracerStartedAt(null); }
   };
@@ -2315,8 +2330,9 @@ export default function Home() {
         if (b) save(URL.createObjectURL(b), `${layer.name}_PNG_Cricut.png`);
       }
     },
-    exportSVG = async () => {
+    exportSVG = async (confirmed=false) => {
       if (!canSVG) return;
+      if(!confirmed){setWorking(true);try{const checks=await Promise.all(picked.map(async layer=>({id:layer.id,...await analyzeCutSafety(layer.src,layer.w)}))),risky=checks.filter(check=>check.cutRisk);setLayers(items=>items.map(layer=>{const check=checks.find(item=>item.id===layer.id);return check?{...layer,cutRisk:check.cutRisk,cutRiskReason:check.cutRiskReason}:layer}));if(risky.length){setSvgWarningOpen(true);return}}finally{setWorking(false)}}
       setWorking(true);
       try {
         for (const layer of picked) {
@@ -2477,7 +2493,7 @@ export default function Home() {
           <button type="button" className="remove-bg-main" onClick={()=>{if(!one)return setNotice("Select one image first");setBgMenuOpen(true)}}><Sparkles />Remove Background</button>
           <button
             disabled={!picked.some(layer=>!["vector", "stroke", "acetate"].includes(layer.kind))}
-            onClick={() => void smoothCutoutV4()}
+            onClick={() => setCutoutMenuOpen(true)}
           >
             <Scissors />
             Make Cutout
@@ -2489,11 +2505,11 @@ export default function Home() {
         </nav>
         <div className="export-actions" aria-label="Export options">
           {picked.length > 1 && canSVG && (
-            <button className="multiple-svg" onClick={exportSVG} title="Export every selected Cutout as a separate SVG file">
+            <button className="multiple-svg" onClick={()=>void exportSVG()} title="Export every selected Cutout as a separate SVG file">
               <Type /> Multiple SVG
             </button>
           )}
-          <button disabled={picked.length !== 1 || !canSVG} onClick={exportSVG} title="Export selected Cutout as SVG">
+          <button disabled={picked.length !== 1 || !canSVG} onClick={()=>void exportSVG()} title="Export selected Cutout as SVG">
             <Type /> SVG
           </button>
           <button disabled={!canExport} onClick={exportPNG} title="Export selected layers as separate PNG files">
@@ -2565,7 +2581,7 @@ export default function Home() {
             </div>
           )}
         </div>
-        <button disabled={!one || !["vector", "stroke"].includes(one.kind)} onClick={openCutoutEditor}>
+        <button disabled={!one || !["vector", "stroke"].includes(one.kind)} onClick={()=>openCutoutEditor()}>
           <Scissors /> Edit Cutout
         </button>
         <button disabled={!one || ["vector","stroke","acetate"].includes(one.kind)} onClick={openImageEditor}><ImageIcon/> Edit Image</button>
@@ -2698,7 +2714,7 @@ export default function Home() {
               )}
               {picked.length > 0 && (
                 <div
-                  className="selection-box"
+                  className={`selection-box ${picked.some(layer=>layer.cutRisk)?"cut-risk":""}`}
                   onPointerDown={(e) => startDrag(e, "move")}
                   style={
                     {
@@ -2923,7 +2939,7 @@ export default function Home() {
               <div
                 key={l.id}
                 draggable={editingName !== l.id}
-                className={`card ${selected.includes(l.id) ? "active" : ""} ${!l.visible ? "hidden" : ""} ${dragLayer === l.id ? "dragging" : ""}`}
+                className={`card ${selected.includes(l.id) ? "active" : ""} ${l.cutRisk?"cut-risk":""} ${!l.visible ? "hidden" : ""} ${dragLayer === l.id ? "dragging" : ""}`}
                 onDragStart={() => setDragLayer(l.id)}
                 onDragOver={(e) => e.preventDefault()}
                 onDragEnter={() => {
@@ -2987,7 +3003,7 @@ export default function Home() {
                     · {fmt(l.w)} × {fmt(l.h)} cm
                   </small>
                 </div>
-                {l.invalid && <AlertTriangle className="warning" />}
+                {(l.invalid||l.cutRisk) && <AlertTriangle className="warning" />}
                 <GripVertical className="drag-grip" />
                 {l.steps.length > 0 && (
                   <div
@@ -3059,6 +3075,7 @@ export default function Home() {
       {pendingOverwriteProject&&<div className="project-transition-modal" role="dialog" aria-modal="true"><div><button className="modal-x" onClick={()=>setPendingOverwriteProject(null)}><X/></button><AlertTriangle/><h3>Overwrite “{pendingOverwriteProject.name}”?</h3><p>Its saved canvas will be replaced with the layers currently open in the editor.</p><footer><button onClick={()=>setPendingOverwriteProject(null)}>Cancel</button><button className="confirm" onClick={async()=>{const target=pendingOverwriteProject;setPendingOverwriteProject(null);await saveProject(false,target.id,target.name,false)}}>Overwrite Project</button></footer></div></div>}
       {accountOpen && <div className="account-panel" role="dialog" aria-label="My Account"><button className="account-close" onClick={() => setAccountOpen(false)} aria-label="Close"><X/></button><span className="account-avatar"><User/></span><b>My Account</b><small>Signed in as</small><p>{session?.user.email || "Unknown account"}</p><div className="account-stat"><FolderOpen/><span><b>{projects.length}</b><small>Saved projects</small></span></div><button className="sign-out" onClick={() => void supabase.auth.signOut()}><LogOut/> Sign Out</button></div>}
       {clipEditor&&(()=>{const target=layers.find(layer=>layer.id===clipEditor.layerId);return <div className="clip-modal" role="dialog" aria-modal="true" aria-label="Image in Shape"><div className="clip-dialog"><header><div><b>Image in Shape</b><small>Drag the image to position it inside the shape.</small></div><button onClick={()=>setClipEditor(null)}><X/></button></header><div className="clip-body"><div className="clip-preview"><div className="clip-mask" style={{aspectRatio:`${target?.w||1}/${target?.h||1}`,WebkitMaskImage:`url("${clipEditor.maskSrc}")`,maskImage:`url("${clipEditor.maskSrc}")`} as React.CSSProperties} onPointerDown={startClipDrag} onPointerMove={moveClipDrag} onPointerUp={endClipDrag} onPointerCancel={endClipDrag}><img src={clipEditor.imageSrc} alt="Image placement preview" draggable={false} style={{transform:`translate(${clipEditor.offsetX*100}%,${clipEditor.offsetY*100}%) scale(${clipEditor.scale})`}}/></div></div><aside><label>Image Scale <b>{Math.round(clipEditor.scale*100)}%</b></label><input type="range" min=".35" max="4" step=".01" value={clipEditor.scale} onChange={e=>setClipEditor({...clipEditor,scale:+e.target.value})}/><button onClick={()=>setClipEditor({...clipEditor,scale:1,offsetX:0,offsetY:0})}><Crosshair/> Reset Position</button><p>The shape remains the cutting boundary. The image cannot render outside it.</p></aside></div><footer><button className="cancel" onClick={()=>setClipEditor(null)}>Cancel</button><button className="confirm" onClick={()=>void applyClipImage()}>Apply Image</button></footer></div></div>})()}
+      {cutoutMenuOpen&&<div className="preset-modal cutout-choice-modal" role="dialog" aria-modal="true" aria-label="Make Cutout" onPointerDown={()=>setCutoutMenuOpen(false)}><div className="preset-dialog" onPointerDown={e=>e.stopPropagation()}><header><div><b>Make Cutout</b><small>Choose how much contour detail your project needs.</small></div><button onClick={()=>setCutoutMenuOpen(false)}><X/></button></header><div className="cutout-preset-grid"><button onClick={()=>void smoothCutoutV4(true)}><span><img src="/cutout-presets/smooth.png" alt="Smooth cutout preview"/></span><b>Smooth Cutout</b><small>Cleaner curves and fewer blade movements</small></button><button onClick={()=>void smoothCutoutV4(false)}><span><img src="/cutout-presets/detailed.png" alt="Detailed cutout preview"/></span><b>Detailed Cutout</b><small>Preserves more of the original contour</small></button></div><button className="advanced-preset" disabled={picked.length!==1} onClick={()=>void smoothCutoutV4(false,true)}><i><SlidersHorizontal/></i><span><b>Advanced Cutout Edit</b><small>{picked.length===1?"Create the detailed cutout and open its editing tools":"Select one image to continue into the editor"}</small></span></button></div></div>}
       {bgMenuOpen&&<div className="preset-modal" role="dialog" aria-modal="true" aria-label="Remove Background" onPointerDown={()=>setBgMenuOpen(false)}><div className="preset-dialog" onPointerDown={e=>e.stopPropagation()}>
         <header><div><b>Remove Background</b><small>Choose the result you need for this image.</small></div><button onClick={()=>setBgMenuOpen(false)} aria-label="Close"><X/></button></header>
         <div className="preset-grid">
@@ -3068,6 +3085,7 @@ export default function Home() {
         </div>
         <button className="advanced-preset" onClick={()=>{setBgMenuOpen(false);noBackground()}}><i><SlidersHorizontal/></i><span><b>Advanced Background Removal</b><small>Open the full control panel</small></span></button>
       </div></div>}
+      {svgWarningOpen&&<div className="project-transition-modal cut-safety-modal" role="dialog" aria-modal="true"><div><button className="modal-x" onClick={()=>setSvgWarningOpen(false)}><X/></button><AlertTriangle/><h3>Critical cut warning</h3><p>There are areas thinner than 2 mm, tiny islands, gaps or bridges in this design. Cricut may cut these parts poorly or detach them from the main shape.</p><footer><button onClick={()=>setSvgWarningOpen(false)}>No, review design</button><button className="confirm danger" onClick={()=>{setSvgWarningOpen(false);void exportSVG(true)}}>Yes, export SVG</button></footer></div></div>}
       {calibrationOpen&&<div className="calibration-modal" role="dialog" aria-modal="true" aria-label="Screen size calibration"><div className="calibration-dialog"><header><div><b>Calibrate Screen Size</b><small>Place a physical ruler against the screen and match its 10 cm length.</small></div><button onClick={()=>setCalibrationOpen(false)}><X/></button></header><div className="calibration-body"><div className="screen-ruler" style={{width:10*PPCM*calibrationDraft}}>{Array.from({length:101},(_,i)=><i key={i} className={i%10===0?"cm":i%5===0?"half":"mm"} style={{left:`${i}%`}}>{i%10===0&&<span>{i/10}</span>}</i>)}</div><div className="calibration-slider"><span>Shorter</span><button onClick={()=>setCalibrationDraft(v=>clamp(+(v-.001).toFixed(3),.5,2))}>←</button><input type="range" min=".5" max="2" step=".001" value={calibrationDraft} onChange={e=>setCalibrationDraft(+e.target.value)}/><button onClick={()=>setCalibrationDraft(v=>clamp(+(v+.001).toFixed(3),.5,2))}>→</button><span>Longer</span></div><p>Calibration: {(calibrationDraft*100).toFixed(1)}%</p></div><footer><button onClick={()=>setCalibrationOpen(false)}>Cancel</button><button className="confirm" onClick={()=>{setCalibration(calibrationDraft);setZoom(1);localStorage.setItem("better-cricut-screen-calibration",String(calibrationDraft));setCalibrationOpen(false);window.setTimeout(centerDocument,30);setNotice("Screen calibration saved at true 100% size")}}>Save Calibration</button></footer></div></div>}
       {notice && <div className="toast">{notice}</div>}
       {imageEditor&&(()=>{const target=layers.find(l=>l.id===imageEditor.layerId);return <div className="bg-modal image-edit-modal" role="dialog" aria-modal="true" aria-label="Image editor">
@@ -3102,7 +3120,7 @@ export default function Home() {
                 <div className="bg-zoom-controls">
                   <button onClick={()=>setCutEditor({...cutEditor,zoom:clamp(cutEditor.zoom/1.2,.5,5)})}>−</button>
                   <span>{Math.round(cutEditor.zoom*100)}%</span>
-                  <button onClick={()=>setCutEditor({...cutEditor,zoom:clamp(cutEditor.zoom*1.2,.5,5)})}>+</button>
+                  <button onClick={()=>setCutEditor({...cutEditor,zoom:clamp(cutEditor.zoom*1.2,.5,10)})}>+</button>
                   <button onClick={()=>setCutEditor({...cutEditor,zoom:1,panX:0,panY:0})}>Fit</button>
                 </div>
               </div>
