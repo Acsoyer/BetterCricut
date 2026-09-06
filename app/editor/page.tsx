@@ -19,6 +19,7 @@ import {
   AlignStartVertical,
   AlertTriangle,
   ChevronDown,
+  Check,
   Copy,
   Crosshair,
   Download,
@@ -171,7 +172,7 @@ type SavedProject = {
   id: string;
   name: string;
   updated_at: string;
-  data: { layers: Layer[]; landscape: boolean; pageMode?: PageMode; safeMargin: number };
+  data: { layers: Layer[]; landscape: boolean; pageMode?: PageMode; safeMargin: number; thumbnail?:string };
 };
 type PageMode = "portrait" | "landscape" | "full";
 type Drag = {
@@ -854,6 +855,13 @@ async function findOpaqueIslands(src:string){
   const full=document.createElement("canvas");full.width=img.naturalWidth;full.height=img.naturalHeight;full.getContext("2d")!.drawImage(img,0,0);const parts=groups.map(group=>{const left=group.minX/w,top=group.minY/h,width=(group.maxX-group.minX+1)/w,height=(group.maxY-group.minY+1)/h,sx=Math.floor(left*full.width),sy=Math.floor(top*full.height),sw=Math.max(1,Math.ceil(width*full.width)),sh=Math.max(1,Math.ceil(height*full.height)),out=document.createElement("canvas");out.width=sw;out.height=sh;out.getContext("2d")!.drawImage(full,sx,sy,sw,sh,0,0,sw,sh);return{src:out.toDataURL("image/png"),left,top,width,height,naturalW:sw,naturalH:sh}});
   return{preview:preview.toDataURL("image/png"),parts};
 }
+const projectSignature=(layers:Layer[],pageMode:PageMode,safeMargin:number)=>JSON.stringify({layers,pageMode,safeMargin});
+const formatProjectSize=(project:SavedProject)=>{const bytes=new Blob([JSON.stringify(project.data)]).size;return bytes>=1048576?`${(bytes/1048576).toFixed(1)} MB`:`${Math.max(1,Math.round(bytes/1024))} KB`};
+async function createProjectThumbnail(layers:Layer[]){
+  const visible=layers.filter(layer=>layer.visible);if(!visible.length)return"";const b=bounds(visible),canvas=document.createElement("canvas");canvas.width=180;canvas.height=120;const x=canvas.getContext("2d")!;x.fillStyle="#f7faf8";x.fillRect(0,0,canvas.width,canvas.height);const scale=Math.min(160/Math.max(b.w,.1),100/Math.max(b.h,.1));
+  for(const layer of visible){try{const img=await getImage(layer.src),w=layer.w*scale,h=layer.h*scale,cx=10+(layer.x-b.x)*scale+w/2,cy=10+(layer.y-b.y)*scale+h/2;x.save();x.translate(cx,cy);x.rotate(layer.rotation*Math.PI/180);x.globalAlpha=layer.acetateOn ? .42 : 1;x.drawImage(img,-w/2,-h/2,w,h);x.restore()}catch{}}
+  return canvas.toDataURL("image/webp",.62);
+}
 const lighten = (hex: string, amount = 0.34) => {
   const n = parseInt(hex.slice(1), 16),
     r = n >> 16,
@@ -953,10 +961,17 @@ export default function Home() {
     [rulerOrigin, setRulerOrigin] = useState({ x: 0, y: 0 }),
     [session, setSession] = useState<Session | null>(null),
     [projects, setProjects] = useState<SavedProject[]>([]),
+    [projectsLoading,setProjectsLoading]=useState(true),
     [projectsOpen, setProjectsOpen] = useState(false),
+    [expandedProjectId,setExpandedProjectId]=useState<string|null>(null),
+    [pendingOpenProject,setPendingOpenProject]=useState<SavedProject|null>(null),
+    [pendingOverwriteProject,setPendingOverwriteProject]=useState<SavedProject|null>(null),
+    [pendingNewProject,setPendingNewProject]=useState(false),
     [saveAsMode, setSaveAsMode] = useState(false),
     [accountOpen, setAccountOpen] = useState(false),
     [devLogOpen,setDevLogOpen]=useState(false),
+    [lastSavedSignature,setLastSavedSignature]=useState(projectSignature([],"portrait",1)),
+    [savedCountdown,setSavedCountdown]=useState<number|null>(null),
     [currentProjectId, setCurrentProjectId] = useState<string | null>(null),
     [projectName, setProjectName] = useState("Untitled Project");
   const fileRef = useRef<HTMLInputElement>(null),
@@ -999,29 +1014,33 @@ export default function Home() {
     vectorsOnly =
       picked.length > 0 &&
       picked.every((l) => ["stroke", "vector"].includes(l.kind));
+  const currentSignature=useMemo(()=>projectSignature(layers,pageMode,safeMargin),[layers,pageMode,safeMargin]),projectDirty=currentSignature!==lastSavedSignature;
   const mutate = (id: string, fn: (l: Layer) => Layer) =>
     setLayers((v) => v.map((l) => (l.id === id ? fn(l) : l)));
   const refreshProjects = async () => {
+    setProjectsLoading(true);
     const { data, error } = await supabase.from("projects").select("id,name,updated_at,data").order("updated_at", { ascending: false });
-    if (error) { setNotice("Projects could not be loaded"); return; }
+    setProjectsLoading(false);
+    if (error) { setNotice("Projects could not be loaded. Please try again."); return; }
     setProjects((data || []) as SavedProject[]);
   };
-  const saveProject = async (asNew = false) => {
-    if (!session?.user) return setNotice("Sign in to save a project");
+  const saveProject = async (asNew = false,targetId?:string,targetName?:string,closePanel=true) => {
+    if (!session?.user) {setNotice("Sign in to save a project");return false}
     setWorking(true);
-    const payload = { name: projectName.trim() || "Untitled Project", data: { layers, landscape, pageMode, safeMargin }, user_id: session.user.id, updated_at: new Date().toISOString() };
-    const query = currentProjectId && !asNew
-      ? supabase.from("projects").update(payload).eq("id", currentProjectId).select("id,name,updated_at,data").single()
+    const name=(targetName??projectName).trim()||"Untitled Project",thumbnail=await createProjectThumbnail(layers),projectData={layers,landscape,pageMode,safeMargin,thumbnail},payload = { name, data:projectData, user_id: session.user.id, updated_at: new Date().toISOString() },updateId=targetId??currentProjectId;
+    const query = updateId && !asNew
+      ? supabase.from("projects").update(payload).eq("id", updateId).select("id,name,updated_at,data").single()
       : supabase.from("projects").insert(payload).select("id,name,updated_at,data").single();
     const { data, error } = await query;
     setWorking(false);
-    if (error || !data) return setNotice("Project could not be saved");
-    setCurrentProjectId(data.id); setProjectName(data.name); await refreshProjects(); setProjectsOpen(false); setSaveAsMode(false); setNotice(asNew ? "Project saved as a new copy" : "Project saved");
+    if (error || !data) {setNotice("Project could not be saved");return false}
+    setCurrentProjectId(data.id);setProjectName(data.name);setLastSavedSignature(projectSignature(layers,pageMode,safeMargin));await refreshProjects();if(closePanel)setProjectsOpen(false);setSaveAsMode(false);setSavedCountdown(2);return true;
   };
   const openProject = (project: SavedProject) => {
     setLayers(project.data.layers || []); setPageMode(project.data.pageMode || (project.data.landscape ? "landscape" : "portrait")); setSafeMargin(project.data.safeMargin ?? 1);
-    setSelected([]); setCurrentProjectId(project.id); setProjectName(project.name); history.current = []; setProjectsOpen(false); setNotice(`${project.name} opened`);
+    setSelected([]); setCurrentProjectId(project.id); setProjectName(project.name);setLastSavedSignature(projectSignature(project.data.layers||[],project.data.pageMode||(project.data.landscape?"landscape":"portrait"),project.data.safeMargin??1)); history.current = []; setProjectsOpen(false); setNotice(`${project.name} opened`);
   };
+  const requestOpenProject=(project:SavedProject)=>{if(projectDirty&&layers.length){setPendingOpenProject(project);return}openProject(project)};
   const deleteProject = async (id: string) => {
     const previous=projects;setProjects(items=>items.filter(project=>project.id!==id));
     const { error } = await supabase.from("projects").delete().eq("id", id);
@@ -1029,15 +1048,19 @@ export default function Home() {
     if (currentProjectId === id) { setCurrentProjectId(null); setProjectName("Untitled Project"); }
     await refreshProjects(); setNotice("Project deleted");
   };
-  const newProject = () => {
+  const createNewProject = () => {
     setLayers([]); setSelected([]); setCurrentProjectId(null); setProjectName("Untitled Project");
-    setPageMode("portrait"); setSafeMargin(1); history.current=[]; setProjectsOpen(false);
+    setPageMode("portrait"); setSafeMargin(1);setLastSavedSignature(projectSignature([],"portrait",1)); history.current=[]; setProjectsOpen(false);
     window.setTimeout(centerDocument,40); setNotice("New project created");
   };
+  const newProject=()=>{if(projectDirty&&layers.length){setPendingNewProject(true);return}createNewProject()};
+  const discardAndContinue=()=>{const target=pendingOpenProject;setPendingOpenProject(null);setPendingNewProject(false);if(target)openProject(target);else createNewProject()};
+  const saveAndContinue=async()=>{const target=pendingOpenProject;const creating=pendingNewProject;if(!target&&!creating)return;const saved=await saveProject(false,undefined,undefined,false);if(!saved)return;setPendingOpenProject(null);setPendingNewProject(false);if(target)openProject(target);else createNewProject()};
   useEffect(() => {
     const stored=Number(localStorage.getItem("better-cricut-screen-calibration"));
     if(Number.isFinite(stored)&&stored>=.5&&stored<=2){setCalibration(stored);setCalibrationDraft(stored)}
   },[]);
+  useEffect(()=>{if(savedCountdown===null)return;const timer=window.setTimeout(()=>setSavedCountdown(value=>value!==null&&value>1?value-1:null),1000);return()=>window.clearTimeout(timer)},[savedCountdown]);
   useEffect(() => {
     void supabase.auth.getSession().then(({ data }) => { setSession(data.session); if (data.session) void refreshProjects(); });
     const { data } = supabase.auth.onAuthStateChange((_event, next) => { setSession(next); if (next) void refreshProjects(); else setProjects([]); });
@@ -1804,18 +1827,21 @@ export default function Home() {
     }
   };
   const smoothCutoutV4 = async () => {
-    if (!one || ["vector", "stroke", "acetate"].includes(one.kind)) return;
+    const targets=picked.filter(layer=>!["vector", "stroke", "acetate"].includes(layer.kind));
+    if (!targets.length) return;
     setBgMenuOpen(false); setVTracerStartedAt(Date.now()); setWorking(true);
     try {
-      const refined = await refineBackground(one.src, 46, [], 12, 0), trimmed = await trimTransparent(refined),
-        color = COLORS[Math.floor(Math.random() * 21)], solid = await silhouette(trimmed.src, color, 255),
-        vectorSrc = await vTracerCutout(solid, color),
-        noBgLayer: Layer = { ...one, src: trimmed.src, x: one.x + one.w * trimmed.left, y: one.y + one.h * trimmed.top, w: one.w * trimmed.width, h: one.h * trimmed.height, kind: "nobg" },
-        finalLayer: Layer = { ...noBgLayer, name: `${one.name.replace(/_(NoBG|Cutout|SmoothCutout)$/i, "")}_SmoothCutout`, src: vectorSrc, color, kind: "vector" };
-      const removeStep: LayerStep = { id: uid(), type: "remove-bg", label: "Remove Background", snapshot: snapshot(noBgLayer) },
-        cutoutStep: LayerStep = { id: uid(), type: "cutout", label: "Smooth Cutout v5", snapshot: snapshot(finalLayer) };
-      mutate(one.id, () => ({ ...finalLayer, steps: [...one.steps, removeStep, cutoutStep], activeStep: one.steps.length + 1 }));
-      setNotice("Smooth Cutout v5 created with Cricut-optimized curves");
+      const converted:Layer[]=[];
+      for(const target of targets){
+        const refined=await refineBackground(target.src,46,[],12,0),trimmed=await trimTransparent(refined),color=COLORS[Math.floor(Math.random()*21)],solid=await silhouette(trimmed.src,color,255),vectorSrc=await vTracerCutout(solid,color),
+          noBgLayer:Layer={...target,src:trimmed.src,x:target.x+target.w*trimmed.left,y:target.y+target.h*trimmed.top,w:target.w*trimmed.width,h:target.h*trimmed.height,kind:"nobg"},
+          finalLayer:Layer={...noBgLayer,name:`${target.name.replace(/_(NoBG|Cutout|SmoothCutout)$/i,"")}_SmoothCutout`,src:vectorSrc,color,kind:"vector"},
+          removeStep:LayerStep={id:uid(),type:"remove-bg",label:"Remove Background",snapshot:snapshot(noBgLayer)},
+          cutoutStep:LayerStep={id:uid(),type:"cutout",label:"Smooth Cutout v5",snapshot:snapshot(finalLayer)};
+        converted.push({...finalLayer,steps:[...target.steps,removeStep,cutoutStep],activeStep:target.steps.length+1});
+      }
+      const replacements=new Map(converted.map(layer=>[layer.id,layer]));setLayers(items=>items.map(layer=>replacements.get(layer.id)||layer));setSelected(converted.map(layer=>layer.id));
+      setNotice(`${converted.length} ${converted.length===1?"cutout":"cutouts"} created with Cricut-optimized curves`);
     } catch (error) { setNotice(`Smooth Cutout could not be created: ${error instanceof Error ? error.message : "Unknown error"}`); }
     finally { setWorking(false); setVTracerStartedAt(null); }
   };
@@ -2447,7 +2473,7 @@ export default function Home() {
         <nav className="main-actions">
           <button type="button" className="remove-bg-main" onClick={()=>{if(!one)return setNotice("Select one image first");setBgMenuOpen(true)}}><Sparkles />Remove Background</button>
           <button
-            disabled={!one || ["vector", "stroke", "acetate"].includes(one.kind)}
+            disabled={!picked.some(layer=>!["vector", "stroke", "acetate"].includes(layer.kind))}
             onClick={() => void smoothCutoutV4()}
           >
             <Scissors />
@@ -3019,10 +3045,13 @@ export default function Home() {
         </aside>
       </section>
       {projectsOpen && <div className="project-modal" role="dialog" aria-modal="true" aria-label="My Projects"><div className="project-dialog">
-        <header><div><b>My Projects</b><small>{projects.length} saved {projects.length === 1 ? "project" : "projects"}</small></div><button onClick={() => setProjectsOpen(false)} aria-label="Close"><X/></button></header>
-        <div className="project-name-row"><label>{saveAsMode?"New project name":"Project name"}</label><input autoFocus value={projectName} maxLength={80} onFocus={(e)=>e.currentTarget.select()} onChange={(e) => setProjectName(e.target.value)} /><button onClick={() => void saveProject(saveAsMode)}>{saveAsMode?"Save As":"Save"}</button></div>
-        <div className="project-list">{projects.length ? projects.map(project => <article key={project.id} className={project.id === currentProjectId ? "current" : ""}><button className="project-open" onClick={() => openProject(project)}><FolderOpen/><span><b>{project.name}</b><small>Updated {new Date(project.updated_at).toLocaleString()}</small></span></button><button className="project-delete" onClick={() => void deleteProject(project.id)} title="Delete project"><Trash2/></button></article>) : <div className="projects-empty"><FolderOpen/><b>No saved projects yet</b><span>Save your current canvas to see it here.</span></div>}</div>
+        <header><div><b>My Projects</b><small>{projectsLoading?"Loading your saved work…":`${projects.length} saved ${projects.length===1?"project":"projects"}`}</small></div><button onClick={() => setProjectsOpen(false)} aria-label="Close"><X/></button></header>
+        <div className="project-save-toolbar"><label><span>{saveAsMode?"Name for the new copy":"Current project name"}</span><input value={projectName} maxLength={80} onChange={e=>setProjectName(e.target.value)}/></label><button onClick={()=>void saveProject(false,undefined,undefined,false)}><Download/> Save Project</button><button className={saveAsMode?"active":""} onClick={()=>{if(saveAsMode)void saveProject(true,undefined,undefined,false);else{setSaveAsMode(true);setProjectName(currentProjectId?`${projectName} Copy`:projectName)}}}><Copy/> {saveAsMode?"Confirm Save As":"Save As Project"}</button></div>
+        <div className="project-list">{projectsLoading?<div className="projects-loading"><i/><b>Loading your projects…</b><span>Your saved projects are safe while we sync them.</span></div>:projects.length?projects.map(project=>{const expanded=expandedProjectId===project.id;return <article key={project.id} className={`project-card ${project.id===currentProjectId?"current":""} ${expanded?"expanded":""}`}><button className="project-summary" onClick={()=>setExpandedProjectId(value=>value===project.id?null:project.id)}><span className="project-composite-thumb">{project.data.thumbnail?<img src={project.data.thumbnail} alt=""/>:<FolderOpen/>}</span><span className="project-summary-copy"><b>{project.name}</b><small>Updated {new Date(project.updated_at).toLocaleString()}</small><em>{project.data.layers?.length||0} layers · {formatProjectSize(project)}</em></span><ChevronDown/></button>{expanded&&<div className="project-details"><div className="project-layer-thumbs">{(project.data.layers||[]).slice(0,12).map(layer=><span key={layer.id} title={layer.name}><img src={layer.src} alt={layer.name}/></span>)}{(project.data.layers?.length||0)>12&&<b>+{project.data.layers.length-12}</b>}</div><div className="project-card-actions"><button className="open-saved-project" onClick={()=>requestOpenProject(project)}><FolderOpen/> Open Project</button><button onClick={()=>setPendingOverwriteProject(project)}><Download/> Overwrite with Current</button><button className="project-delete" onClick={()=>void deleteProject(project.id)} title="Delete project"><Trash2/> Delete</button></div></div>}</article>}):<div className="projects-empty"><FolderOpen/><b>No saved projects yet</b><span>Save your current canvas to see it here.</span></div>}</div>
       </div></div>}
+      {savedCountdown!==null&&<div className="saved-confirmation" role="status"><Check/><span><b>Project saved</b><small>{projectName} · just now</small></span><strong>{savedCountdown}…</strong><button onClick={()=>setSavedCountdown(null)}>OK</button></div>}
+      {(pendingOpenProject||pendingNewProject)&&<div className="project-transition-modal" role="dialog" aria-modal="true"><div><AlertTriangle/><h3>Save changes before continuing?</h3><p><b>{projectName}</b> contains changes that have not been saved yet.</p><footer><button onClick={()=>{setPendingOpenProject(null);setPendingNewProject(false)}}>Cancel</button><button className="discard" onClick={discardAndContinue}>Open without saving</button><button className="confirm" onClick={()=>void saveAndContinue()}>Save &amp; Continue</button></footer></div></div>}
+      {pendingOverwriteProject&&<div className="project-transition-modal" role="dialog" aria-modal="true"><div><AlertTriangle/><h3>Overwrite “{pendingOverwriteProject.name}”?</h3><p>Its saved canvas will be replaced with the layers currently open in the editor.</p><footer><button onClick={()=>setPendingOverwriteProject(null)}>Cancel</button><button className="confirm" onClick={async()=>{const target=pendingOverwriteProject;setPendingOverwriteProject(null);await saveProject(false,target.id,target.name,false)}}>Overwrite Project</button></footer></div></div>}
       {accountOpen && <div className="account-panel" role="dialog" aria-label="My Account"><button className="account-close" onClick={() => setAccountOpen(false)} aria-label="Close"><X/></button><span className="account-avatar"><User/></span><b>My Account</b><small>Signed in as</small><p>{session?.user.email || "Unknown account"}</p><div className="account-stat"><FolderOpen/><span><b>{projects.length}</b><small>Saved projects</small></span></div><button className="sign-out" onClick={() => void supabase.auth.signOut()}><LogOut/> Sign Out</button></div>}
       {clipEditor&&(()=>{const target=layers.find(layer=>layer.id===clipEditor.layerId);return <div className="clip-modal" role="dialog" aria-modal="true" aria-label="Image in Shape"><div className="clip-dialog"><header><div><b>Image in Shape</b><small>Drag the image to position it inside the shape.</small></div><button onClick={()=>setClipEditor(null)}><X/></button></header><div className="clip-body"><div className="clip-preview"><div className="clip-mask" style={{aspectRatio:`${target?.w||1}/${target?.h||1}`,WebkitMaskImage:`url("${clipEditor.maskSrc}")`,maskImage:`url("${clipEditor.maskSrc}")`} as React.CSSProperties} onPointerDown={startClipDrag} onPointerMove={moveClipDrag} onPointerUp={endClipDrag} onPointerCancel={endClipDrag}><img src={clipEditor.imageSrc} alt="Image placement preview" draggable={false} style={{transform:`translate(${clipEditor.offsetX*100}%,${clipEditor.offsetY*100}%) scale(${clipEditor.scale})`}}/></div></div><aside><label>Image Scale <b>{Math.round(clipEditor.scale*100)}%</b></label><input type="range" min=".35" max="4" step=".01" value={clipEditor.scale} onChange={e=>setClipEditor({...clipEditor,scale:+e.target.value})}/><button onClick={()=>setClipEditor({...clipEditor,scale:1,offsetX:0,offsetY:0})}><Crosshair/> Reset Position</button><p>The shape remains the cutting boundary. The image cannot render outside it.</p></aside></div><footer><button className="cancel" onClick={()=>setClipEditor(null)}>Cancel</button><button className="confirm" onClick={()=>void applyClipImage()}>Apply Image</button></footer></div></div>})()}
       {bgMenuOpen&&<div className="preset-modal" role="dialog" aria-modal="true" aria-label="Remove Background" onPointerDown={()=>setBgMenuOpen(false)}><div className="preset-dialog" onPointerDown={e=>e.stopPropagation()}>
