@@ -18,6 +18,7 @@ import {
   AlignStartHorizontal,
   AlignStartVertical,
   AlertTriangle,
+  BringToFront,
   ChevronDown,
   Check,
   Copy,
@@ -26,7 +27,10 @@ import {
   Eye,
   EyeOff,
   FileImage,
+  File,
   ImagePlus,
+  Paintbrush,
+  Eraser,
   GripVertical,
   Grid3X3,
   Link as LinkIcon,
@@ -37,9 +41,11 @@ import {
   Pipette,
   Plus,
   RotateCw,
+  Replace,
   Ruler,
   Scissors,
   SlidersHorizontal,
+  SendToBack,
   Sparkles,
   Star,
   Trash2,
@@ -661,6 +667,7 @@ async function renderCutoutEdit(editor: CutoutEditor, applyCrop = false) {
     for(let py=1;py<c.height-1;py++)for(let px=1;px<c.width-1;px++){const p=py*c.width+px,q=p*4;if(selected.data[q+3]<20||current.data[q+3]<128)continue;if([p-1,p+1,p-c.width,p+c.width].some(n=>current.data[n*4+3]<128)){current.data[q]=20;current.data[q+1]=23;current.data[q+2]=21}}
     x.putImageData(current, 0, 0);
   }
+  const outlined=x.getImageData(0,0,c.width,c.height),copy=new Uint8ClampedArray(outlined.data);for(let py=0;py<c.height;py++)for(let px=0;px<c.width;px++){const p=py*c.width+px,q=p*4;if(copy[q+3]<96)continue;let edge=false;for(let oy=-1;oy<=1&&!edge;oy++)for(let ox=-1;ox<=1;ox++){const nx=px+ox,ny=py+oy;if(nx<0||ny<0||nx>=c.width||ny>=c.height||copy[(ny*c.width+nx)*4+3]<96){edge=true;break}}if(edge){outlined.data[q]=20;outlined.data[q+1]=23;outlined.data[q+2]=21;outlined.data[q+3]=255}}x.putImageData(outlined,0,0);
   if (!applyCrop) return { src: c.toDataURL(), left: 0, top: 0, width: 1, height: 1 };
   const l = clamp(editor.crop.left / 100, 0, .9), t = clamp(editor.crop.top / 100, 0, .9),
     r = clamp(editor.crop.right / 100, 0, Math.max(0,.95-l)), b = clamp(editor.crop.bottom / 100, 0, Math.max(0,.95-t)),
@@ -943,6 +950,7 @@ export default function Home() {
     [bgMenuOpen, setBgMenuOpen] = useState(false),
     [cutoutMenuOpen,setCutoutMenuOpen]=useState(false),
     [svgWarningOpen,setSvgWarningOpen]=useState(false),
+    [riskLayerId,setRiskLayerId]=useState<string|null>(null),
     [clipEditor,setClipEditor]=useState<ClipEditor|null>(null),
     [shapeOpen, setShapeOpen] = useState(false),
     [shapeTool, setShapeTool] = useState<string | null>(null),
@@ -961,6 +969,7 @@ export default function Home() {
     [bgCursor, setBgCursor] = useState<{ x: number; y: number; visible: boolean }>({ x: 0, y: 0, visible: false }),
     [bgImageSize, setBgImageSize] = useState({ w: 0, h: 0 }),
     [cutEditor, setCutEditor] = useState<CutoutEditor | null>(null),
+    [cutoutTab,setCutoutTab]=useState<"edit"|"stroke">("edit"),
     [cutPreview, setCutPreview] = useState(""),
     [cutImageSize, setCutImageSize] = useState({ w: 0, h: 0 }),
     [cutActiveStroke, setCutActiveStroke] = useState<string | null>(null),
@@ -1494,7 +1503,7 @@ export default function Home() {
   const endCutoutPan = () => { cutPanDrag.current = null; };
   const openCutoutEditor = (chosen:Layer|null=one) => {
     if (!chosen || !["vector", "stroke"].includes(chosen.kind)) return;
-    const previewSrc=scalableSvgPreview(chosen.src);setCutPreview(previewSrc);setCutCropActive(false);
+    const previewSrc=scalableSvgPreview(chosen.src);setCutPreview(previewSrc);setCutCropActive(false);setCutoutTab("edit");
     setCutImageSize({ w: 0, h: 0 });
     setCutEditor({ layerId: chosen.id, source: previewSrc, color: chosen.color, tool: null, brush: 3, strokes: [], crop: { left: 0, top: 0, right: 0, bottom: 0 }, zoom: 1, panX: 0, panY: 0, smoothPasses:0 });
   };
@@ -1551,6 +1560,9 @@ export default function Home() {
     } finally { setWorking(false); }
   };
   const smoothCutoutNow=async()=>{if(!cutEditor)return;const target=layers.find(layer=>layer.id===cutEditor.layerId);if(!target)return;setWorking(true);try{const rendered=await renderCutoutEdit(cutEditor),baked=await silhouette(rendered.src,target.color,255),pass=cutEditor.smoothPasses+1,src=await vTracerCutout(baked,target.color,target.w,Math.min(3.4,1.7+pass*.55));setCutEditor({...cutEditor,source:src,strokes:[],smoothPasses:pass});setCutPreview(src);setCutEdgeOverlay("");setNotice(`Contour smoothing applied · pass ${pass}`)}finally{setWorking(false)}};
+  const quickFixCutRisk=async()=>{const target=layers.find(layer=>layer.id===riskLayerId);if(!target)return;setRiskLayerId(null);setWorking(true);try{let src:string;if(["vector","stroke"].includes(target.kind)){const solid=await silhouette(target.src,target.color,255);src=await vTracerCutout(solid,target.color,target.w,2.7)}else src=await optimizeAlphaChannel(target.src);const safety=await analyzeCutSafety(src,target.w);mutate(target.id,layer=>({...layer,...safety,src,originalSrc:src}));setNotice(safety.cutRisk?"Quick Fix reduced contour noise, but a sub-2 mm area still needs review":"Cut safety issue fixed") }finally{setWorking(false)}};
+  const moveSelectionTo=(front:boolean)=>setLayers(items=>{const moving=items.filter(item=>selected.includes(item.id)),rest=items.filter(item=>!selected.includes(item.id));return front?[...rest,...moving]:[...moving,...rest]});
+  const hideSelection=()=>{setLayers(items=>items.map(item=>selected.includes(item.id)?{...item,visible:false}:item));setSelected([])};
   const openImageEditor=()=>{if(!one||["vector","stroke","acetate"].includes(one.kind))return;setImageEditorSize({w:0,h:0});setImageEditor({layerId:one.id,source:one.src,crop:{left:0,top:0,right:0,bottom:0},upscale:1,tool:"crop",brush:4,strokes:[],history:[],offsetX:0,offsetY:0,widthScale:1,heightScale:1,zoom:1,panX:0,panY:0})};
   const zoomImageEditor=(e:RWheel<HTMLDivElement>)=>{e.preventDefault();e.stopPropagation();setImageEditor(v=>v?{...v,zoom:clamp(v.zoom*(e.deltaY<0?1.12:.89),.5,5)}:v)};
   const startImagePan=(e:RPointer<HTMLDivElement>)=>{e.stopPropagation();if(!imageEditor||e.button!==1)return;e.preventDefault();e.currentTarget.setPointerCapture(e.pointerId);imagePanDrag.current={x:e.clientX,y:e.clientY,panX:imageEditor.panX,panY:imageEditor.panY}};
@@ -2523,7 +2535,7 @@ export default function Home() {
       <div className="sub-toolbar">
         <div className="sub-left">
         <div className="wrap page-setup-slot">
-          <button onClick={() => setPageSetupOpen((value) => !value)}><Maximize2 /> Page Setup <ChevronDown /></button>
+          <button onClick={() => setPageSetupOpen((value) => !value)}><File /> Page Setup <ChevronDown /></button>
           {pageSetupOpen && <div className="pop page-setup-menu setup-root">
             <div className="setup-group"><button>Page Size <ChevronDown/></button><div className="setup-submenu">{(["portrait","landscape","full"] as PageMode[]).map(mode=><button key={mode} className={pageMode===mode?"active":""} onClick={()=>{setPageMode(mode);setPageSetupOpen(false);setSelected([])}}><b>{mode[0].toUpperCase()+mode.slice(1)}</b><span>{mode==="portrait"?"21 × 29.7 cm":mode==="landscape"?"29.7 × 21 cm":"100 × 100 cm"}</span></button>)}</div></div>
             <div className="setup-group"><button>Grid <ChevronDown/></button><div className="setup-submenu"><button className={gridVisible?"active":""} onClick={()=>{setGridVisible(true);setPageSetupOpen(false)}}>Grid On</button><button className={!gridVisible?"active":""} onClick={()=>{setGridVisible(false);setPageSetupOpen(false)}}>Grid Off</button></div></div>
@@ -2603,7 +2615,7 @@ export default function Home() {
           </div>
           <div className="left-future">
         <button className="left-projects" onClick={() => { setProjectsOpen(true); setAccountOpen(false); void refreshProjects(projects.length===0); }}><FolderOpen/><small>My Projects</small></button>
-            <button className="left-account" onClick={() => { setAccountOpen(true); setProjectsOpen(false); }}><span className="profile-placeholder"><User/></span><small>My Account</small></button>
+            <button className="left-account" onClick={() => { setAccountOpen(true); setProjectsOpen(false); }}><span className="profile-placeholder">{(session?.user.user_metadata?.avatar_url||session?.user.user_metadata?.picture)?<img src={session.user.user_metadata.avatar_url||session.user.user_metadata.picture} alt=""/>:<User/>}</span><small>My Account</small></button>
           </div>
         </div>
         <div className={`stage ${pageMode==="full"?"full-page":"standard-page"}`} ref={stageRef} onScroll={updateRulers} onPointerDown={stageDown}>
@@ -2694,7 +2706,7 @@ export default function Home() {
                     }}
                   >
                     <img
-                      src={l.src}
+                      src={["vector","stroke"].includes(l.kind)?scalableSvgPreview(l.src):l.src}
                       alt=""
                       draggable={false}
                       style={{ opacity: l.acetateOn ? 0.8 : 1 }}
@@ -2737,6 +2749,7 @@ export default function Home() {
                     {one &&
                       one.rotation !== 0 &&
                       ` · ${Math.round(one.rotation)}°`}
+                    {picked.some(layer=>layer.cutRisk)&&<button className="measure-warning" title="Cut safety warning" onPointerDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setRiskLayerId(picked.find(layer=>layer.cutRisk)?.id||null)}}><AlertTriangle/></button>}
                   </div>
                   {["nw", "n", "ne", "e", "se", "s", "sw", "w"].map((h) => (
                     <button
@@ -2777,6 +2790,9 @@ export default function Home() {
                     >
                       <Download />
                     </button>
+                    <button title="Bring to front" onClick={()=>moveSelectionTo(true)}><BringToFront/></button>
+                    <button title="Send to back" onClick={()=>moveSelectionTo(false)}><SendToBack/></button>
+                    <button title="Hide" onClick={hideSelection}><EyeOff/></button>
                   </div>
                 </div>
               )}
@@ -3003,7 +3019,7 @@ export default function Home() {
                     · {fmt(l.w)} × {fmt(l.h)} cm
                   </small>
                 </div>
-                {(l.invalid||l.cutRisk) && <AlertTriangle className="warning" />}
+                {(l.invalid||l.cutRisk) && <button className="layer-warning" title={l.cutRisk?l.cutRiskReason:"Safe area warning"} onClick={e=>{e.stopPropagation();if(l.cutRisk)setRiskLayerId(l.id)}}><AlertTriangle className="warning" /></button>}
                 <GripVertical className="drag-grip" />
                 {l.steps.length > 0 && (
                   <div
@@ -3067,13 +3083,13 @@ export default function Home() {
       {projectsOpen && <div className="project-modal" role="dialog" aria-modal="true" aria-label="My Projects"><div className="project-dialog">
         <header><div><b>My Projects</b><small>{projectsLoading?"Loading your saved work…":`${projects.length} saved ${projects.length===1?"project":"projects"}`}</small></div><button onClick={() => setProjectsOpen(false)} aria-label="Close"><X/></button></header>
         <div className="project-save-toolbar"><label><span>{saveAsMode?"Name for the new copy":"Current project name"}</span><input value={projectName} maxLength={80} onChange={e=>setProjectName(e.target.value)}/></label><button onClick={()=>void saveProject(false,undefined,undefined,false)}><Download/> Save Project</button><button className={saveAsMode?"active":""} onClick={()=>{if(saveAsMode)void saveProject(true,undefined,undefined,false);else{setSaveAsMode(true);setProjectName(currentProjectId?`${projectName} Copy`:projectName)}}}><Copy/> {saveAsMode?"Confirm Save As":"Save As Project"}</button></div>
-        <div className="project-list">{projectsLoading?<div className="projects-loading"><i/><b>Loading your projects…</b><span>Your saved projects are safe while we sync them.</span></div>:projects.length?projects.map(project=>{const expanded=expandedProjectId===project.id;return <article key={project.id} className={`project-card ${project.id===currentProjectId?"current":""} ${expanded?"expanded":""}`}><div className="project-row"><button className="project-summary" onClick={()=>setExpandedProjectId(value=>value===project.id?null:project.id)}><span className="project-composite-thumb">{project.data.thumbnail?<img src={project.data.thumbnail} alt=""/>:<FolderOpen/>}</span><span className="project-summary-copy"><b>{project.name}</b><small>Updated {new Date(project.updated_at).toLocaleString()}</small><em>{project.data.layers?.length||0} layers · {formatProjectSize(project)}</em></span><ChevronDown/></button><div className="project-quick-actions"><button onClick={()=>requestOpenProject(project)} title="Open project"><FolderOpen/></button><button onClick={()=>setPendingOverwriteProject(project)} title="Overwrite with current"><Download/></button><button className="delete" onClick={()=>void deleteProject(project.id)} title="Delete project"><Trash2/></button></div></div>{expanded&&<div className="project-details"><div className="project-layer-thumbs">{(project.data.layers||[]).slice(0,12).map(layer=><span key={layer.id} title={layer.name}><img src={layer.src} alt={layer.name}/></span>)}{(project.data.layers?.length||0)>12&&<b>+{project.data.layers.length-12}</b>}</div><div className="project-card-actions"><button className="open-saved-project" onClick={()=>requestOpenProject(project)}><FolderOpen/> Open Project</button><button onClick={()=>setPendingOverwriteProject(project)}><Download/> Overwrite with Current</button><button className="project-delete" onClick={()=>void deleteProject(project.id)} title="Delete project"><Trash2/> Delete</button></div></div>}</article>}):<div className="projects-empty"><FolderOpen/><b>No saved projects yet</b><span>Save your current canvas to see it here.</span></div>}</div>
+        <div className="project-list">{projectsLoading?<div className="projects-loading"><i/><b>Loading your projects…</b><span>Your saved projects are safe while we sync them.</span></div>:projects.length?projects.map(project=>{const expanded=expandedProjectId===project.id;return <article key={project.id} className={`project-card ${project.id===currentProjectId?"current":""} ${expanded?"expanded":""}`}><div className="project-row"><button className="project-summary" onClick={()=>setExpandedProjectId(value=>value===project.id?null:project.id)}><span className="project-composite-thumb">{project.data.thumbnail?<img src={project.data.thumbnail} alt=""/>:<FolderOpen/>}</span><span className="project-summary-copy"><b>{project.name}</b><small>Updated {new Date(project.updated_at).toLocaleString()}</small><em>{project.data.layers?.length||0} layers · {formatProjectSize(project)}</em></span><ChevronDown/></button><div className="project-quick-actions"><button className="open" onClick={()=>requestOpenProject(project)} title="Open project"><FolderOpen/></button><button onClick={()=>setPendingOverwriteProject(project)} title="Overwrite with current"><Replace/></button><button className="delete" onClick={()=>void deleteProject(project.id)} title="Delete project"><Trash2/></button></div></div>{expanded&&<div className="project-details"><div className="project-layer-thumbs">{(project.data.layers||[]).slice(0,12).map(layer=><span key={layer.id} title={layer.name}><img src={layer.src} alt={layer.name}/></span>)}{(project.data.layers?.length||0)>12&&<b>+{project.data.layers.length-12}</b>}</div><div className="project-card-actions"><button className="open-saved-project" onClick={()=>requestOpenProject(project)}><FolderOpen/> Open Project</button><button onClick={()=>setPendingOverwriteProject(project)}><Replace/> Overwrite with Current</button><button className="project-delete" onClick={()=>void deleteProject(project.id)} title="Delete project"><Trash2/> Delete</button></div></div>}</article>}):<div className="projects-empty"><FolderOpen/><b>No saved projects yet</b><span>Save your current canvas to see it here.</span></div>}</div>
       </div></div>}
       {saveStatus&&<div className={`saved-confirmation ${saveStatus}`} role="status">{saveStatus==="saved"?<Check/>:<i/>}<span><b>{saveStatus==="saving"?"Saving project…":"Project saved"}</b><small>{saveStatus==="saving"?"Uploading safely in the background":`${projectName} · just now`}</small></span>{savedCountdown!==null&&<strong>{savedCountdown}…</strong>}<button onClick={()=>{saveToastDismissed.current=true;setSaveStatus(null);setSavedCountdown(null)}}>OK</button></div>}
       {pendingOpenProject&&<div className="project-transition-modal" role="dialog" aria-modal="true"><div><button className="modal-x" onClick={()=>setPendingOpenProject(null)}><X/></button><AlertTriangle/><h3>Save changes before opening another project?</h3><p><b>{projectName}</b> contains changes that have not been saved yet.</p><footer><button onClick={()=>setPendingOpenProject(null)}>Cancel</button><button className="discard" onClick={discardAndContinue}>Open without saving</button><button className="confirm" onClick={()=>void saveAndContinue()}>Save &amp; Open</button></footer></div></div>}
       {pendingNewProject&&<div className="project-transition-modal" role="dialog" aria-modal="true"><div><button className="modal-x" onClick={()=>setPendingNewProject(false)}><X/></button><AlertTriangle/><h3>Start a new project?</h3><p><b>{projectName}</b> will close and a new blank project will open.</p><footer>{projectDirty?<button className="confirm" onClick={()=>void saveAndContinue()}>Save &amp; New</button>:<button disabled><Check/> Saved</button>}<button onClick={()=>{setPendingNewProject(false);setSaveAsMode(true);setProjectName(currentProjectId?`${projectName} Copy`:projectName);setProjectsOpen(true)}}><Copy/> Save As</button><button className="confirm" onClick={()=>{setPendingNewProject(false);createNewProject()}}>OK</button></footer></div></div>}
       {pendingOverwriteProject&&<div className="project-transition-modal" role="dialog" aria-modal="true"><div><button className="modal-x" onClick={()=>setPendingOverwriteProject(null)}><X/></button><AlertTriangle/><h3>Overwrite “{pendingOverwriteProject.name}”?</h3><p>Its saved canvas will be replaced with the layers currently open in the editor.</p><footer><button onClick={()=>setPendingOverwriteProject(null)}>Cancel</button><button className="confirm" onClick={async()=>{const target=pendingOverwriteProject;setPendingOverwriteProject(null);await saveProject(false,target.id,target.name,false)}}>Overwrite Project</button></footer></div></div>}
-      {accountOpen && <div className="account-panel" role="dialog" aria-label="My Account"><button className="account-close" onClick={() => setAccountOpen(false)} aria-label="Close"><X/></button><span className="account-avatar"><User/></span><b>My Account</b><small>Signed in as</small><p>{session?.user.email || "Unknown account"}</p><div className="account-stat"><FolderOpen/><span><b>{projects.length}</b><small>Saved projects</small></span></div><button className="sign-out" onClick={() => void supabase.auth.signOut()}><LogOut/> Sign Out</button></div>}
+      {accountOpen && <><button className="account-dismiss" aria-label="Close account" onClick={()=>setAccountOpen(false)}/><div className="account-panel" role="dialog" aria-label="My Account"><button className="account-close" onClick={() => setAccountOpen(false)} aria-label="Close"><X/></button><span className="account-avatar">{(session?.user.user_metadata?.avatar_url||session?.user.user_metadata?.picture)?<img src={session.user.user_metadata.avatar_url||session.user.user_metadata.picture} alt="Google profile"/>:<User/>}</span><b>My Account</b><small>Signed in as</small><p>{session?.user.email || "Unknown account"}</p><div className="account-stat"><FolderOpen/><span><b>{projects.length}</b><small>Saved projects</small></span></div><button className="sign-out" onClick={() => void supabase.auth.signOut()}><LogOut/> Sign Out</button></div></>}
       {clipEditor&&(()=>{const target=layers.find(layer=>layer.id===clipEditor.layerId);return <div className="clip-modal" role="dialog" aria-modal="true" aria-label="Image in Shape"><div className="clip-dialog"><header><div><b>Image in Shape</b><small>Drag the image to position it inside the shape.</small></div><button onClick={()=>setClipEditor(null)}><X/></button></header><div className="clip-body"><div className="clip-preview"><div className="clip-mask" style={{aspectRatio:`${target?.w||1}/${target?.h||1}`,WebkitMaskImage:`url("${clipEditor.maskSrc}")`,maskImage:`url("${clipEditor.maskSrc}")`} as React.CSSProperties} onPointerDown={startClipDrag} onPointerMove={moveClipDrag} onPointerUp={endClipDrag} onPointerCancel={endClipDrag}><img src={clipEditor.imageSrc} alt="Image placement preview" draggable={false} style={{transform:`translate(${clipEditor.offsetX*100}%,${clipEditor.offsetY*100}%) scale(${clipEditor.scale})`}}/></div></div><aside><label>Image Scale <b>{Math.round(clipEditor.scale*100)}%</b></label><input type="range" min=".35" max="4" step=".01" value={clipEditor.scale} onChange={e=>setClipEditor({...clipEditor,scale:+e.target.value})}/><button onClick={()=>setClipEditor({...clipEditor,scale:1,offsetX:0,offsetY:0})}><Crosshair/> Reset Position</button><p>The shape remains the cutting boundary. The image cannot render outside it.</p></aside></div><footer><button className="cancel" onClick={()=>setClipEditor(null)}>Cancel</button><button className="confirm" onClick={()=>void applyClipImage()}>Apply Image</button></footer></div></div>})()}
       {cutoutMenuOpen&&<div className="preset-modal cutout-choice-modal" role="dialog" aria-modal="true" aria-label="Make Cutout" onPointerDown={()=>setCutoutMenuOpen(false)}><div className="preset-dialog" onPointerDown={e=>e.stopPropagation()}><header><div><b>Make Cutout</b><small>Choose how much contour detail your project needs.</small></div><button onClick={()=>setCutoutMenuOpen(false)}><X/></button></header><div className="cutout-preset-grid"><button onClick={()=>void smoothCutoutV4(true)}><span><img src="/cutout-presets/smooth.png" alt="Smooth cutout preview"/></span><b>Smooth Cutout</b><small>Cleaner curves and fewer blade movements</small></button><button onClick={()=>void smoothCutoutV4(false)}><span><img src="/cutout-presets/detailed.png" alt="Detailed cutout preview"/></span><b>Detailed Cutout</b><small>Preserves more of the original contour</small></button></div><button className="advanced-preset" disabled={picked.length!==1} onClick={()=>void smoothCutoutV4(false,true)}><i><SlidersHorizontal/></i><span><b>Advanced Cutout Edit</b><small>{picked.length===1?"Create the detailed cutout and open its editing tools":"Select one image to continue into the editor"}</small></span></button></div></div>}
       {bgMenuOpen&&<div className="preset-modal" role="dialog" aria-modal="true" aria-label="Remove Background" onPointerDown={()=>setBgMenuOpen(false)}><div className="preset-dialog" onPointerDown={e=>e.stopPropagation()}>
@@ -3086,6 +3102,7 @@ export default function Home() {
         <button className="advanced-preset" onClick={()=>{setBgMenuOpen(false);noBackground()}}><i><SlidersHorizontal/></i><span><b>Advanced Background Removal</b><small>Open the full control panel</small></span></button>
       </div></div>}
       {svgWarningOpen&&<div className="project-transition-modal cut-safety-modal" role="dialog" aria-modal="true"><div><button className="modal-x" onClick={()=>setSvgWarningOpen(false)}><X/></button><AlertTriangle/><h3>Critical cut warning</h3><p>There are areas thinner than 2 mm, tiny islands, gaps or bridges in this design. Cricut may cut these parts poorly or detach them from the main shape.</p><footer><button onClick={()=>setSvgWarningOpen(false)}>No, review design</button><button className="confirm danger" onClick={()=>{setSvgWarningOpen(false);void exportSVG(true)}}>Yes, export SVG</button></footer></div></div>}
+      {riskLayerId&&(()=>{const risk=layers.find(layer=>layer.id===riskLayerId);if(!risk)return null;const editable=["vector","stroke"].includes(risk.kind);return <div className="project-transition-modal cut-safety-modal" role="dialog" aria-modal="true"><div><button className="modal-x" onClick={()=>setRiskLayerId(null)}><X/></button><AlertTriangle/><h3>Cut safety issue</h3><p><b>Too thin or broken edges.</b><br/>{risk.cutRiskReason||"This layer contains details smaller than 2 mm."}</p><footer><button onClick={()=>setRiskLayerId(null)}>Cancel</button><button disabled={!editable} onClick={()=>{setRiskLayerId(null);setSelected([risk.id]);window.setTimeout(()=>openCutoutEditor(risk),0)}}>Edit Cutout</button><button className="confirm" onClick={()=>void quickFixCutRisk()}><Sparkles/> Quick Fix</button></footer></div></div>})()}
       {calibrationOpen&&<div className="calibration-modal" role="dialog" aria-modal="true" aria-label="Screen size calibration"><div className="calibration-dialog"><header><div><b>Calibrate Screen Size</b><small>Place a physical ruler against the screen and match its 10 cm length.</small></div><button onClick={()=>setCalibrationOpen(false)}><X/></button></header><div className="calibration-body"><div className="screen-ruler" style={{width:10*PPCM*calibrationDraft}}>{Array.from({length:101},(_,i)=><i key={i} className={i%10===0?"cm":i%5===0?"half":"mm"} style={{left:`${i}%`}}>{i%10===0&&<span>{i/10}</span>}</i>)}</div><div className="calibration-slider"><span>Shorter</span><button onClick={()=>setCalibrationDraft(v=>clamp(+(v-.001).toFixed(3),.5,2))}>←</button><input type="range" min=".5" max="2" step=".001" value={calibrationDraft} onChange={e=>setCalibrationDraft(+e.target.value)}/><button onClick={()=>setCalibrationDraft(v=>clamp(+(v+.001).toFixed(3),.5,2))}>→</button><span>Longer</span></div><p>Calibration: {(calibrationDraft*100).toFixed(1)}%</p></div><footer><button onClick={()=>setCalibrationOpen(false)}>Cancel</button><button className="confirm" onClick={()=>{setCalibration(calibrationDraft);setZoom(1);localStorage.setItem("better-cricut-screen-calibration",String(calibrationDraft));setCalibrationOpen(false);window.setTimeout(centerDocument,30);setNotice("Screen calibration saved at true 100% size")}}>Save Calibration</button></footer></div></div>}
       {notice && <div className="toast">{notice}</div>}
       {imageEditor&&(()=>{const target=layers.find(l=>l.id===imageEditor.layerId);return <div className="bg-modal image-edit-modal" role="dialog" aria-modal="true" aria-label="Image editor">
@@ -3099,6 +3116,7 @@ export default function Home() {
         <div className="bg-modal cutout-modal" role="dialog" aria-modal="true" aria-label="Cutout editor">
           <div className="bg-dialog" onPointerDown={(e)=>e.stopPropagation()}>
             <header><div><b>Edit Cutout</b><small>Crop, remove pieces, erase details or create bridges.</small></div><button onClick={()=>setCutEditor(null)}>×</button></header>
+            <div className="cutout-tabs"><button className={cutoutTab==="edit"?"active":""} onClick={()=>setCutoutTab("edit")}>1. Cutout Edit</button><button className={cutoutTab==="stroke"?"active":""} onClick={()=>setCutoutTab("stroke")}>2. Stroke &amp; Fill Gaps</button></div>
             <div className="bg-editor-body">
               <div className="bg-preview cutout-preview" ref={cutPreviewRef} onWheel={zoomCutout} onPointerDown={startCutoutPan} onPointerMove={moveCutoutPan} onPointerUp={endCutoutPan} onPointerCancel={endCutoutPan}>
                 {cutPreview && <div className="cut-image-wrap" style={{"--fit-w":cutImageSize.w?`${cutImageSize.w}px`:"auto","--fit-h":cutImageSize.h?`${cutImageSize.h}px`:"auto",transform:`translate(${cutEditor.panX}px,${cutEditor.panY}px) scale(${cutEditor.zoom})`} as React.CSSProperties}>
@@ -3118,21 +3136,21 @@ export default function Home() {
                   </div>}
                 </div>}
                 <div className="bg-zoom-controls">
-                  <button onClick={()=>setCutEditor({...cutEditor,zoom:clamp(cutEditor.zoom/1.2,.5,5)})}>−</button>
+                  <button onClick={()=>setCutEditor({...cutEditor,zoom:clamp(cutEditor.zoom/1.2,.5,10)})}>−</button>
                   <span>{Math.round(cutEditor.zoom*100)}%</span>
                   <button onClick={()=>setCutEditor({...cutEditor,zoom:clamp(cutEditor.zoom*1.2,.5,10)})}>+</button>
                   <button onClick={()=>setCutEditor({...cutEditor,zoom:1,panX:0,panY:0})}>Fit</button>
                 </div>
               </div>
               <aside className="bg-controls cutout-controls">
+                {cutoutTab==="edit"?<>
                 <section><label>Edit Tool</label><div className="edit-tool-grid">
-                  {(["bridge","erase","smooth","lasso","rectangle"] as EditTool[]).map((tool)=><button key={tool} className={cutEditor.tool===tool?"active":""} onClick={()=>setCutEditor({...cutEditor,tool:cutEditor.tool===tool?null:tool})}>{tool==="bridge"?<LinkIcon/>:tool==="smooth"?<Sparkles/>:tool==="rectangle"?<Maximize2/>:tool==="lasso"?<Scissors/>:<Trash2/>}<span>{tool==="smooth"?"Fix the Edges":tool==="lasso"?"Lasso Eraser":tool==="rectangle"?"Rectangle Eraser":tool[0].toUpperCase()+tool.slice(1)}</span></button>)}
+                  {(["bridge","erase","smooth","lasso","rectangle"] as EditTool[]).map((tool)=><button key={tool} className={`${cutEditor.tool===tool?"active":""} tool-${tool}`} onClick={()=>setCutEditor({...cutEditor,tool:cutEditor.tool===tool?null:tool})}>{tool==="bridge"?<Paintbrush/>:tool==="smooth"?<Sparkles/>:tool==="rectangle"?<Maximize2/>:tool==="lasso"?<Scissors/>:<Eraser/>}<span>{tool==="bridge"?"Add Brush":tool==="erase"?"Eraser Brush":tool==="smooth"?"Fix the Edges":tool==="lasso"?"Lasso Eraser":tool==="rectangle"?"Rectangle Eraser":""}</span></button>)}
                 </div><small>Fix the Edges smooths only the brushed contour. Its start and end preserve the surrounding trajectory.</small></section>
-                <section><button className={cutCropActive?"crop-mode active":"crop-mode"} onClick={()=>setCutCropActive(value=>!value)}><Maximize2/><span>{cutCropActive?"Finish Crop":"Crop"}</span></button><small>Show the crop frame, adjust it, then press Finish Crop to keep the crop and hide the frame.</small></section>
-                <section><label>Brush Size <b>{cutEditor.brush}%</b></label><input type="range" min="1" max="15" value={cutEditor.brush} onChange={(e)=>setCutEditor({...cutEditor,brush:+e.target.value})}/></section>
-                <section><label>Crop Canvas</label><small>Drag the crop frame from any edge or corner. Up to 90% can be removed from a side.</small></section>
+                <section><label>Brush Size <b>{cutEditor.brush}%</b></label><input type="range" min=".3" max="35" step=".1" value={cutEditor.brush} onChange={(e)=>setCutEditor({...cutEditor,brush:+e.target.value})}/></section>
+                <section><label>Crop Canvas</label><button className={cutCropActive?"crop-mode active":"crop-mode"} onClick={()=>setCutCropActive(value=>!value)}><Maximize2/><span>{cutCropActive?"Finish Crop":"Crop Canvas"}</span></button><small>Drag any edge or corner, then finish crop.</small></section>
                 <div className="bg-history-actions"><button disabled={!cutEditor.strokes.length} onClick={()=>setCutEditor({...cutEditor,strokes:cutEditor.strokes.slice(0,-1)})}>Undo Edit</button><button disabled={!cutEditor.strokes.length} onClick={()=>setCutEditor({...cutEditor,strokes:[]})}>Reset Edits</button></div>
-                <p>Applying edits creates a baked Cutout and removes previous editable modifiers from this layer.</p>
+                </>:<div className="cutout-stroke-tab"><section><label>Stroke Width <b>{strokeDraft.toFixed(1)} cm</b></label><input type="range" min="0" max="3" step=".1" value={strokeDraft} onChange={e=>setStrokeDraft(+e.target.value)}/><button onClick={()=>one?.kind==="stroke"?void updateStroke():void addStroke()}>Apply Stroke</button></section><section><label>Fill Gaps <b>{Math.round(fillGapsDraft)} mm²</b></label><input type="range" min="0" max="100" step="1" value={fillGapsDraft} onChange={e=>setFillGapsDraft(+e.target.value)}/><button onClick={()=>void applyGapPreview()}>Apply Fill Gaps</button></section><p>Stroke creates an outer cutting area. Fill Gaps removes small enclosed holes that would create unnecessary blade movements.</p></div>}
               </aside>
             </div>
             <footer><button className="footer-smooth" onClick={()=>void smoothCutoutNow()}><Sparkles/> Smooth</button><span className="footer-spacer"/><button className="footer-separate" onClick={()=>void openSeparateLayers(cutPreview,cutEditor.layerId)}><Layers3/> Separate as Layers</button><button className="cancel" onClick={()=>setCutEditor(null)}>Cancel</button><button className="confirm" onClick={()=>void applyCutoutEdit()}>Apply Edit</button></footer>
