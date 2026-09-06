@@ -172,6 +172,8 @@ type Layer = {
   activeStep: number;
   acetateOn: boolean;
   isShape?: boolean;
+  shapeBaseSrc?: string;
+  shapeImage?: {source:Layer;offsetX:number;offsetY:number;widthScale:number;heightScale:number;rotation:number;visible:boolean};
   cutRisk?: boolean;
   cutRiskReason?: string;
 };
@@ -951,6 +953,8 @@ export default function Home() {
     [svgWarningOpen,setSvgWarningOpen]=useState(false),
     [riskLayerId,setRiskLayerId]=useState<string|null>(null),
     [clipEditor,setClipEditor]=useState<ClipEditor|null>(null),
+    [imageOnShapeTarget,setImageOnShapeTarget]=useState<string|null>(null),
+    [shapeImageEditing,setShapeImageEditing]=useState<string|null>(null),
     [shapeOpen, setShapeOpen] = useState(false),
     [shapeTool, setShapeTool] = useState<string | null>(null),
     [dragLayer, setDragLayer] = useState<string | null>(null),
@@ -1018,6 +1022,7 @@ export default function Home() {
     imageCropDrag = useRef<{mode:string;x:number;y:number;crop:ImageEditor["crop"];rect:DOMRect}|null>(null),
     imageDrawing = useRef<string|null>(null),
     clipDrag=useRef<{x:number;y:number;offsetX:number;offsetY:number;rect:DOMRect}|null>(null),
+    shapeImageDrag=useRef<{mode:string;x:number;y:number;offsetX:number;offsetY:number;widthScale:number;heightScale:number}|null>(null),
     zoomRef = useRef(.82),
     zoomAnchor = useRef<{clientX:number;clientY:number;worldX:number;worldY:number}|null>(null),
     pan = useRef<{ x: number; y: number; l: number; t: number } | null>(null);
@@ -1193,6 +1198,7 @@ export default function Home() {
         );
         return;
       }
+      if(e.key==="Escape"&&(imageOnShapeTarget||shapeImageEditing)){setImageOnShapeTarget(null);setShapeImageEditing(null);setNotice("Image on Shape cancelled");return}
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
         e.preventDefault();
         if (imageEditor) { undoImageStage(); return; }
@@ -1214,7 +1220,7 @@ export default function Home() {
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [selected,bgEditor,imageEditor]);
+  }, [selected,bgEditor,imageEditor,imageOnShapeTarget,shapeImageEditing]);
   useEffect(() => {
     const stopBrowserZoom = (e: WheelEvent) => {if(e.ctrlKey&&!stageRef.current?.contains(e.target as Node))e.preventDefault()};
     window.addEventListener("wheel", stopBrowserZoom, { passive: false });
@@ -1881,6 +1887,12 @@ export default function Home() {
     setWorking(true);
     try {
       for (const item of picked) {
+        if(item.isShape&&item.shapeImage){
+          const baseSrc=shapeSource(item.name,color),draft={...item,shapeBaseSrc:baseSrc,color};
+          const src=await renderShapeImage(draft,item.shapeImage);
+          mutate(item.id,l=>({...l,src,originalSrc:src,shapeBaseSrc:baseSrc,color}));
+          continue;
+        }
         const base = layers.find((l) => l.id === item.parentId) || item;
         const src =
           item.kind === "stroke"
@@ -1926,6 +1938,33 @@ export default function Home() {
     if(!EyeDropperCtor){setNotice("Color picker is not supported by this browser");return}
     try{const {sRGBHex}=await new EyeDropperCtor().open();await applyColor(sRGBHex)}catch{/* User cancelled the picker. */}
   };
+  const renderShapeImage=async(shape:Layer,placed:NonNullable<Layer["shapeImage"]>)=>{
+    const baseSrc=shape.shapeBaseSrc||shape.src,mask=await getImage(baseSrc),photo=await getImage(placed.source.src),w=1800,h=Math.max(1,Math.round(w*shape.h/shape.w)),out=document.createElement("canvas"),overlay=document.createElement("canvas");
+    out.width=overlay.width=w;out.height=overlay.height=h;const x=out.getContext("2d")!,o=overlay.getContext("2d")!;
+    x.imageSmoothingEnabled=o.imageSmoothingEnabled=true;x.imageSmoothingQuality=o.imageSmoothingQuality="high";x.drawImage(mask,0,0,w,h);
+    if(placed.visible){const ix=placed.offsetX*w,iy=placed.offsetY*h,iw=placed.widthScale*w,ih=placed.heightScale*h,cx=ix+iw/2,cy=iy+ih/2;o.save();o.translate(cx,cy);o.rotate(placed.rotation*Math.PI/180);o.drawImage(photo,-iw/2,-ih/2,iw,ih);o.restore();o.globalCompositeOperation="destination-in";o.drawImage(mask,0,0,w,h);x.drawImage(overlay,0,0)}
+    return out.toDataURL("image/png");
+  };
+  const attachImageOnShape=async(source:Layer)=>{
+    const target=layers.find(l=>l.id===imageOnShapeTarget);
+    if(!target?.isShape)return;
+    if(source.id===target.id||source.isShape||!["original","nobg"].includes(source.kind)){setNotice("Choose a regular image layer — cutouts and shapes cannot be placed here");return}
+    const placed:NonNullable<Layer["shapeImage"]>={source:{...source},offsetX:(source.x-target.x)/target.w,offsetY:(source.y-target.y)/target.h,widthScale:source.w/target.w,heightScale:source.h/target.h,rotation:source.rotation-target.rotation,visible:true};
+    setWorking(true);
+    try{const draft={...target,shapeBaseSrc:target.shapeBaseSrc||target.src,shapeImage:placed},src=await renderShapeImage(draft,placed);setLayers(items=>items.filter(l=>l.id!==source.id).map(l=>l.id===target.id?{...draft,src,originalSrc:src,naturalW:1800,naturalH:Math.max(1,Math.round(1800*target.h/target.w))}:l));setSelected([target.id]);setShapeImageEditing(target.id);setImageOnShapeTarget(null);setNotice("Image placed on shape — drag its frame to reposition it")}
+    finally{setWorking(false)}
+  };
+  const startImageOnShape=()=>{
+    if(!one?.isShape)return;
+    if(one.shapeImage){setImageOnShapeTarget(null);setShapeImageEditing(v=>v===one.id?null:one.id);return}
+    setShapeImageEditing(null);setImageOnShapeTarget(v=>v===one.id?null:one.id);setNotice(imageOnShapeTarget===one.id?"Image selection cancelled":"Now choose an image from the canvas or Layers")
+  };
+  const refreshShapeImage=async(id:string)=>{const shape=layers.find(l=>l.id===id);if(!shape?.shapeImage)return;const src=await renderShapeImage(shape,shape.shapeImage);mutate(id,l=>({...l,src,originalSrc:src}))};
+  const toggleShapeImage=async(id:string)=>{const shape=layers.find(l=>l.id===id);if(!shape?.shapeImage)return;const placed={...shape.shapeImage,visible:!shape.shapeImage.visible},src=await renderShapeImage(shape,placed);mutate(id,l=>({...l,shapeImage:placed,src,originalSrc:src}))};
+  const removeShapeImage=(id:string)=>{setLayers(items=>{const index=items.findIndex(l=>l.id===id),shape=items[index];if(index<0||!shape.shapeImage)return items;const restored={...shape.shapeImage.source},clean={...shape,src:shape.shapeBaseSrc||shape.src,originalSrc:shape.shapeBaseSrc||shape.originalSrc,shapeImage:undefined,shapeBaseSrc:undefined};const next=[...items];next[index]=clean;next.splice(index+1,0,restored);return next});setShapeImageEditing(null);setNotice("Image on Shape removed; the original image layer was restored")};
+  const startShapeImageDrag=(e:RPointer,mode:string,shape:Layer)=>{if(!shape.shapeImage)return;e.stopPropagation();e.preventDefault();(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);shapeImageDrag.current={mode,x:e.clientX,y:e.clientY,offsetX:shape.shapeImage.offsetX,offsetY:shape.shapeImage.offsetY,widthScale:shape.shapeImage.widthScale,heightScale:shape.shapeImage.heightScale}};
+  const moveShapeImageDrag=(e:RPointer,shape:Layer)=>{const d=shapeImageDrag.current;if(!d||!shape.shapeImage)return;const dx=(e.clientX-d.x)/(shape.w*scale),dy=(e.clientY-d.y)/(shape.h*scale);let placed={...shape.shapeImage};if(d.mode==="move")placed={...placed,offsetX:d.offsetX+dx,offsetY:d.offsetY+dy};else{const sx=d.mode.includes("w")?-dx:dx,sy=d.mode.includes("n")?-dy:dy;if(e.shiftKey)placed={...placed,widthScale:Math.max(.03,d.widthScale+sx),heightScale:Math.max(.03,d.heightScale+sy)};else{const delta=Math.abs(sx)>Math.abs(sy)?sx:sy,ratio=d.widthScale/d.heightScale;placed={...placed,widthScale:Math.max(.03,d.widthScale+delta),heightScale:Math.max(.03,(d.widthScale+delta)/ratio)}}if(d.mode.includes("w"))placed.offsetX=d.offsetX+d.widthScale-placed.widthScale;if(d.mode.includes("n"))placed.offsetY=d.offsetY+d.heightScale-placed.heightScale}mutate(shape.id,l=>({...l,shapeImage:placed}))};
+  const endShapeImageDrag=(shape:Layer)=>{if(!shapeImageDrag.current)return;shapeImageDrag.current=null;void refreshShapeImage(shape.id)};
   const chooseClipImage=(e:ChangeEvent<HTMLInputElement>)=>{
     const file=e.target.files?.[0];e.target.value="";if(!file||!one?.isShape)return;
     const reader=new FileReader();reader.onload=()=>setClipEditor({layerId:one.id,maskSrc:one.src,imageSrc:String(reader.result),scale:1,offsetX:0,offsetY:0});reader.readAsDataURL(file);
@@ -1942,6 +1981,7 @@ export default function Home() {
   };
   const choose = async (e: RPointer, l: Layer) => {
     e.stopPropagation();
+    if(imageOnShapeTarget){await attachImageOnShape(l);return}
     if(l.isShape){const rect=e.currentTarget.getBoundingClientRect(),px=clamp((e.clientX-rect.left)/rect.width,0,1),py=clamp((e.clientY-rect.top)/rect.height,0,1),img=await getImage(l.src),c=document.createElement("canvas");c.width=c.height=1;const x=c.getContext("2d")!;x.drawImage(img,px*img.naturalWidth,py*img.naturalHeight,1,1,0,0,1,1);if(x.getImageData(0,0,1,1).data[3]<64)return}
     if (e.shiftKey || e.ctrlKey || e.metaKey)
       setSelected((v) =>
@@ -2079,6 +2119,7 @@ export default function Home() {
   };
   const canvasDown = (e: RPointer) => {
     e.stopPropagation();
+    if(shapeImageEditing)setShapeImageEditing(null);
     if (e.button === 1 && stageRef.current) {
       e.preventDefault();
       pan.current = {
@@ -2599,7 +2640,7 @@ export default function Home() {
           <Scissors /> Edit Cutout
         </button>
         <button disabled={!one || ["vector","stroke","acetate"].includes(one.kind)} onClick={()=>openImageEditor()}><ImageIcon/> Edit Image</button>
-        <button disabled={!one?.isShape} onClick={()=>clipFileRef.current?.click()}><ImagePlus/> Image in Shape</button>
+        <button className={imageOnShapeTarget||shapeImageEditing?"active-action":""} disabled={!one?.isShape} onClick={startImageOnShape}><ImagePlus/> Image on Shape</button>
         <button className="bake-cutout" disabled={!one || !["vector", "stroke"].includes(one.kind)} onClick={() => void makeGapsPermanent()}>
           <Sparkles /> Bake Cutout
         </button>
@@ -2715,6 +2756,7 @@ export default function Home() {
                     />
                   </div>
                 ))}
+              {shapeImageEditing&&(()=>{const shape=layers.find(l=>l.id===shapeImageEditing),placed=shape?.shapeImage;if(!shape||!placed)return null;const left=(shape.x+placed.offsetX*shape.w)*scale,top=(shape.y+placed.offsetY*shape.h)*scale,width=placed.widthScale*shape.w*scale,height=placed.heightScale*shape.h*scale;return <div className="shape-image-frame" onPointerDown={e=>startShapeImageDrag(e,"move",shape)} onPointerMove={e=>moveShapeImageDrag(e,shape)} onPointerUp={()=>endShapeImageDrag(shape)} onPointerCancel={()=>endShapeImageDrag(shape)} style={{left,top,width,height,zIndex:layers.length+8,transform:`rotate(${shape.rotation+placed.rotation}deg)`}}><span>Image on Shape</span>{["nw","ne","se","sw"].map(handle=><button key={handle} className={`shape-image-handle h-${handle}`} onPointerDown={e=>startShapeImageDrag(e,handle,shape)} onPointerMove={e=>moveShapeImageDrag(e,shape)} onPointerUp={()=>endShapeImageDrag(shape)} onPointerCancel={()=>endShapeImageDrag(shape)}/>)}</div>})()}
               {marquee && (
                 <div
                   className="marquee"
@@ -2974,6 +3016,7 @@ export default function Home() {
                 onDragEnd={() => setDragLayer(null)}
                 onDrop={() => setDragLayer(null)}
                 onClick={(e) => {
+                  if(imageOnShapeTarget){e.stopPropagation();void attachImageOnShape(l);return}
                   if (e.shiftKey || e.ctrlKey || e.metaKey)
                     setSelected((v) =>
                       v.includes(l.id)
@@ -3023,6 +3066,7 @@ export default function Home() {
                 </div>
                 {(l.invalid||l.cutRisk) && <button className="layer-warning" title={l.cutRisk?l.cutRiskReason:"Safe area warning"} onClick={e=>{e.stopPropagation();if(l.cutRisk)setRiskLayerId(l.id)}}><AlertTriangle className="warning" /></button>}
                 <GripVertical className="drag-grip" />
+                {l.shapeImage&&<div className={`shape-image-style ${shapeImageEditing===l.id?"active":""}`} onClick={e=>e.stopPropagation()}><button title={l.shapeImage.visible?"Hide image":"Show image"} onClick={()=>void toggleShapeImage(l.id)}>{l.shapeImage.visible?<Eye/>:<EyeOff/>}</button><button className="shape-image-style-name" onClick={()=>{setSelected([l.id]);setShapeImageEditing(l.id);setImageOnShapeTarget(null)}}><ImageIcon/><span><b>Image on Shape</b><small>{l.shapeImage.source.name}</small></span></button><button className="shape-image-remove" title="Remove Image on Shape" onClick={()=>removeShapeImage(l.id)}>×</button></div>}
                 {l.steps.length > 0 && (
                   <div
                     className="layer-styles"
