@@ -114,6 +114,8 @@ type SavedProject = {
   };
 };
 type PageMode = "portrait" | "landscape" | "full";
+type PageColor = "offwhite" | "warm" | "lightgray" | "darkgray" | "canson";
+const PAGE_COLORS:Record<PageColor,{label:string;color:string}>={offwhite:{label:"Broken White",color:"#fffdf7"},warm:{label:"Warm White",color:"#fff6dc"},lightgray:{label:"Light Gray",color:"#e7e9e8"},darkgray:{label:"Dark Gray",color:"#777d7a"},canson:{label:"Canson Paper",color:"#f2ead5"}};
 type Drag = {
   mode: string;
   sx: number;
@@ -710,6 +712,10 @@ async function marqueeTouchesVisiblePixels(layer: Layer, area: { x: number; y: n
       if (worldX >= area.x && worldX <= area.x + area.w && worldY >= area.y && worldY <= area.y + area.h) return true;
     }
   return false;
+}
+async function layerOpaqueAtWorld(layer:Layer,worldX:number,worldY:number){
+  const cx=layer.x+layer.w/2,cy=layer.y+layer.h/2,rad=-layer.rotation*Math.PI/180,dx=worldX-cx,dy=worldY-cy,localX=cx+dx*Math.cos(rad)-dy*Math.sin(rad),localY=cy+dx*Math.sin(rad)+dy*Math.cos(rad),u=(localX-layer.x)/layer.w,v=(localY-layer.y)/layer.h;
+  if(u<0||u>1||v<0||v>1)return false;const img=await getImage(layer.src),c=document.createElement("canvas");c.width=c.height=1;const x=c.getContext("2d")!;x.drawImage(img,clamp(Math.floor(u*img.naturalWidth),0,img.naturalWidth-1),clamp(Math.floor(v*img.naturalHeight),0,img.naturalHeight-1),1,1,0,0,1,1);return x.getImageData(0,0,1,1).data[3]>=64;
 }
 async function smoothVectorCutout(src: string, color: string) {
   const img = await getImage(src),
@@ -1378,7 +1384,11 @@ async function findOpaqueIslands(src: string) {
       out = document.createElement("canvas");
     out.width = sw;
     out.height = sh;
-    out.getContext("2d")!.drawImage(full, sx, sy, sw, sh, 0, 0, sw, sh);
+    const isolated=document.createElement("canvas"),componentMask=document.createElement("canvas");isolated.width=componentMask.width=full.width;isolated.height=componentMask.height=full.height;
+    isolated.getContext("2d")!.drawImage(full,0,0);const maskContext=componentMask.getContext("2d")!,maskData=maskContext.createImageData(w,h);
+    for(const p of group.pixels)maskData.data[p*4+3]=255;maskContext.putImageData(maskData,0,0);const fullMask=document.createElement("canvas");fullMask.width=full.width;fullMask.height=full.height;const fullMaskContext=fullMask.getContext("2d")!;fullMaskContext.imageSmoothingEnabled=false;fullMaskContext.drawImage(componentMask,0,0,full.width,full.height);
+    const isolatedContext=isolated.getContext("2d")!;isolatedContext.globalCompositeOperation="destination-in";isolatedContext.drawImage(fullMask,0,0);
+    out.getContext("2d")!.drawImage(isolated, sx, sy, sw, sh, 0, 0, sw, sh);
     return {
       src: out.toDataURL("image/png"),
       left,
@@ -1487,6 +1497,7 @@ export default function Home() {
     [widthDraft, setWidthDraft] = useState("0.0"),
     [heightDraft, setHeightDraft] = useState("0.0"),
     [pageMode, setPageMode] = useState<PageMode>("portrait"),
+    [pageColor,setPageColor]=useState<PageColor>("offwhite"),
     [pageSetupOpen, setPageSetupOpen] = useState(false),
     [safeMargin, setSafeMargin] = useState(1),
     [safeOpen, setSafeOpen] = useState(false),
@@ -2727,6 +2738,13 @@ export default function Home() {
       setWorking(false);
     }
   };
+  const quickFixRasterRisk=async(target:Layer)=>{
+    const hasRim=target.steps.some(step=>step.type==="remove-bg"&&/rim/i.test(step.label));
+    if(!hasRim){setRiskLayerId(null);await applyBackgroundPreset("rim",target);return}
+    setRiskLayerId(null);setWorking(true);
+    try{const cleaned=await optimizeAlphaChannel(target.src),trimmed=await trimTransparent(cleaned),width=target.w*trimmed.width,safety=await analyzeCutSafety(trimmed.src,width);mutate(target.id,layer=>({...layer,...safety,src:trimmed.src,originalSrc:trimmed.src,x:layer.x+layer.w*trimmed.left,y:layer.y+layer.h*trimmed.top,w:width,h:layer.h*trimmed.height}));setNotice(safety.cutRisk?"Alpha cleaned; a real sub-2 mm detail may still need review":"Cut safety issue fixed without adding another rim")}
+    finally{setWorking(false)}
+  };
   const moveSelectionTo = (front: boolean) =>
     setLayers((items) => {
       const moving = items.filter((item) => selected.includes(item.id)),
@@ -3766,15 +3784,7 @@ export default function Home() {
       return;
     }
     if (l.isShape) {
-      const rect = e.currentTarget.getBoundingClientRect(),
-        px = clamp((e.clientX - rect.left) / rect.width, 0, 1),
-        py = clamp((e.clientY - rect.top) / rect.height, 0, 1),
-        img = await getImage(l.src),
-        c = document.createElement("canvas");
-      c.width = c.height = 1;
-      const x = c.getContext("2d")!;
-      x.drawImage(img, px * img.naturalWidth, py * img.naturalHeight, 1, 1, 0, 0, 1, 1);
-      if (x.getImageData(0, 0, 1, 1).data[3] < 64) return;
+      const rect=canvasRef.current?.getBoundingClientRect();if(!rect||!await layerOpaqueAtWorld(l,(e.clientX-rect.left)/scale,(e.clientY-rect.top)/scale))return;
     }
     if (e.shiftKey || e.ctrlKey || e.metaKey) setSelected((v) => (v.includes(l.id) ? v.filter((x) => x !== l.id) : [...v, l.id]));
     else if (!selected.includes(l.id)) setSelected([l.id]);
@@ -3797,6 +3807,7 @@ export default function Home() {
     });
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   };
+  const startSelectionMove=async(e:RPointer)=>{e.stopPropagation();if(one?.isShape){const rect=canvasRef.current?.getBoundingClientRect();if(!rect||!await layerOpaqueAtWorld(one,(e.clientX-rect.left)/scale,(e.clientY-rect.top)/scale)){setSelected([]);return}}startDrag(e,"move")};
   const pointerMove = (e: RPointer) => {
     if (pan.current && stageRef.current) {
       stageRef.current.scrollLeft = pan.current.l - (e.clientX - pan.current.x);
@@ -3917,7 +3928,7 @@ export default function Home() {
       }),
     );
   };
-  const canvasDown = (e: RPointer) => {
+  const canvasDown = async (e: RPointer) => {
     e.stopPropagation();
     if (shapeImageEditing) setShapeImageEditing(null);
     if (e.button === 1 && stageRef.current) {
@@ -3933,7 +3944,8 @@ export default function Home() {
     const r = e.currentTarget.getBoundingClientRect(),
       x = (e.clientX - r.left) / scale,
       y = (e.clientY - r.top) / scale,
-      h = [...layers].reverse().filter((l) => l.visible && x >= l.x && x <= l.x + l.w && y >= l.y && y <= l.y + l.h);
+      candidates = [...layers].reverse().filter(l=>{const b=rotatedBounds(l);return l.visible&&x>=b.x&&x<=b.x+b.w&&y>=b.y&&y<=b.y+b.h}),
+      opaque=await Promise.all(candidates.map(async l=>!l.isShape||await layerOpaqueAtWorld(l,x,y))),h=candidates.filter((_,index)=>opaque[index]);
     if (shapeTool && e.button === 0) {
       e.preventDefault();
       const id = uid(),
@@ -4349,6 +4361,9 @@ export default function Home() {
     invalid = layers.some((l) => l.visible && l.invalid),
     gridImage = zoom >= 2.3 ? "linear-gradient(#aeb6b066 1px,transparent 1px),linear-gradient(90deg,#aeb6b066 1px,transparent 1px),linear-gradient(#bec6c044 1px,transparent 1px),linear-gradient(90deg,#bec6c044 1px,transparent 1px),linear-gradient(#cbd2ce2b 1px,transparent 1px),linear-gradient(90deg,#cbd2ce2b 1px,transparent 1px)" : zoom >= 1.3 ? "linear-gradient(#aeb6b05c 1px,transparent 1px),linear-gradient(90deg,#aeb6b05c 1px,transparent 1px),linear-gradient(#c7ceca35 1px,transparent 1px),linear-gradient(90deg,#c7ceca35 1px,transparent 1px)" : "linear-gradient(#9fa8a255 1px,transparent 1px),linear-gradient(90deg,#9fa8a255 1px,transparent 1px),linear-gradient(#c7ceca33 1px,transparent 1px),linear-gradient(90deg,#c7ceca33 1px,transparent 1px)",
     gridSize = zoom >= 2.3 ? `${scale}px ${scale}px,${scale}px ${scale}px,${scale / 2}px ${scale / 2}px,${scale / 2}px ${scale / 2}px,${scale / 10}px ${scale / 10}px,${scale / 10}px ${scale / 10}px` : zoom >= 1.3 ? `${scale}px ${scale}px,${scale}px ${scale}px,${scale / 2}px ${scale / 2}px,${scale / 2}px ${scale / 2}px` : `${scale * 10}px ${scale * 10}px,${scale * 10}px ${scale * 10}px,${scale}px ${scale}px,${scale}px ${scale}px`,
+    paperTexture="radial-gradient(circle at 20% 30%,#8a78521c 0 .55px,transparent .8px),radial-gradient(circle at 75% 65%,#fff9 0 .65px,transparent .9px)",
+    canvasBackgroundImage=pageColor==="canson"?`${paperTexture},${gridImage}`:gridImage,
+    canvasBackgroundSize=pageColor==="canson"?`7px 9px,11px 8px,${gridSize}`:gridSize,
     labelBelow = box.y < 2.7;
   return (
     <main
@@ -4444,6 +4459,14 @@ export default function Home() {
                         <span>{mode === "portrait" ? "21 × 29.7 cm" : mode === "landscape" ? "29.7 × 21 cm" : "100 × 100 cm"}</span>
                       </button>
                     ))}
+                  </div>
+                </div>
+                <div className="setup-group page-color-group">
+                  <button>
+                    Page Color <ChevronDown />
+                  </button>
+                  <div className="setup-submenu page-color-submenu">
+                    {(Object.keys(PAGE_COLORS) as PageColor[]).map(value=><button key={value} className={pageColor===value?"active":""} onClick={()=>{setPageColor(value);setPageSetupOpen(false)}}><i style={{background:PAGE_COLORS[value].color}} className={value==="canson"?"paper-swatch":""}/><b>{PAGE_COLORS[value].label}</b></button>)}
                   </div>
                 </div>
                 <div className="setup-group">
@@ -4741,15 +4764,16 @@ export default function Home() {
             </div>
             <div
               ref={canvasRef}
-              className={`canvas ${zoom > 1.5 ? "mm-grid" : ""} ${gridVisible ? "" : "grid-off"} ${imageOnShapeTarget ? "image-on-shape-picking" : ""}`}
+              className={`canvas page-color-${pageColor} ${zoom > 1.5 ? "mm-grid" : ""} ${gridVisible ? "" : "grid-off"} ${imageOnShapeTarget ? "image-on-shape-picking" : ""}`}
               onPointerDown={canvasDown}
               style={{
                 left: 42,
                 top: 42,
                 width: A4.w * scale,
                 height: A4.h * scale,
-                backgroundImage: gridImage,
-                backgroundSize: gridSize,
+                backgroundColor:PAGE_COLORS[pageColor].color,
+                backgroundImage: canvasBackgroundImage,
+                backgroundSize: canvasBackgroundSize,
               }}
             >
               <div
@@ -4828,7 +4852,7 @@ export default function Home() {
               {picked.length > 0 && (
                 <div
                   className={`selection-box ${picked.some((layer) => layer.cutRisk) ? "cut-risk" : ""}`}
-                  onPointerDown={(e) => startDrag(e, "move")}
+                  onPointerDown={(e) => void startSelectionMove(e)}
                   style={
                     {
                       left: displayBox.x * scale,
@@ -5596,8 +5620,8 @@ export default function Home() {
                   >
                     {cutout ? "Edit Cutout" : "Edit Image"}
                   </button>
-                  <button className="confirm" onClick={() => (cutout ? void quickFixCutRisk() : (setRiskLayerId(null), void applyBackgroundPreset("rim", risk)))}>
-                    <Sparkles /> {cutout ? "Quick Fix" : "Quick Fix: Add Rim"}
+                  <button className="confirm" onClick={() => (cutout ? void quickFixCutRisk() : void quickFixRasterRisk(risk))}>
+                    <Sparkles /> {cutout ? "Quick Fix" : risk.steps.some(step=>step.type==="remove-bg"&&/rim/i.test(step.label))?"Quick Fix: Clean Alpha":"Quick Fix: Add Rim"}
                   </button>
                 </footer>
               </div>
