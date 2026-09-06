@@ -54,6 +54,7 @@ import {
 } from "lucide-react";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
+import { EDITOR_VERSION, editorDevLog } from "../editor-dev-log";
 import { getSVG, traceCanvas } from "@cadit-app/potrace-ts";
 import {
   faStar,faHeart,faArrowRight,faBolt,faBurst,faCloud,faMoon,faSun,faDiamond,
@@ -955,6 +956,7 @@ export default function Home() {
     [projectsOpen, setProjectsOpen] = useState(false),
     [saveAsMode, setSaveAsMode] = useState(false),
     [accountOpen, setAccountOpen] = useState(false),
+    [devLogOpen,setDevLogOpen]=useState(false),
     [currentProjectId, setCurrentProjectId] = useState<string | null>(null),
     [projectName, setProjectName] = useState("Untitled Project");
   const fileRef = useRef<HTMLInputElement>(null),
@@ -2426,10 +2428,10 @@ export default function Home() {
           <span>
             <Scissors />
           </span>
-          <div>
-            <b>Better Cricut Editor</b>
-            <small>Personal workspace · v57</small>
-          </div>
+          <button className="brand-copy" onClick={()=>setDevLogOpen(true)} title="Open development log">
+            <b>Cake Topper Maker</b>
+            <small>Personal workspace · {EDITOR_VERSION}</small>
+          </button>
         </div>
         <button className="brand-undo" onClick={undo} title="Undo (Ctrl+Z)"><Undo2 /> Undo</button>
         <input
@@ -3194,6 +3196,7 @@ export default function Home() {
         </div>
       )}
       {splitPreview&&<div className="split-modal" role="dialog" aria-modal="true" aria-label="Separate as layers preview"><div className="split-dialog"><header><div><b>Separate as Layers</b><small>{splitPreview.parts.length} independent islands found. Each color will become a separate layer.</small></div><button onClick={()=>setSplitPreview(null)}>×</button></header><div className="split-preview"><img src={splitPreview.preview} alt="Colored preview of separate layers"/></div><footer><button className="cancel" onClick={()=>setSplitPreview(null)}>Cancel</button><button className="confirm" onClick={()=>void confirmSeparateLayers()}>Create {splitPreview.parts.length} Layers</button></footer></div></div>}
+      {devLogOpen&&<div className="editor-devlog-modal" role="dialog" aria-modal="true" aria-label="Cake Topper Maker development log"><div className="editor-devlog-dialog"><header><div><span>PRODUCT DEVELOPMENT LOG</span><b>Cake Topper Maker</b><small>Every shipped improvement, newest first.</small></div><button onClick={()=>setDevLogOpen(false)}><X/></button></header><div className="editor-devlog-scroll">{editorDevLog.map(release=><article key={release.version}><div><b>{release.version}</b><span>{release.title}</span></div><ul>{release.changes.map(change=><li key={change}>{change}</li>)}</ul></article>)}</div><footer><span>{editorDevLog.length} releases · Current build {EDITOR_VERSION}</span><button onClick={()=>setDevLogOpen(false)}>Close</button></footer></div></div>}
       {working && (
         <div className="working">
           <div />
