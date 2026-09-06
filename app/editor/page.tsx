@@ -218,6 +218,8 @@ type ImageEditState = { source:string; offsetX:number; offsetY:number; widthScal
 type ImageEditor = ImageEditState & { layerId:string; crop:{left:number;top:number;right:number;bottom:number}; upscale:1|2|3; tool:ImageEditTool; brush:number; strokes:ImageEditStroke[]; history:ImageEditState[]; zoom:number; panX:number; panY:number };
 type EditTool = "bridge" | "erase" | "lasso" | "rectangle" | "smooth";
 type EditStroke = { id: string; tool: EditTool; brush: number; points: { x: number; y: number }[] };
+type SplitPart = {src:string;left:number;top:number;width:number;height:number;naturalW:number;naturalH:number};
+type SplitPreview = {layerId:string;preview:string;parts:SplitPart[]};
 type CutoutEditor = {
   layerId: string;
   source: string;
@@ -640,8 +642,9 @@ async function renderCutoutEdit(editor: CutoutEditor, applyCrop = false) {
     const current = x.getImageData(0, 0, c.width, c.height), blurred = softContext.getImageData(0, 0, c.width, c.height), selected = maskContext.getImageData(0, 0, c.width, c.height);
     for (let q = 0; q < current.data.length; q += 4) if (selected.data[q + 3] > 20) {
       const alpha = blurred.data[q + 3] >= 128 ? 255 : 0;
-      current.data[q] = parseInt(editor.color.slice(1, 3), 16); current.data[q + 1] = parseInt(editor.color.slice(3, 5), 16); current.data[q + 2] = parseInt(editor.color.slice(5, 7), 16); current.data[q + 3] = alpha;
+      if(current.data[q+3]<96){current.data[q] = parseInt(editor.color.slice(1, 3), 16); current.data[q + 1] = parseInt(editor.color.slice(3, 5), 16); current.data[q + 2] = parseInt(editor.color.slice(5, 7), 16)}current.data[q + 3] = alpha;
     }
+    for(let py=1;py<c.height-1;py++)for(let px=1;px<c.width-1;px++){const p=py*c.width+px,q=p*4;if(selected.data[q+3]<20||current.data[q+3]<128)continue;if([p-1,p+1,p-c.width,p+c.width].some(n=>current.data[n*4+3]<128)){current.data[q]=20;current.data[q+1]=23;current.data[q+2]=21}}
     x.putImageData(current, 0, 0);
   }
   if (!applyCrop) return { src: c.toDataURL(), left: 0, top: 0, width: 1, height: 1 };
@@ -840,6 +843,15 @@ async function selectedEdgeOverlay(src:string,stroke:EditStroke,color:string){
   for(let y=1;y<c.height-1;y++)for(let x=1;x<c.width-1;x++){const p=y*c.width+x,i=p*4;if(selection.data[i+3]<20||source.data[i+3]<96)continue;const edge=[p-1,p+1,p-c.width,p+c.width].some(q=>source.data[q*4+3]<96);if(!edge)continue;for(let oy=-radius;oy<=radius;oy++)for(let ox=-radius;ox<=radius;ox++){if(ox*ox+oy*oy>radius*radius)continue;const k=((y+oy)*c.width+x+ox)*4;out.data[k]=rgb[0];out.data[k+1]=rgb[1];out.data[k+2]=rgb[2];out.data[k+3]=255}}
   cx.clearRect(0,0,c.width,c.height);cx.putImageData(out,0,0);return c.toDataURL("image/png");
 }
+async function findOpaqueIslands(src:string){
+  const img=await getImage(src),scale=Math.min(1,1400/Math.max(img.naturalWidth,img.naturalHeight)),w=Math.max(1,Math.round(img.naturalWidth*scale)),h=Math.max(1,Math.round(img.naturalHeight*scale)),work=document.createElement("canvas");work.width=w;work.height=h;
+  const wx=work.getContext("2d")!;wx.drawImage(img,0,0,w,h);const pixels=wx.getImageData(0,0,w,h),seen=new Uint8Array(w*h),queue=new Int32Array(w*h),groups:{minX:number;minY:number;maxX:number;maxY:number;pixels:number[]}[]=[];
+  for(let seed=0;seed<w*h;seed++){if(seen[seed]||pixels.data[seed*4+3]<40)continue;let head=0,tail=0;queue[tail++]=seed;seen[seed]=1;const group={minX:w,minY:h,maxX:0,maxY:0,pixels:[] as number[]};while(head<tail){const p=queue[head++],x=p%w,y=Math.floor(p/w);group.pixels.push(p);group.minX=Math.min(group.minX,x);group.maxX=Math.max(group.maxX,x);group.minY=Math.min(group.minY,y);group.maxY=Math.max(group.maxY,y);for(let oy=-1;oy<=1;oy++)for(let ox=-1;ox<=1;ox++){if(!ox&&!oy)continue;const nx=x+ox,ny=y+oy;if(nx<0||ny<0||nx>=w||ny>=h)continue;const q=ny*w+nx;if(!seen[q]&&pixels.data[q*4+3]>=40){seen[q]=1;queue[tail++]=q}}}if(group.pixels.length>=Math.max(20,w*h*.00008))groups.push(group)}
+  groups.sort((a,b)=>a.minX-b.minX||a.minY-b.minY);const preview=document.createElement("canvas");preview.width=w;preview.height=h;const px=preview.getContext("2d")!,previewData=px.createImageData(w,h),palette=[[239,68,68],[14,165,233],[34,197,94],[168,85,247],[245,158,11],[236,72,153]];
+  groups.forEach((group,index)=>{const rgb=palette[index%palette.length];for(const p of group.pixels){const i=p*4;previewData.data[i]=rgb[0];previewData.data[i+1]=rgb[1];previewData.data[i+2]=rgb[2];previewData.data[i+3]=220}});px.putImageData(previewData,0,0);
+  const full=document.createElement("canvas");full.width=img.naturalWidth;full.height=img.naturalHeight;full.getContext("2d")!.drawImage(img,0,0);const parts=groups.map(group=>{const left=group.minX/w,top=group.minY/h,width=(group.maxX-group.minX+1)/w,height=(group.maxY-group.minY+1)/h,sx=Math.floor(left*full.width),sy=Math.floor(top*full.height),sw=Math.max(1,Math.ceil(width*full.width)),sh=Math.max(1,Math.ceil(height*full.height)),out=document.createElement("canvas");out.width=sw;out.height=sh;out.getContext("2d")!.drawImage(full,sx,sy,sw,sh,0,0,sw,sh);return{src:out.toDataURL("image/png"),left,top,width,height,naturalW:sw,naturalH:sh}});
+  return{preview:preview.toDataURL("image/png"),parts};
+}
 const lighten = (hex: string, amount = 0.34) => {
   const n = parseInt(hex.slice(1), 16),
     r = n >> 16,
@@ -931,6 +943,8 @@ export default function Home() {
     [cutActiveStroke, setCutActiveStroke] = useState<string | null>(null),
     [cutFinishedStroke, setCutFinishedStroke] = useState<string | null>(null),
     [cutEdgeOverlay, setCutEdgeOverlay] = useState(""),
+    [cutCropActive,setCutCropActive]=useState(false),
+    [splitPreview,setSplitPreview]=useState<SplitPreview|null>(null),
     [cutCursor, setCutCursor] = useState<{x:number;y:number;visible:boolean}>({x:0,y:0,visible:false}),
     [imageEditor,setImageEditor]=useState<ImageEditor|null>(null),
     [imageEditorSize,setImageEditorSize]=useState({w:0,h:0}),
@@ -1153,11 +1167,11 @@ export default function Home() {
     return () => document.removeEventListener("keydown", onKey);
   }, [selected,bgEditor,imageEditor]);
   useEffect(() => {
-    const stopBrowserZoom = (e: WheelEvent) => {if(stageRef.current?.contains(e.target as Node)||e.ctrlKey)e.preventDefault()};
+    const stopBrowserZoom = (e: WheelEvent) => {if(e.ctrlKey&&!stageRef.current?.contains(e.target as Node))e.preventDefault()};
     window.addEventListener("wheel", stopBrowserZoom, { passive: false });
     return () => window.removeEventListener("wheel", stopBrowserZoom);
   }, []);
-  const editorWheel=(e:RWheel<HTMLDivElement>)=>{
+  const editorWheel=(e:RWheel<HTMLDivElement>|WheelEvent)=>{
     e.preventDefault();const stage=stageRef.current,canvas=canvasRef.current;if(!stage||!canvas)return;
     if(e.ctrlKey){stage.scrollTop+=e.deltaY;stage.scrollLeft+=e.deltaX;updateRulers();return}
     const clientX=e.clientX,clientY=e.clientY,before=canvas.getBoundingClientRect(),oldScale=before.width/A4.w,
@@ -1166,6 +1180,7 @@ export default function Home() {
     if(Math.abs(nextZoom-zoomRef.current)<.0001)return;
     zoomAnchor.current={clientX,clientY,worldX,worldY};zoomRef.current=nextZoom;setZoom(nextZoom);
   };
+  useEffect(()=>{const stage=stageRef.current;if(!stage)return;const wheel=(event:WheelEvent)=>editorWheel(event);stage.addEventListener("wheel",wheel,{passive:false});return()=>stage.removeEventListener("wheel",wheel)},[]);
   useLayoutEffect(()=>{
     zoomRef.current=zoom;const anchor=zoomAnchor.current,stage=stageRef.current,canvas=canvasRef.current;
     if(!anchor||!stage||!canvas)return;
@@ -1209,7 +1224,7 @@ export default function Home() {
           const r = new FileReader();
           r.onload = () => ok(String(r.result));
           r.readAsDataURL(f);
-        }), prepared=f.type==="image/svg+xml"?{src:rawSrc,left:0,top:0,width:1,height:1}:await trimUniformBorder(rawSrc),src=prepared.src,
+        }), prepared=f.type==="image/png"?await trimUniformBorder(rawSrc):{src:rawSrc,left:0,top:0,width:1,height:1},src=prepared.src,
         img = await getImage(src),
         ratio = img.naturalWidth / img.naturalHeight;
       let w = Math.min(10, SAFE.w),
@@ -1438,7 +1453,7 @@ export default function Home() {
   const endCutoutPan = () => { cutPanDrag.current = null; };
   const openCutoutEditor = () => {
     if (!one || !["vector", "stroke"].includes(one.kind)) return;
-    setCutPreview(one.src);
+    setCutPreview(one.src);setCutCropActive(false);
     setCutImageSize({ w: 0, h: 0 });
     setCutEditor({ layerId: one.id, source: one.src, color: one.color, tool: null, brush: 3, strokes: [], crop: { left: 0, top: 0, right: 0, bottom: 0 }, zoom: 1, panX: 0, panY: 0 });
   };
@@ -1483,8 +1498,8 @@ export default function Home() {
     const target = layers.find((l) => l.id === cutEditor.layerId); if (!target) return;
     setWorking(true);
     try {
-      const result = await renderCutoutEdit(cutEditor, true), baked = await silhouette(result.src,target.color,255), next: Layer = {
-        ...target, src: baked, originalSrc: baked, kind: "vector", strokeCm: 0, fillGapsMm: 0,
+      const result = await renderCutoutEdit(cutEditor, true), baked = await silhouette(result.src,target.color,255),hasEdgeFix=cutEditor.strokes.some(stroke=>stroke.tool==="smooth"),finalSrc=hasEdgeFix?await vTracerCutout(baked,target.color):baked,next: Layer = {
+        ...target, src: finalSrc, originalSrc: finalSrc, kind: "vector", strokeCm: 0, fillGapsMm: 0,
         parentId: undefined, innerSrc: undefined, acetateOn: false, invalid: false,
         x: target.x + target.w*result.left, y: target.y + target.h*result.top,
         w: target.w*result.width, h: target.h*result.height, steps: [], activeStep: 0,
@@ -1519,6 +1534,8 @@ export default function Home() {
   const startImageCrop=(e:RPointer<HTMLButtonElement>,mode:string)=>{if(!imageEditor)return;e.preventDefault();e.stopPropagation();e.currentTarget.setPointerCapture(e.pointerId);imageCropDrag.current={mode,x:e.clientX,y:e.clientY,crop:{...imageEditor.crop},rect:e.currentTarget.closest(".image-edit-wrap")!.getBoundingClientRect()}};
   const moveImageCrop=(e:RPointer<HTMLButtonElement>)=>{const d=imageCropDrag.current;if(!d||!imageEditor)return;const dx=(e.clientX-d.x)/d.rect.width*100,dy=(e.clientY-d.y)/d.rect.height*100,c={...d.crop};if(d.mode.includes("w"))c.left=clamp(d.crop.left+dx,-25,Math.min(90,95-c.right));if(d.mode.includes("e"))c.right=clamp(d.crop.right-dx,-25,Math.min(90,95-c.left));if(d.mode.includes("n"))c.top=clamp(d.crop.top+dy,-25,Math.min(90,95-c.bottom));if(d.mode.includes("s"))c.bottom=clamp(d.crop.bottom-dy,-25,Math.min(90,95-c.top));setImageEditor({...imageEditor,crop:c})};
   const endImageCrop=()=>{imageCropDrag.current=null;void commitImageStage()};
+  const openSeparateLayers=async(source:string,layerId:string)=>{setWorking(true);try{const result=await findOpaqueIslands(source);if(result.parts.length<2){setNotice("No separate islands were found in this design");return}setSplitPreview({layerId,preview:result.preview,parts:result.parts})}finally{setWorking(false)}};
+  const confirmSeparateLayers=async()=>{if(!splitPreview)return;const target=layers.find(layer=>layer.id===splitPreview.layerId);if(!target)return;setWorking(true);try{const vector=["vector","stroke"].includes(target.kind),created:Layer[]=[];for(let index=0;index<splitPreview.parts.length;index++){const part=splitPreview.parts[index],solid=vector?await silhouette(part.src,target.color,255):part.src,src=vector?await vTracerCutout(solid,target.color):solid;created.push({...target,id:uid(),name:`${target.name}_Part_${index+1}`,src,originalSrc:src,x:target.x+target.w*part.left,y:target.y+target.h*part.top,w:target.w*part.width,h:target.h*part.height,naturalW:part.naturalW,naturalH:part.naturalH,kind:vector?"vector":target.kind,parentId:undefined,innerSrc:undefined,steps:[],activeStep:-1})}setLayers(items=>{const at=items.findIndex(layer=>layer.id===target.id),next=items.filter(layer=>layer.id!==target.id);next.splice(Math.max(0,at),0,...created);return next});setSelected(created.map(layer=>layer.id));setSplitPreview(null);setCutEditor(null);setImageEditor(null);setNotice(`${created.length} separate layers created`)}finally{setWorking(false)}};
   const addStroke = async (cmOverride?: number) => {
     if (!one || one.kind !== "vector") {
       setNotice("Stroke can only be applied to a Cutout layer");
@@ -1793,9 +1810,9 @@ export default function Home() {
         noBgLayer: Layer = { ...one, src: trimmed.src, x: one.x + one.w * trimmed.left, y: one.y + one.h * trimmed.top, w: one.w * trimmed.width, h: one.h * trimmed.height, kind: "nobg" },
         finalLayer: Layer = { ...noBgLayer, name: `${one.name.replace(/_(NoBG|Cutout|SmoothCutout)$/i, "")}_SmoothCutout`, src: vectorSrc, color, kind: "vector" };
       const removeStep: LayerStep = { id: uid(), type: "remove-bg", label: "Remove Background", snapshot: snapshot(noBgLayer) },
-        cutoutStep: LayerStep = { id: uid(), type: "cutout", label: "Smooth Cutout v4", snapshot: snapshot(finalLayer) };
+        cutoutStep: LayerStep = { id: uid(), type: "cutout", label: "Smooth Cutout v5", snapshot: snapshot(finalLayer) };
       mutate(one.id, () => ({ ...finalLayer, steps: [...one.steps, removeStep, cutoutStep], activeStep: one.steps.length + 1 }));
-      setNotice("Smooth Cutout v4 created with Cricut-optimized curves");
+      setNotice("Smooth Cutout v5 created with Cricut-optimized curves");
     } catch (error) { setNotice(`Smooth Cutout could not be created: ${error instanceof Error ? error.message : "Unknown error"}`); }
     finally { setWorking(false); setVTracerStartedAt(null); }
   };
@@ -2541,7 +2558,7 @@ export default function Home() {
             <button className="left-account" onClick={() => { setAccountOpen(true); setProjectsOpen(false); }}><span className="profile-placeholder"><User/></span><small>My Account</small></button>
           </div>
         </div>
-        <div className={`stage ${pageMode==="full"?"full-page":"standard-page"}`} ref={stageRef} onScroll={updateRulers} onWheel={editorWheel} onPointerDown={stageDown}>
+        <div className={`stage ${pageMode==="full"?"full-page":"standard-page"}`} ref={stageRef} onScroll={updateRulers} onPointerDown={stageDown}>
           <div className="viewport-rulers">
             <div className="viewport-corner" />
             <div className="viewport-ruler-x">
@@ -3018,7 +3035,7 @@ export default function Home() {
       {notice && <div className="toast">{notice}</div>}
       {imageEditor&&(()=>{const target=layers.find(l=>l.id===imageEditor.layerId);return <div className="bg-modal image-edit-modal" role="dialog" aria-modal="true" aria-label="Image editor">
         <div className="bg-dialog"><header><div><b>Edit Image</b><small>Crop and increase raster resolution without altering the design geometry.</small></div><button onClick={()=>setImageEditor(null)}>×</button></header>
-        <div className="bg-editor-body"><div className="bg-preview image-edit-preview" onWheel={zoomImageEditor} onPointerDown={startImagePan} onPointerMove={moveImagePan} onPointerUp={endImagePan} onPointerCancel={endImagePan}><div className="image-edit-wrap" style={{"--fit-w":imageEditorSize.w?`${imageEditorSize.w}px`:"auto","--fit-h":imageEditorSize.h?`${imageEditorSize.h}px`:"auto",transform:`translate(${imageEditor.panX}px,${imageEditor.panY}px) scale(${imageEditor.zoom})`} as React.CSSProperties}><img className={`image-tool-${imageEditor.tool}`} src={imageEditor.source} draggable={false} alt="Image edit preview" onLoad={e=>setImageEditorSize(fitEditorImage(e.currentTarget,e.currentTarget.closest(".bg-preview") as HTMLDivElement))} onPointerDown={startImageEdit} onPointerMove={moveImageEdit} onPointerUp={endImageEdit} onPointerCancel={endImageEdit}/><svg className="image-edit-overlay" viewBox="0 0 100 100" preserveAspectRatio="none">{imageEditor.strokes.map(s=>{const pts=s.points.map(p=>`${p.x*100},${p.y*100}`).join(" ");return s.tool==="lasso"?<polygon key={s.id} points={pts} className="image-lasso-mark"/>:<polyline key={s.id} points={pts} className="image-erase-mark" style={{strokeWidth:s.brush}}/>})}</svg>{imageEditor.tool==="crop"&&<div className="crop-guide" style={{left:`${imageEditor.crop.left}%`,top:`${imageEditor.crop.top}%`,right:`${imageEditor.crop.right}%`,bottom:`${imageEditor.crop.bottom}%`}}>{["nw","n","ne","e","se","s","sw","w"].map(h=><button key={h} className={`crop-handle crop-${h}`} onPointerDown={e=>startImageCrop(e,h)} onPointerMove={moveImageCrop} onPointerUp={endImageCrop} onPointerCancel={endImageCrop}/>)}</div>}</div><div className="bg-zoom-controls"><button onClick={()=>setImageEditor({...imageEditor,zoom:clamp(imageEditor.zoom/1.2,.5,5)})}>−</button><span>{Math.round(imageEditor.zoom*100)}%</span><button onClick={()=>setImageEditor({...imageEditor,zoom:clamp(imageEditor.zoom*1.2,.5,5)})}>+</button><button onClick={()=>setImageEditor({...imageEditor,zoom:1,panX:0,panY:0})}>Fit</button></div></div>
+        <div className="bg-editor-body"><div className="bg-preview image-edit-preview" onWheel={zoomImageEditor} onPointerDown={startImagePan} onPointerMove={moveImagePan} onPointerUp={endImagePan} onPointerCancel={endImagePan}><div className="image-edit-wrap" style={{"--fit-w":imageEditorSize.w?`${imageEditorSize.w}px`:"auto","--fit-h":imageEditorSize.h?`${imageEditorSize.h}px`:"auto",transform:`translate(${imageEditor.panX}px,${imageEditor.panY}px) scale(${imageEditor.zoom})`} as React.CSSProperties}><img className={`image-tool-${imageEditor.tool}`} src={imageEditor.source} draggable={false} alt="Image edit preview" onLoad={e=>setImageEditorSize(fitEditorImage(e.currentTarget,e.currentTarget.closest(".bg-preview") as HTMLDivElement))} onPointerDown={startImageEdit} onPointerMove={moveImageEdit} onPointerUp={endImageEdit} onPointerCancel={endImageEdit}/><svg className="image-edit-overlay" viewBox="0 0 100 100" preserveAspectRatio="none">{imageEditor.strokes.map(s=>{const pts=s.points.map(p=>`${p.x*100},${p.y*100}`).join(" ");return s.tool==="lasso"?<polygon key={s.id} points={pts} className="image-lasso-mark"/>:<polyline key={s.id} points={pts} className="image-erase-mark" style={{strokeWidth:s.brush}}/>})}</svg>{imageEditor.tool==="crop"&&<div className="crop-guide" style={{left:`${imageEditor.crop.left}%`,top:`${imageEditor.crop.top}%`,right:`${imageEditor.crop.right}%`,bottom:`${imageEditor.crop.bottom}%`}}>{["nw","n","ne","e","se","s","sw","w"].map(h=><button key={h} className={`crop-handle crop-${h}`} onPointerDown={e=>startImageCrop(e,h)} onPointerMove={moveImageCrop} onPointerUp={endImageCrop} onPointerCancel={endImageCrop}/>)}</div>}</div><button className="separate-layers-trigger" onClick={e=>{e.stopPropagation();void openSeparateLayers(imageEditor.source,imageEditor.layerId)}}><Layers3/> Separate as Layers</button><div className="bg-zoom-controls"><button onClick={()=>setImageEditor({...imageEditor,zoom:clamp(imageEditor.zoom/1.2,.5,5)})}>−</button><span>{Math.round(imageEditor.zoom*100)}%</span><button onClick={()=>setImageEditor({...imageEditor,zoom:clamp(imageEditor.zoom*1.2,.5,5)})}>+</button><button onClick={()=>setImageEditor({...imageEditor,zoom:1,panX:0,panY:0})}>Fit</button></div></div>
         <aside className="bg-controls image-controls"><section><label>Edit Tool</label><div className="image-tool-buttons">{(["crop","erase","lasso"] as ImageEditTool[]).map(tool=><button key={tool} className={imageEditor.tool===tool?"active":""} onClick={()=>setImageEditor({...imageEditor,tool})}>{tool==="crop"?<Maximize2/>:tool==="erase"?<Trash2/>:<Scissors/>}<span>{tool==="lasso"?"Lasso Erase":tool[0].toUpperCase()+tool.slice(1)}</span></button>)}</div><small>Crop with the handles on the image. Drag outward to expand the canvas.</small></section>{imageEditor.tool==="erase"&&<section><label>Brush Size <b>{imageEditor.brush}%</b></label><input type="range" min=".5" max="35" step=".5" value={imageEditor.brush} onChange={e=>setImageEditor({...imageEditor,brush:+e.target.value})}/></section>}<section><label>Resolution</label><b>{target?.naturalW||0} × {target?.naturalH||0} px</b><small>Output: {Math.round((target?.naturalW||0)*(1-(imageEditor.crop.left+imageEditor.crop.right)/100)*imageEditor.upscale)} × {Math.round((target?.naturalH||0)*(1-(imageEditor.crop.top+imageEditor.crop.bottom)/100)*imageEditor.upscale)} px</small></section>
         <section><label>Upscale</label><div className="mode-buttons">{([1,2,3] as const).map(n=><button key={n} className={imageEditor.upscale===n?"active keep":""} onClick={()=>setImageEditor({...imageEditor,upscale:n})}>{n}×</button>)}</div><small>High-quality resampling preserves hard corners and smooth curves; it does not invent missing detail.</small></section>
         </aside></div>
@@ -3041,10 +3058,11 @@ export default function Home() {
                     })}
                   </svg>
                   {cutCursor.visible&&cutEditor.tool&&["bridge","erase","smooth"].includes(cutEditor.tool)&&<i className="cut-round-cursor" style={{left:`${cutCursor.x*100}%`,top:`${cutCursor.y*100}%`,width:`${Math.max(4,cutEditor.brush/100*Math.min(cutImageSize.w,cutImageSize.h))}px`,aspectRatio:"1"}}/>}
-                  <div className="crop-guide" style={{left:`${cutEditor.crop.left}%`,top:`${cutEditor.crop.top}%`,right:`${cutEditor.crop.right}%`,bottom:`${cutEditor.crop.bottom}%`}}>
+                  {cutCropActive&&<div className="crop-guide" style={{left:`${cutEditor.crop.left}%`,top:`${cutEditor.crop.top}%`,right:`${cutEditor.crop.right}%`,bottom:`${cutEditor.crop.bottom}%`}}>
                     {["nw","n","ne","e","se","s","sw","w"].map(h=><button key={h} className={`crop-handle crop-${h}`} onPointerDown={e=>startCropDrag(e,h)} onPointerMove={moveCropDrag} onPointerUp={endCropDrag} onPointerCancel={endCropDrag}/>) }
-                  </div>
+                  </div>}
                 </div>}
+                <button className="separate-layers-trigger" onClick={e=>{e.stopPropagation();void openSeparateLayers(cutPreview,cutEditor.layerId)}}><Layers3/> Separate as Layers</button>
                 <div className="bg-zoom-controls">
                   <button onClick={()=>setCutEditor({...cutEditor,zoom:clamp(cutEditor.zoom/1.2,.5,5)})}>−</button>
                   <span>{Math.round(cutEditor.zoom*100)}%</span>
@@ -3056,6 +3074,7 @@ export default function Home() {
                 <section><label>Edit Tool</label><div className="edit-tool-grid">
                   {(["bridge","erase","smooth","lasso","rectangle"] as EditTool[]).map((tool)=><button key={tool} className={cutEditor.tool===tool?"active":""} onClick={()=>setCutEditor({...cutEditor,tool:cutEditor.tool===tool?null:tool})}>{tool==="bridge"?<LinkIcon/>:tool==="smooth"?<Sparkles/>:tool==="rectangle"?<Maximize2/>:tool==="lasso"?<Scissors/>:<Trash2/>}<span>{tool==="smooth"?"Fix the Edges":tool==="lasso"?"Lasso Eraser":tool==="rectangle"?"Rectangle Eraser":tool[0].toUpperCase()+tool.slice(1)}</span></button>)}
                 </div><small>Fix the Edges smooths only the brushed contour. Its start and end preserve the surrounding trajectory.</small></section>
+                <section><button className={cutCropActive?"crop-mode active":"crop-mode"} onClick={()=>setCutCropActive(value=>!value)}><Maximize2/><span>{cutCropActive?"Finish Crop":"Crop"}</span></button><small>Show the crop frame, adjust it, then press Finish Crop to keep the crop and hide the frame.</small></section>
                 <section><label>Brush Size <b>{cutEditor.brush}%</b></label><input type="range" min="1" max="15" value={cutEditor.brush} onChange={(e)=>setCutEditor({...cutEditor,brush:+e.target.value})}/></section>
                 <section><label>Crop Canvas</label><small>Drag the crop frame from any edge or corner. Up to 90% can be removed from a side.</small></section>
                 <div className="bg-history-actions"><button disabled={!cutEditor.strokes.length} onClick={()=>setCutEditor({...cutEditor,strokes:cutEditor.strokes.slice(0,-1)})}>Undo Edit</button><button disabled={!cutEditor.strokes.length} onClick={()=>setCutEditor({...cutEditor,strokes:[]})}>Reset Edits</button></div>
@@ -3173,6 +3192,7 @@ export default function Home() {
           </div>
         </div>
       )}
+      {splitPreview&&<div className="split-modal" role="dialog" aria-modal="true" aria-label="Separate as layers preview"><div className="split-dialog"><header><div><b>Separate as Layers</b><small>{splitPreview.parts.length} independent islands found. Each color will become a separate layer.</small></div><button onClick={()=>setSplitPreview(null)}>×</button></header><div className="split-preview"><img src={splitPreview.preview} alt="Colored preview of separate layers"/></div><footer><button className="cancel" onClick={()=>setSplitPreview(null)}>Cancel</button><button className="confirm" onClick={()=>void confirmSeparateLayers()}>Create {splitPreview.parts.length} Layers</button></footer></div></div>}
       {working && (
         <div className="working">
           <div />
