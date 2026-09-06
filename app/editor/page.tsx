@@ -493,7 +493,9 @@ async function refineBackground(src: string, tolerance: number, strokes: BgStrok
     floodSeen = new Uint16Array(c.width * c.height),
     floodQueue = new Int32Array(c.width * c.height);
   const restoreSourceOrWhite = (q:number) => {
-    const usable=sourceData[q+3]>8&&(sourceData[q]+sourceData[q+1]+sourceData[q+2]>18);
+    // RGB 0,0,0 is valid artwork, not missing pixel data. Only transparent
+    // source pixels need the white fallback used for newly expanded edges.
+    const usable=sourceData[q+3]>8;
     result.data[q]=usable?sourceData[q]:255;result.data[q+1]=usable?sourceData[q+1]:255;result.data[q+2]=usable?sourceData[q+2]:255;
   };
   for (const entry of eraseColors) {
@@ -2411,7 +2413,8 @@ export default function Home() {
     setWorking(true);
     try {
       const refined = await refineBackgroundWithRoom(bgEditor.source, 0, bgEditor.strokes, bgEditor.speckles, bgEditor.edgeRefine, bgEditor.eraseColors, bgEditor.edgeSmooth, bgEditor.optimizeAlpha);
-      const t = await trimTransparent(refined.src);
+      const t = await trimTransparent(refined.src),
+        finalImage = await getImage(t.src);
       const base = bgEditor.base;
       const mappedLeft = refined.left + refined.width * t.left,
         mappedTop = refined.top + refined.height * t.top,
@@ -2426,6 +2429,8 @@ export default function Home() {
           y: base.y + base.h * mappedTop,
           w: base.w * mappedWidth,
           h: base.h * mappedHeight,
+          naturalW: finalImage.naturalWidth,
+          naturalH: finalImage.naturalHeight,
           kind: "nobg" as Kind,
         };
       const selectedBackground = bgEditor.eraseColors.find((entry) => entry.color)?.color || [...target.steps].reverse().find((item) => item.type === "remove-bg")?.backgroundColor || "#ffffff";
@@ -2456,6 +2461,7 @@ export default function Home() {
         activeStep: steps.length,
       }));
       if (imageEditor?.layerId === target.id) {
+        setImageEditorSize({ w: 0, h: 0 });
         setImageEditor({
           ...imageEditor,
           source: t.src,
@@ -2466,6 +2472,9 @@ export default function Home() {
           offsetY: 0,
           widthScale: 1,
           heightScale: 1,
+          zoom: 1,
+          panX: 0,
+          panY: 0,
         });
         setImageTab("edit");
       }
