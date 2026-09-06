@@ -454,6 +454,10 @@ async function refineBackground(src: string, tolerance: number, strokes: BgStrok
     sourceData = source.data,
     floodSeen = new Uint16Array(c.width * c.height),
     floodQueue = new Int32Array(c.width * c.height);
+  const restoreSourceOrWhite = (q:number) => {
+    const usable=sourceData[q+3]>8&&(sourceData[q]+sourceData[q+1]+sourceData[q+2]>18);
+    result.data[q]=usable?sourceData[q]:255;result.data[q+1]=usable?sourceData[q+1]:255;result.data[q+2]=usable?sourceData[q+2]:255;
+  };
   for (const entry of eraseColors) {
     if (!entry.color) continue;
     const rgb = entry.color.match(/[a-f\d]{2}/gi)?.map((part) => parseInt(part, 16));
@@ -595,9 +599,7 @@ async function refineBackground(src: string, tolerance: number, strokes: BgStrok
         const transparentNeighbor = [at - 1, at + 1, at - c.width, at + c.width].some((n) => before[n * 4 + 3] < 128);
         if (remove && opaque && transparentNeighbor) result.data[q + 3] = 0;
         if (!remove && !opaque && neighbor) {
-          result.data[q] = sourceData[q];
-          result.data[q + 1] = sourceData[q + 1];
-          result.data[q + 2] = sourceData[q + 2];
+          restoreSourceOrWhite(q);
           result.data[q + 3] = 255;
         }
       }
@@ -631,9 +633,7 @@ async function refineBackground(src: string, tolerance: number, strokes: BgStrok
     for (let i = 0; i < w * h; i++) {
       const q = i * 4;
       if (smoothed[i] >= 0.5) {
-        result.data[q] = sourceData[q];
-        result.data[q + 1] = sourceData[q + 1];
-        result.data[q + 2] = sourceData[q + 2];
+        restoreSourceOrWhite(q);
         result.data[q + 3] = 255;
       } else result.data[q + 3] = 0;
     }
@@ -4856,6 +4856,7 @@ export default function Home() {
                         }}
                       >
                         <AlertTriangle />
+                        <span>Fix!</span>
                       </button>
                     )}
                   </div>
