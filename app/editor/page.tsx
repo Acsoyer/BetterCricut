@@ -234,6 +234,7 @@ type CutoutEditor = {
   zoom: number;
   panX: number;
   panY: number;
+  smoothPasses: number;
 };
 type ClipEditor = { layerId:string; maskSrc:string; imageSrc:string; scale:number; offsetX:number; offsetY:number };
 const uid = () => Math.random().toString(36).slice(2, 10),
@@ -575,9 +576,9 @@ async function smoothVectorCutout(src: string, color: string) {
   root.querySelectorAll("path").forEach((path) => { path.setAttribute("fill", color); path.setAttribute("fill-rule", "evenodd"); path.setAttribute("stroke", "#141715"); path.setAttribute("stroke-width", "1.15"); path.setAttribute("stroke-linecap", "round"); path.setAttribute("stroke-linejoin", "round"); path.setAttribute("vector-effect", "non-scaling-stroke"); path.setAttribute("paint-order", "stroke fill"); });
   return `data:image/svg+xml,${encodeURIComponent(new XMLSerializer().serializeToString(root))}`;
 }
-async function vTracerCutout(src: string, color: string) {
-  const img = await getImage(src), longest = Math.max(img.naturalWidth, img.naturalHeight), scale = clamp(1100 / Math.max(longest, 1), 1, 3), canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(img.naturalWidth * scale)); canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+async function vTracerCutout(src: string, color: string, physicalWidthCm?:number, simplify=1.25) {
+  const img = await getImage(src),canvas=document.createElement("canvas"),ratio=img.naturalHeight/Math.max(1,img.naturalWidth),targetWidth=physicalWidthCm?clamp(Math.round(physicalWidthCm*96),64,2800):clamp(img.naturalWidth,64,2800);
+  canvas.width=targetWidth;canvas.height=Math.max(1,Math.round(targetWidth*ratio));
   const context = canvas.getContext("2d", { willReadFrequently: true })!;
   context.imageSmoothingEnabled = true; context.imageSmoothingQuality = "high"; context.drawImage(img, 0, 0, canvas.width, canvas.height);
   const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
@@ -593,7 +594,7 @@ async function vTracerCutout(src: string, color: string) {
     const timeout = window.setTimeout(() => { worker.terminate(); reject(new Error("VTracer could not finish this image within three minutes")); }, 180000);
     worker.onmessage = (event) => { window.clearTimeout(timeout); worker.terminate(); event.data.error ? reject(new Error(event.data.error)) : resolve(event.data.svg); };
     worker.onerror = (event) => { window.clearTimeout(timeout); worker.terminate(); reject(new Error(event.message || "VTracer worker failed")); };
-    worker.postMessage({ buffer }, [buffer]);
+    worker.postMessage({ buffer, simplify }, [buffer]);
   });
   const doc = new DOMParser().parseFromString(tracedSvg, "image/svg+xml"), output = doc.documentElement as unknown as SVGSVGElement;
   if (output.tagName.toLowerCase() !== "svg" || output.querySelector("parsererror")) throw new Error("VTracer returned an invalid SVG");
@@ -971,6 +972,7 @@ export default function Home() {
     [accountOpen, setAccountOpen] = useState(false),
     [devLogOpen,setDevLogOpen]=useState(false),
     [lastSavedSignature,setLastSavedSignature]=useState(projectSignature([],"portrait",1)),
+    [saveStatus,setSaveStatus]=useState<"saving"|"saved"|null>(null),
     [savedCountdown,setSavedCountdown]=useState<number|null>(null),
     [currentProjectId, setCurrentProjectId] = useState<string | null>(null),
     [projectName, setProjectName] = useState("Untitled Project");
@@ -998,6 +1000,7 @@ export default function Home() {
     zoomRef = useRef(.82),
     zoomAnchor = useRef<{clientX:number;clientY:number;worldX:number;worldY:number}|null>(null),
     pan = useRef<{ x: number; y: number; l: number; t: number } | null>(null);
+  const saveToastDismissed=useRef(false);
   const landscape = pageMode === "landscape",
     A4 = pageMode === "full" ? {w:100,h:100} : landscape ? { w: PORTRAIT.h, h: PORTRAIT.w } : PORTRAIT,
     SAFE = { x: safeMargin, y: safeMargin, w: A4.w - safeMargin * 2, h: A4.h - safeMargin * 2 },
@@ -1017,8 +1020,8 @@ export default function Home() {
   const currentSignature=useMemo(()=>projectSignature(layers,pageMode,safeMargin),[layers,pageMode,safeMargin]),projectDirty=currentSignature!==lastSavedSignature;
   const mutate = (id: string, fn: (l: Layer) => Layer) =>
     setLayers((v) => v.map((l) => (l.id === id ? fn(l) : l)));
-  const refreshProjects = async () => {
-    setProjectsLoading(true);
+  const refreshProjects = async (showLoading=projects.length===0) => {
+    if(showLoading)setProjectsLoading(true);
     const { data, error } = await supabase.from("projects").select("id,name,updated_at,data").order("updated_at", { ascending: false });
     setProjectsLoading(false);
     if (error) { setNotice("Projects could not be loaded. Please try again."); return; }
@@ -1026,15 +1029,14 @@ export default function Home() {
   };
   const saveProject = async (asNew = false,targetId?:string,targetName?:string,closePanel=true) => {
     if (!session?.user) {setNotice("Sign in to save a project");return false}
-    setWorking(true);
+    saveToastDismissed.current=false;setSaveStatus("saving");setSavedCountdown(null);
     const name=(targetName??projectName).trim()||"Untitled Project",thumbnail=await createProjectThumbnail(layers),projectData={layers,landscape,pageMode,safeMargin,thumbnail},payload = { name, data:projectData, user_id: session.user.id, updated_at: new Date().toISOString() },updateId=targetId??currentProjectId;
     const query = updateId && !asNew
       ? supabase.from("projects").update(payload).eq("id", updateId).select("id,name,updated_at,data").single()
       : supabase.from("projects").insert(payload).select("id,name,updated_at,data").single();
     const { data, error } = await query;
-    setWorking(false);
-    if (error || !data) {setNotice("Project could not be saved");return false}
-    setCurrentProjectId(data.id);setProjectName(data.name);setLastSavedSignature(projectSignature(layers,pageMode,safeMargin));await refreshProjects();if(closePanel)setProjectsOpen(false);setSaveAsMode(false);setSavedCountdown(2);return true;
+    if (error || !data) {setSaveStatus(null);setNotice("Project could not be saved");return false}
+    setCurrentProjectId(data.id);setProjectName(data.name);setLastSavedSignature(projectSignature(layers,pageMode,safeMargin));setProjects(items=>[data as SavedProject,...items.filter(project=>project.id!==data.id)]);void refreshProjects(false);if(closePanel)setProjectsOpen(false);setSaveAsMode(false);if(!saveToastDismissed.current){setSaveStatus("saved");setSavedCountdown(2)}return true;
   };
   const openProject = (project: SavedProject) => {
     setLayers(project.data.layers || []); setPageMode(project.data.pageMode || (project.data.landscape ? "landscape" : "portrait")); setSafeMargin(project.data.safeMargin ?? 1);
@@ -1060,7 +1062,7 @@ export default function Home() {
     const stored=Number(localStorage.getItem("better-cricut-screen-calibration"));
     if(Number.isFinite(stored)&&stored>=.5&&stored<=2){setCalibration(stored);setCalibrationDraft(stored)}
   },[]);
-  useEffect(()=>{if(savedCountdown===null)return;const timer=window.setTimeout(()=>setSavedCountdown(value=>value!==null&&value>1?value-1:null),1000);return()=>window.clearTimeout(timer)},[savedCountdown]);
+  useEffect(()=>{if(savedCountdown===null)return;const timer=window.setTimeout(()=>setSavedCountdown(value=>{if(value!==null&&value>1)return value-1;setSaveStatus(null);return null}),1000);return()=>window.clearTimeout(timer)},[savedCountdown]);
   useEffect(() => {
     void supabase.auth.getSession().then(({ data }) => { setSession(data.session); if (data.session) void refreshProjects(); });
     const { data } = supabase.auth.onAuthStateChange((_event, next) => { setSession(next); if (next) void refreshProjects(); else setProjects([]); });
@@ -1481,7 +1483,7 @@ export default function Home() {
     if (!one || !["vector", "stroke"].includes(one.kind)) return;
     setCutPreview(one.src);setCutCropActive(false);
     setCutImageSize({ w: 0, h: 0 });
-    setCutEditor({ layerId: one.id, source: one.src, color: one.color, tool: null, brush: 3, strokes: [], crop: { left: 0, top: 0, right: 0, bottom: 0 }, zoom: 1, panX: 0, panY: 0 });
+    setCutEditor({ layerId: one.id, source: one.src, color: one.color, tool: null, brush: 3, strokes: [], crop: { left: 0, top: 0, right: 0, bottom: 0 }, zoom: 1, panX: 0, panY: 0, smoothPasses:0 });
   };
   const cutPoint = (e: RPointer<HTMLImageElement>) => {
     const r = e.currentTarget.getBoundingClientRect();
@@ -1524,7 +1526,7 @@ export default function Home() {
     const target = layers.find((l) => l.id === cutEditor.layerId); if (!target) return;
     setWorking(true);
     try {
-      const result = await renderCutoutEdit(cutEditor, true), baked = await silhouette(result.src,target.color,255),hasEdgeFix=cutEditor.strokes.some(stroke=>stroke.tool==="smooth"),finalSrc=hasEdgeFix?await vTracerCutout(baked,target.color):baked,next: Layer = {
+      const result = await renderCutoutEdit(cutEditor, true), baked = await silhouette(result.src,target.color,255),hasEdgeFix=cutEditor.strokes.some(stroke=>stroke.tool==="smooth"),finalSrc=hasEdgeFix?await vTracerCutout(baked,target.color,target.w,1.8):baked,next: Layer = {
         ...target, src: finalSrc, originalSrc: finalSrc, kind: "vector", strokeCm: 0, fillGapsMm: 0,
         parentId: undefined, innerSrc: undefined, acetateOn: false, invalid: false,
         x: target.x + target.w*result.left, y: target.y + target.h*result.top,
@@ -1534,6 +1536,7 @@ export default function Home() {
       next.steps=[step]; mutate(target.id,()=>next); setCutEditor(null); setNotice("Cutout edits baked into the layer");
     } finally { setWorking(false); }
   };
+  const smoothCutoutNow=async()=>{if(!cutEditor)return;const target=layers.find(layer=>layer.id===cutEditor.layerId);if(!target)return;setWorking(true);try{const rendered=await renderCutoutEdit(cutEditor),baked=await silhouette(rendered.src,target.color,255),pass=cutEditor.smoothPasses+1,src=await vTracerCutout(baked,target.color,target.w,Math.min(3.4,1.7+pass*.55));setCutEditor({...cutEditor,source:src,strokes:[],smoothPasses:pass});setCutPreview(src);setCutEdgeOverlay("");setNotice(`Contour smoothing applied · pass ${pass}`)}finally{setWorking(false)}};
   const openImageEditor=()=>{if(!one||["vector","stroke","acetate"].includes(one.kind))return;setImageEditorSize({w:0,h:0});setImageEditor({layerId:one.id,source:one.src,crop:{left:0,top:0,right:0,bottom:0},upscale:1,tool:"crop",brush:4,strokes:[],history:[],offsetX:0,offsetY:0,widthScale:1,heightScale:1,zoom:1,panX:0,panY:0})};
   const zoomImageEditor=(e:RWheel<HTMLDivElement>)=>{e.preventDefault();e.stopPropagation();setImageEditor(v=>v?{...v,zoom:clamp(v.zoom*(e.deltaY<0?1.12:.89),.5,5)}:v)};
   const startImagePan=(e:RPointer<HTMLDivElement>)=>{e.stopPropagation();if(!imageEditor||e.button!==1)return;e.preventDefault();e.currentTarget.setPointerCapture(e.pointerId);imagePanDrag.current={x:e.clientX,y:e.clientY,panX:imageEditor.panX,panY:imageEditor.panY}};
@@ -1833,7 +1836,7 @@ export default function Home() {
     try {
       const converted:Layer[]=[];
       for(const target of targets){
-        const refined=await refineBackground(target.src,46,[],12,0),trimmed=await trimTransparent(refined),color=COLORS[Math.floor(Math.random()*21)],solid=await silhouette(trimmed.src,color,255),vectorSrc=await vTracerCutout(solid,color),
+        const refined=await refineBackground(target.src,46,[],12,0),trimmed=await trimTransparent(refined),color=COLORS[Math.floor(Math.random()*21)],solid=await silhouette(trimmed.src,color,255),vectorSrc=await vTracerCutout(solid,color,target.w*trimmed.width),
           noBgLayer:Layer={...target,src:trimmed.src,x:target.x+target.w*trimmed.left,y:target.y+target.h*trimmed.top,w:target.w*trimmed.width,h:target.h*trimmed.height,kind:"nobg"},
           finalLayer:Layer={...noBgLayer,name:`${target.name.replace(/_(NoBG|Cutout|SmoothCutout)$/i,"")}_SmoothCutout`,src:vectorSrc,color,kind:"vector"},
           removeStep:LayerStep={id:uid(),type:"remove-bg",label:"Remove Background",snapshot:snapshot(noBgLayer)},
@@ -2583,7 +2586,7 @@ export default function Home() {
             {shapeOpen&&<div className="custom-shapes-menu">{CUSTOM_SHAPES.map(([name,icon])=>{const [w,h,,,path]=icon.icon;return <button key={name} title={name} onClick={()=>{setShapeTool(name);setShapeOpen(false)}}><svg viewBox={`0 0 ${w} ${h}`}>{Array.isArray(path)?path.map((d,i)=><path key={i} d={d}/>):<path d={path}/>}</svg><span>{name}</span></button>})}</div>}
           </div>
           <div className="left-future">
-            <button className="left-projects" onClick={() => { setProjectsOpen(true); setAccountOpen(false); void refreshProjects(); }}><FolderOpen/><small>My Projects</small></button>
+        <button className="left-projects" onClick={() => { setProjectsOpen(true); setAccountOpen(false); void refreshProjects(projects.length===0); }}><FolderOpen/><small>My Projects</small></button>
             <button className="left-account" onClick={() => { setAccountOpen(true); setProjectsOpen(false); }}><span className="profile-placeholder"><User/></span><small>My Account</small></button>
           </div>
         </div>
@@ -3049,7 +3052,7 @@ export default function Home() {
         <div className="project-save-toolbar"><label><span>{saveAsMode?"Name for the new copy":"Current project name"}</span><input value={projectName} maxLength={80} onChange={e=>setProjectName(e.target.value)}/></label><button onClick={()=>void saveProject(false,undefined,undefined,false)}><Download/> Save Project</button><button className={saveAsMode?"active":""} onClick={()=>{if(saveAsMode)void saveProject(true,undefined,undefined,false);else{setSaveAsMode(true);setProjectName(currentProjectId?`${projectName} Copy`:projectName)}}}><Copy/> {saveAsMode?"Confirm Save As":"Save As Project"}</button></div>
         <div className="project-list">{projectsLoading?<div className="projects-loading"><i/><b>Loading your projects…</b><span>Your saved projects are safe while we sync them.</span></div>:projects.length?projects.map(project=>{const expanded=expandedProjectId===project.id;return <article key={project.id} className={`project-card ${project.id===currentProjectId?"current":""} ${expanded?"expanded":""}`}><button className="project-summary" onClick={()=>setExpandedProjectId(value=>value===project.id?null:project.id)}><span className="project-composite-thumb">{project.data.thumbnail?<img src={project.data.thumbnail} alt=""/>:<FolderOpen/>}</span><span className="project-summary-copy"><b>{project.name}</b><small>Updated {new Date(project.updated_at).toLocaleString()}</small><em>{project.data.layers?.length||0} layers · {formatProjectSize(project)}</em></span><ChevronDown/></button>{expanded&&<div className="project-details"><div className="project-layer-thumbs">{(project.data.layers||[]).slice(0,12).map(layer=><span key={layer.id} title={layer.name}><img src={layer.src} alt={layer.name}/></span>)}{(project.data.layers?.length||0)>12&&<b>+{project.data.layers.length-12}</b>}</div><div className="project-card-actions"><button className="open-saved-project" onClick={()=>requestOpenProject(project)}><FolderOpen/> Open Project</button><button onClick={()=>setPendingOverwriteProject(project)}><Download/> Overwrite with Current</button><button className="project-delete" onClick={()=>void deleteProject(project.id)} title="Delete project"><Trash2/> Delete</button></div></div>}</article>}):<div className="projects-empty"><FolderOpen/><b>No saved projects yet</b><span>Save your current canvas to see it here.</span></div>}</div>
       </div></div>}
-      {savedCountdown!==null&&<div className="saved-confirmation" role="status"><Check/><span><b>Project saved</b><small>{projectName} · just now</small></span><strong>{savedCountdown}…</strong><button onClick={()=>setSavedCountdown(null)}>OK</button></div>}
+      {saveStatus&&<div className={`saved-confirmation ${saveStatus}`} role="status">{saveStatus==="saved"?<Check/>:<i/>}<span><b>{saveStatus==="saving"?"Saving project…":"Project saved"}</b><small>{saveStatus==="saving"?"Uploading safely in the background":`${projectName} · just now`}</small></span>{savedCountdown!==null&&<strong>{savedCountdown}…</strong>}<button onClick={()=>{saveToastDismissed.current=true;setSaveStatus(null);setSavedCountdown(null)}}>OK</button></div>}
       {(pendingOpenProject||pendingNewProject)&&<div className="project-transition-modal" role="dialog" aria-modal="true"><div><AlertTriangle/><h3>Save changes before continuing?</h3><p><b>{projectName}</b> contains changes that have not been saved yet.</p><footer><button onClick={()=>{setPendingOpenProject(null);setPendingNewProject(false)}}>Cancel</button><button className="discard" onClick={discardAndContinue}>Open without saving</button><button className="confirm" onClick={()=>void saveAndContinue()}>Save &amp; Continue</button></footer></div></div>}
       {pendingOverwriteProject&&<div className="project-transition-modal" role="dialog" aria-modal="true"><div><AlertTriangle/><h3>Overwrite “{pendingOverwriteProject.name}”?</h3><p>Its saved canvas will be replaced with the layers currently open in the editor.</p><footer><button onClick={()=>setPendingOverwriteProject(null)}>Cancel</button><button className="confirm" onClick={async()=>{const target=pendingOverwriteProject;setPendingOverwriteProject(null);await saveProject(false,target.id,target.name,false)}}>Overwrite Project</button></footer></div></div>}
       {accountOpen && <div className="account-panel" role="dialog" aria-label="My Account"><button className="account-close" onClick={() => setAccountOpen(false)} aria-label="Close"><X/></button><span className="account-avatar"><User/></span><b>My Account</b><small>Signed in as</small><p>{session?.user.email || "Unknown account"}</p><div className="account-stat"><FolderOpen/><span><b>{projects.length}</b><small>Saved projects</small></span></div><button className="sign-out" onClick={() => void supabase.auth.signOut()}><LogOut/> Sign Out</button></div>}
@@ -3095,6 +3098,7 @@ export default function Home() {
                   </div>}
                 </div>}
                 <button className="separate-layers-trigger" onClick={e=>{e.stopPropagation();void openSeparateLayers(cutPreview,cutEditor.layerId)}}><Layers3/> Separate as Layers</button>
+                <button className="smooth-cutout-trigger" onClick={e=>{e.stopPropagation();void smoothCutoutNow()}}><Sparkles/> Smooth</button>
                 <div className="bg-zoom-controls">
                   <button onClick={()=>setCutEditor({...cutEditor,zoom:clamp(cutEditor.zoom/1.2,.5,5)})}>−</button>
                   <span>{Math.round(cutEditor.zoom*100)}%</span>

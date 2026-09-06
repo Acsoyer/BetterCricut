@@ -15,7 +15,7 @@ self.onmessage = async (event) => {
       lengthThreshold: 4,
       maxIterations: 10,
       spliceThreshold: 45,
-      simplify: 1.25,
+      simplify: Math.max(1.25, Math.min(3.5, Number(event.data.simplify) || 1.25)),
       pathPrecision: 2,
       optimize: 2,
     });
