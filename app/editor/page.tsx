@@ -1411,28 +1411,39 @@ async function findOpaqueIslands(src: string) {
   full.height = img.naturalHeight;
   full.getContext("2d")!.drawImage(img, 0, 0);
   const parts = groups.map((group) => {
-    const left = group.minX / w,
-      top = group.minY / h,
-      width = (group.maxX - group.minX + 1) / w,
-      height = (group.maxY - group.minY + 1) / h,
-      sx = Math.floor(left * full.width),
-      sy = Math.floor(top * full.height),
-      sw = Math.max(1, Math.ceil(width * full.width)),
-      sh = Math.max(1, Math.ceil(height * full.height)),
-      out = document.createElement("canvas");
+    const sx = Math.floor((group.minX * full.width) / w),
+      sy = Math.floor((group.minY * full.height) / h),
+      ex = Math.ceil(((group.maxX + 1) * full.width) / w),
+      ey = Math.ceil(((group.maxY + 1) * full.height) / h),
+      sw = Math.max(1, ex - sx),
+      sh = Math.max(1, ey - sy),
+      out = document.createElement("canvas"),
+      componentMask = document.createElement("canvas"),
+      fullMask = document.createElement("canvas");
+    componentMask.width = w;
+    componentMask.height = h;
+    const maskContext = componentMask.getContext("2d")!,
+      maskData = maskContext.createImageData(w, h);
+    for (const p of group.pixels) maskData.data[p * 4 + 3] = 255;
+    maskContext.putImageData(maskData, 0, 0);
+    fullMask.width = full.width;
+    fullMask.height = full.height;
+    const fullMaskContext = fullMask.getContext("2d")!;
+    fullMaskContext.imageSmoothingEnabled = false;
+    fullMaskContext.drawImage(componentMask, 0, 0, full.width, full.height);
     out.width = sw;
     out.height = sh;
-    const isolated=document.createElement("canvas"),componentMask=document.createElement("canvas");isolated.width=componentMask.width=full.width;isolated.height=componentMask.height=full.height;
-    isolated.getContext("2d")!.drawImage(full,0,0);const maskContext=componentMask.getContext("2d")!,maskData=maskContext.createImageData(w,h);
-    for(const p of group.pixels)maskData.data[p*4+3]=255;maskContext.putImageData(maskData,0,0);const fullMask=document.createElement("canvas");fullMask.width=full.width;fullMask.height=full.height;const fullMaskContext=fullMask.getContext("2d")!;fullMaskContext.imageSmoothingEnabled=false;fullMaskContext.drawImage(componentMask,0,0,full.width,full.height);
-    const isolatedContext=isolated.getContext("2d")!;isolatedContext.globalCompositeOperation="destination-in";isolatedContext.drawImage(fullMask,0,0);
-    out.getContext("2d")!.drawImage(isolated, sx, sy, sw, sh, 0, 0, sw, sh);
+    const outContext = out.getContext("2d")!;
+    outContext.drawImage(full, sx, sy, sw, sh, 0, 0, sw, sh);
+    outContext.globalCompositeOperation = "destination-in";
+    outContext.imageSmoothingEnabled = false;
+    outContext.drawImage(fullMask, sx, sy, sw, sh, 0, 0, sw, sh);
     return {
       src: out.toDataURL("image/png"),
-      left,
-      top,
-      width,
-      height,
+      left: sx / full.width,
+      top: sy / full.height,
+      width: sw / full.width,
+      height: sh / full.height,
       naturalW: sw,
       naturalH: sh,
     };
@@ -2172,7 +2183,8 @@ export default function Home() {
   };
   const noBackground = (chosen: Layer | null | undefined = one) => {
     if (!chosen) return;
-    const priorRemoval = [...chosen.steps].reverse().find((step) => step.type === "remove-bg" && step.before),
+    const latestStep = chosen.steps[chosen.activeStep] || chosen.steps[chosen.steps.length - 1],
+      priorRemoval = latestStep?.type === "remove-bg" && latestStep.before ? latestStep : undefined,
       base = priorRemoval?.before || snapshot(chosen),
       settings = priorRemoval?.removalSettings;
     setBgPreview("");
@@ -2254,8 +2266,9 @@ export default function Home() {
     }
   };
   const buildBackgroundPreset = async (type: "image" | "rim" | "text", chosen: Layer) => {
-    const removalIndex = chosen.steps.findIndex((step) => step.type === "remove-bg"),
-      prior = removalIndex >= 0 ? chosen.steps[removalIndex] : undefined,
+    const latestStep = chosen.steps[chosen.activeStep] || chosen.steps[chosen.steps.length - 1],
+      removalIndex = latestStep?.type === "remove-bg" ? chosen.steps.indexOf(latestStep) : -1,
+      prior = removalIndex >= 0 ? latestStep : undefined,
       before = prior?.before || snapshot(chosen),
       source = before.src;
     let strokes: BgStroke[] = [],
@@ -2307,6 +2320,7 @@ export default function Home() {
     }
     refined = await featherAlphaInside(refined);
     const t = await trimTransparent(refined),
+      finalImage = await getImage(t.src),
       left = map.left + map.width * t.left,
       top = map.top + map.height * t.top,
       width = map.width * t.width,
@@ -2321,6 +2335,8 @@ export default function Home() {
         y: before.y + before.h * top,
         w: nextWidth,
         h: before.h * height,
+        naturalW: finalImage.naturalWidth,
+        naturalH: finalImage.naturalHeight,
         kind: "nobg" as Kind,
       },
       label = type === "image" ? "Image Remove Background" : type === "rim" ? "Image Background + Rim" : "Text Background Removal",
