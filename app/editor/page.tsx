@@ -2003,6 +2003,10 @@ export default function Home() {
   }, [bgEditor?.source, bgEditor?.strokes, bgEditor?.speckles, bgEditor?.edgeRefine, bgEditor?.eraseColors, bgEditor?.edgeSmooth, bgEditor?.optimizeAlpha]);
   useEffect(() => {
     if (!cutEditor) return;
+    if (cutEditor.source.startsWith("data:image/svg+xml") && cutEditor.strokes.length === 0) {
+      setCutPreview(scalableSvgPreview(cutEditor.source));
+      return;
+    }
     let cancelled = false;
     const timer = window.setTimeout(
       () =>
