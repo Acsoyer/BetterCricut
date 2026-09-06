@@ -114,8 +114,15 @@ type SavedProject = {
   };
 };
 type PageMode = "portrait" | "landscape" | "full";
-type PageColor = "offwhite" | "warm" | "lightgray" | "darkgray" | "canson";
-const PAGE_COLORS:Record<PageColor,{label:string;color:string}>={offwhite:{label:"Broken White",color:"#fffdf7"},warm:{label:"Warm White",color:"#fff6dc"},lightgray:{label:"Light Gray",color:"#e7e9e8"},darkgray:{label:"Dark Gray",color:"#777d7a"},canson:{label:"Canson Paper",color:"#f2ead5"}};
+type PageColor = "white" | "offwhite" | "warm" | "lightgray" | "darkgray" | "canson";
+const PAGE_COLORS: Record<PageColor, { label: string; color: string }> = {
+  white: { label: "White", color: "#ffffff" },
+  offwhite: { label: "Broken White", color: "#fffdf7" },
+  warm: { label: "Warm White", color: "#fff6dc" },
+  lightgray: { label: "Light Gray", color: "#e7e9e8" },
+  darkgray: { label: "Dark Gray", color: "#777d7a" },
+  canson: { label: "Canson Paper", color: "#f6eddd" },
+};
 type Drag = {
   mode: string;
   sx: number;
@@ -240,7 +247,9 @@ const save = (url: string, name: string) => {
   a.click();
   if (url.startsWith("blob:")) setTimeout(() => URL.revokeObjectURL(url), 1000);
 };
-const scalableSvgPreview = (src: string) => (src.startsWith("data:image/svg+xml,") ? `data:image/svg+xml,${encodeURIComponent(decodeURIComponent(src.slice(src.indexOf(",") + 1)).replace(/\s*vector-effect=["']non-scaling-stroke["']/gi, ""))}` : src);
+// SVG layers must stay SVG in every editor. Their non-scaling stroke is what keeps
+// the visible cutting edge crisp and the same screen width at every zoom level.
+const scalableSvgPreview = (src: string) => src;
 const getImage = (src: string) =>
   new Promise<HTMLImageElement>((ok, no) => {
     const i = new Image();
@@ -375,7 +384,8 @@ async function featherAlphaInside(src: string) {
     w = c.width,
     h = c.height;
   // Keep transparent pixels transparent so no removed background colour can bleed back in.
-  // Feather the first two opaque pixels along the inside edge without reviving background RGB.
+  // One-pixel, inside-only antialiasing: keep the result sharp and never revive
+  // removed background RGB as an outside halo.
   for (let py = 0; py < h; py++)
     for (let px = 0; px < w; px++) {
       const at = py * w + px,
@@ -384,17 +394,47 @@ async function featherAlphaInside(src: string) {
         data.data[q + 3] = 0;
         continue;
       }
-      let nearest = 3;
-      for (let oy = -2; oy <= 2; oy++)
-        for (let ox = -2; ox <= 2; ox++) {
+      let opaqueNeighbours = 0;
+      for (let oy = -1; oy <= 1; oy++)
+        for (let ox = -1; ox <= 1; ox++) {
+          if (!ox && !oy) continue;
           const nx = px + ox,
             ny = py + oy;
-          if (nx < 0 || ny < 0 || nx >= w || ny >= h || source[(ny * w + nx) * 4 + 3] < 128) nearest = Math.min(nearest, Math.max(Math.abs(ox), Math.abs(oy)));
+          if (nx >= 0 && ny >= 0 && nx < w && ny < h && source[(ny * w + nx) * 4 + 3] >= 128) opaqueNeighbours++;
         }
-      data.data[q + 3] = nearest <= 1 ? 118 : nearest === 2 ? 205 : 255;
+      data.data[q + 3] = opaqueNeighbours === 8 ? 255 : clamp(96 + opaqueNeighbours * 18, 112, 232);
     }
   x.putImageData(data, 0, 0);
   return c.toDataURL("image/png");
+}
+
+type RefinedBackground = { src: string; left: number; top: number; width: number; height: number };
+async function refineBackgroundWithRoom(src: string, tolerance: number, strokes: BgStroke[], speckles = 0, edgeRefine = 0, eraseColors: EraseColor[] = [], edgeSmooth = 0, optimizeAlpha = false): Promise<RefinedBackground> {
+  if (edgeRefine >= 0) {
+    const refined = await refineBackground(src, tolerance, strokes, speckles, edgeRefine, eraseColors, edgeSmooth, optimizeAlpha);
+    return { src: await featherAlphaInside(refined), left: 0, top: 0, width: 1, height: 1 };
+  }
+  const image = await getImage(src),
+    pad = Math.ceil(Math.abs(edgeRefine) + Math.max(2, edgeSmooth) + 3),
+    canvas = document.createElement("canvas");
+  canvas.width = image.naturalWidth + pad * 2;
+  canvas.height = image.naturalHeight + pad * 2;
+  canvas.getContext("2d")!.drawImage(image, pad, pad);
+  const paddedStrokes = strokes.map((stroke) => ({
+    ...stroke,
+    points: stroke.points.map((point) => ({
+      x: (point.x * image.naturalWidth + pad) / canvas.width,
+      y: (point.y * image.naturalHeight + pad) / canvas.height,
+    })),
+  }));
+  const refined = await refineBackground(canvas.toDataURL("image/png"), tolerance, paddedStrokes, speckles, edgeRefine, eraseColors, edgeSmooth, optimizeAlpha);
+  return {
+    src: await featherAlphaInside(refined),
+    left: -pad / image.naturalWidth,
+    top: -pad / image.naturalHeight,
+    width: canvas.width / image.naturalWidth,
+    height: canvas.height / image.naturalHeight,
+  };
 }
 async function addProtectiveRim(maskSrc: string, originalSrc: string, physicalWidthCm: number) {
   const mask = await getImage(maskSrc),
@@ -588,7 +628,7 @@ async function refineBackground(src: string, tolerance: number, strokes: BgStrok
         }
     }
   }
-  const edgeSteps = Math.min(16, Math.abs(Math.round(edgeRefine)));
+  const edgeSteps = Math.min(25, Math.abs(Math.round(edgeRefine)));
   for (let pass = 0; pass < edgeSteps; pass++) {
     const before = new Uint8ClampedArray(result.data),
       remove = edgeRefine > 0;
@@ -849,8 +889,8 @@ async function analyzeCutSafety(src: string, widthCm: number) {
     seen.fill(0);
     for (let start = 0; start < solid.length; start++) {
       if (seen[start] || Boolean(solid[start]) !== foreground) continue;
-      let stack = [start],
-        minX = w,
+      const stack = [start];
+      let minX = w,
         maxX = 0,
         minY = h,
         maxY = 0,
@@ -1497,7 +1537,7 @@ export default function Home() {
     [widthDraft, setWidthDraft] = useState("0.0"),
     [heightDraft, setHeightDraft] = useState("0.0"),
     [pageMode, setPageMode] = useState<PageMode>("portrait"),
-    [pageColor,setPageColor]=useState<PageColor>("offwhite"),
+    [pageColor,setPageColor]=useState<PageColor>("white"),
     [pageSetupOpen, setPageSetupOpen] = useState(false),
     [safeMargin, setSafeMargin] = useState(1),
     [safeOpen, setSafeOpen] = useState(false),
@@ -1814,8 +1854,8 @@ export default function Home() {
     let cancelled = false;
     setBgRendering(true);
     const timer = window.setTimeout(() => {
-      void refineBackground(bgEditor.source, bgEditor.sensitivity, bgEditor.strokes, bgEditor.speckles, bgEditor.edgeRefine, bgEditor.eraseColors, bgEditor.edgeSmooth, bgEditor.optimizeAlpha)
-        .then((src) => {
+      void refineBackgroundWithRoom(bgEditor.source, bgEditor.sensitivity, bgEditor.strokes, bgEditor.speckles, bgEditor.edgeRefine, bgEditor.eraseColors, bgEditor.edgeSmooth, bgEditor.optimizeAlpha)
+        .then(({ src }) => {
           if (!cancelled) {
             setBgPreview(src);
             setBgRendering(false);
@@ -2106,6 +2146,21 @@ export default function Home() {
     await importFiles(Array.from(e.target.files || []));
     e.target.value = "";
   };
+  useEffect(() => {
+    const pasteImage = (event: ClipboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, [contenteditable='true']")) return;
+      const files = Array.from(event.clipboardData?.items || [])
+        .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+        .map((item) => item.getAsFile())
+        .filter((file): file is File => Boolean(file));
+      if (!files.length) return;
+      event.preventDefault();
+      void importFiles(files);
+    };
+    document.addEventListener("paste", pasteImage);
+    return () => document.removeEventListener("paste", pasteImage);
+  });
   const fitEditorImage = (img: HTMLImageElement, host?: HTMLDivElement | null) => {
     const maxW = Math.max(180, Math.min((host?.clientWidth || window.innerWidth * 0.58) - 48, 700));
     const maxH = Math.max(180, (host?.clientHeight || window.innerHeight * 0.65) - 48);
@@ -2162,7 +2217,7 @@ export default function Home() {
       const results = await Promise.all(
         targets.map(async (target) => {
           const before = snapshot(target),
-            refined = await removeBg(target.src),
+            refined = await featherAlphaInside(await removeBg(target.src)),
             t = await trimTransparent(refined),
             nextWidth = target.w * t.width,
             safety = await analyzeCutSafety(t.src, nextWidth),
@@ -2206,8 +2261,9 @@ export default function Home() {
       before = prior?.before || snapshot(chosen),
       source = before.src;
     let strokes: BgStroke[] = [],
-      colors: EraseColor[] = [],
-      edgeRefine = 0,
+      colors: EraseColor[] = [];
+    const edgeRefine = 0;
+    let
       edgeSmooth = 2;
     const img = await getImage(source),
       sample = document.createElement("canvas");
@@ -2245,7 +2301,7 @@ export default function Home() {
         height: rim.height,
       };
     }
-    if (type !== "text") refined = await featherAlphaInside(refined);
+    refined = await featherAlphaInside(refined);
     const t = await trimTransparent(refined),
       left = map.left + map.width * t.left,
       top = map.top + map.height * t.top,
@@ -2315,7 +2371,7 @@ export default function Home() {
     setWorking(true);
     setNotice("Optimizing alpha channel…");
     try {
-      const cleaned = await optimizeAlphaChannel(one.src),
+      const cleaned = await featherAlphaInside(await optimizeAlphaChannel(one.src)),
         trimmed = await trimTransparent(cleaned),
         nextWidth = one.w * trimmed.width,
         safety = await analyzeCutSafety(trimmed.src, nextWidth),
@@ -2352,18 +2408,22 @@ export default function Home() {
     if (!target) return;
     setWorking(true);
     try {
-      const refined = !bgRendering && bgPreview ? bgPreview : await refineBackground(bgEditor.source, 0, bgEditor.strokes, bgEditor.speckles, bgEditor.edgeRefine, bgEditor.eraseColors, bgEditor.edgeSmooth, bgEditor.optimizeAlpha);
-      const t = await trimTransparent(refined);
+      const refined = await refineBackgroundWithRoom(bgEditor.source, 0, bgEditor.strokes, bgEditor.speckles, bgEditor.edgeRefine, bgEditor.eraseColors, bgEditor.edgeSmooth, bgEditor.optimizeAlpha);
+      const t = await trimTransparent(refined.src);
       const base = bgEditor.base;
-      const safety = await analyzeCutSafety(t.src, base.w * t.width),
+      const mappedLeft = refined.left + refined.width * t.left,
+        mappedTop = refined.top + refined.height * t.top,
+        mappedWidth = refined.width * t.width,
+        mappedHeight = refined.height * t.height,
+        safety = await analyzeCutSafety(t.src, base.w * mappedWidth),
         next = {
           ...target,
           ...safety,
           src: t.src,
-          x: base.x + base.w * t.left,
-          y: base.y + base.h * t.top,
-          w: base.w * t.width,
-          h: base.h * t.height,
+          x: base.x + base.w * mappedLeft,
+          y: base.y + base.h * mappedTop,
+          w: base.w * mappedWidth,
+          h: base.h * mappedHeight,
           kind: "nobg" as Kind,
         };
       const selectedBackground = bgEditor.eraseColors.find((entry) => entry.color)?.color || [...target.steps].reverse().find((item) => item.type === "remove-bg")?.backgroundColor || "#ffffff";
@@ -2656,7 +2716,7 @@ export default function Home() {
       const result = await renderCutoutEdit(cutEditor, true),
         baked = await silhouette(result.src, target.color, 255),
         hasEdgeFix = cutEditor.strokes.some((stroke) => stroke.tool === "smooth"),
-        finalSrc = hasEdgeFix ? await vTracerCutout(baked, target.color, target.w, 1.8) : baked,
+        finalSrc = await vTracerCutout(baked, target.color, target.w * result.width, hasEdgeFix ? 1.8 : 1.25),
         safety = await analyzeCutSafety(finalSrc, target.w * result.width),
         next: Layer = {
           ...target,
@@ -2742,7 +2802,7 @@ export default function Home() {
     const hasRim=target.steps.some(step=>step.type==="remove-bg"&&/rim/i.test(step.label));
     if(!hasRim){setRiskLayerId(null);await applyBackgroundPreset("rim",target);return}
     setRiskLayerId(null);setWorking(true);
-    try{const cleaned=await optimizeAlphaChannel(target.src),trimmed=await trimTransparent(cleaned),width=target.w*trimmed.width,safety=await analyzeCutSafety(trimmed.src,width);mutate(target.id,layer=>({...layer,...safety,src:trimmed.src,originalSrc:trimmed.src,x:layer.x+layer.w*trimmed.left,y:layer.y+layer.h*trimmed.top,w:width,h:layer.h*trimmed.height}));setNotice(safety.cutRisk?"Alpha cleaned; a real sub-2 mm detail may still need review":"Cut safety issue fixed without adding another rim")}
+    try{const cleaned=await featherAlphaInside(await optimizeAlphaChannel(target.src)),trimmed=await trimTransparent(cleaned),width=target.w*trimmed.width,safety=await analyzeCutSafety(trimmed.src,width);mutate(target.id,layer=>({...layer,...safety,src:trimmed.src,originalSrc:trimmed.src,x:layer.x+layer.w*trimmed.left,y:layer.y+layer.h*trimmed.top,w:width,h:layer.h*trimmed.height}));setNotice(safety.cutRisk?"Alpha cleaned; a real sub-2 mm detail may still need review":"Cut safety issue fixed without adding another rim")}
     finally{setWorking(false)}
   };
   const moveSelectionTo = (front: boolean) =>
@@ -3181,7 +3241,8 @@ export default function Home() {
     setWorking(true);
     try {
       const cm = cmOverride ?? strokeDraft,
-        src = await strokeImage(one.src, cm, one.w, lighten(one.color), fillGapsDraft),
+        rasterStroke = await strokeImage(one.src, cm, one.w, lighten(one.color), fillGapsDraft),
+        src = await vTracerCutout(rasterStroke, lighten(one.color), one.w + cm * 2, 1.25),
         x = one.x - cm,
         y = one.y - cm,
         w = one.w + cm * 2,
@@ -3244,7 +3305,8 @@ export default function Home() {
         x = one.x - (cm - old),
         y = one.y - (cm - old),
         previewColor = one.color,
-        src = await strokeImage(base.src, cm, base.w, previewColor, fillGapsDraft),
+        rasterStroke = await strokeImage(base.src, cm, base.w, previewColor, fillGapsDraft),
+        src = await vTracerCutout(rasterStroke, previewColor, base.w + cm * 2, 1.25),
         invalid = x < SAFE.x || y < SAFE.y || x + newW > SAFE.x + SAFE.w || y + newH > SAFE.y + SAFE.h;
       mutate(one.id, (l) => {
         const next = {
@@ -3284,7 +3346,8 @@ export default function Home() {
         base = parent || one,
         cm = one.kind === "stroke" ? one.strokeCm : 0,
         preservedColor = one.color,
-        src = await strokeImage(base.src, cm, base.w, preservedColor, fillGapsDraft);
+        rasterStroke = await strokeImage(base.src, cm, base.w, preservedColor, fillGapsDraft),
+        src = await vTracerCutout(rasterStroke, preservedColor, base.w + cm * 2, 1.25);
       mutate(one.id, (l) => {
         const next = {
             ...l,
@@ -3313,11 +3376,12 @@ export default function Home() {
     try {
       const solid = await silhouette(one.src, one.color, 255),
         trimmed = await trimTransparent(solid),
+        vectorSrc = await vTracerCutout(trimmed.src, one.color, one.w * trimmed.width, 1.25),
         finalLayer: Layer = {
           ...one,
           name: one.name.replace(/_Stroke$/, ""),
-          src: trimmed.src,
-          originalSrc: trimmed.src,
+          src: vectorSrc,
+          originalSrc: vectorSrc,
           kind: "vector",
           strokeCm: 0,
           fillGapsMm: 0,
@@ -3405,7 +3469,7 @@ export default function Home() {
     try {
       const converted: Layer[] = [];
       for (const target of targets) {
-        const refined = await refineBackground(target.src, 46, [], 12, 0),
+          const refined = await featherAlphaInside(await refineBackground(target.src, 46, [], 12, 0)),
           trimmed = await trimTransparent(refined),
           color = COLORS[Math.floor(Math.random() * 21)],
           solid = await silhouette(trimmed.src, color, 255),
@@ -3477,11 +3541,13 @@ export default function Home() {
           continue;
         }
         const base = layers.find((l) => l.id === item.parentId) || item;
-        const src = item.kind === "stroke" ? await strokeImage(base.src, item.strokeCm, base.w, color, item.fillGapsMm || 0) : await silhouette(item.src, color, item.kind === "acetate" ? 77 : 255);
+        const raster = item.kind === "stroke" ? await strokeImage(base.src, item.strokeCm, base.w, color, item.fillGapsMm || 0) : await silhouette(item.src, color, item.kind === "acetate" ? 77 : 255),
+          src = item.kind === "stroke" ? await vTracerCutout(raster, color, base.w + item.strokeCm * 2, 1.25) : raster;
         mutate(item.id, (l) => ({ ...l, src, color }));
         if (item.kind === "vector")
           for (const child of layers.filter((l) => l.kind === "stroke" && l.parentId === item.id)) {
-            const strokeSrc = await strokeImage(src, child.strokeCm, item.w, lighten(color), child.fillGapsMm || 0);
+            const strokeRaster = await strokeImage(src, child.strokeCm, item.w, lighten(color), child.fillGapsMm || 0),
+              strokeSrc = await vTracerCutout(strokeRaster, lighten(color), item.w + child.strokeCm * 2, 1.25);
             mutate(child.id, (l) => ({
               ...l,
               src: strokeSrc,
@@ -4361,9 +4427,8 @@ export default function Home() {
     invalid = layers.some((l) => l.visible && l.invalid),
     gridImage = zoom >= 2.3 ? "linear-gradient(#aeb6b066 1px,transparent 1px),linear-gradient(90deg,#aeb6b066 1px,transparent 1px),linear-gradient(#bec6c044 1px,transparent 1px),linear-gradient(90deg,#bec6c044 1px,transparent 1px),linear-gradient(#cbd2ce2b 1px,transparent 1px),linear-gradient(90deg,#cbd2ce2b 1px,transparent 1px)" : zoom >= 1.3 ? "linear-gradient(#aeb6b05c 1px,transparent 1px),linear-gradient(90deg,#aeb6b05c 1px,transparent 1px),linear-gradient(#c7ceca35 1px,transparent 1px),linear-gradient(90deg,#c7ceca35 1px,transparent 1px)" : "linear-gradient(#9fa8a255 1px,transparent 1px),linear-gradient(90deg,#9fa8a255 1px,transparent 1px),linear-gradient(#c7ceca33 1px,transparent 1px),linear-gradient(90deg,#c7ceca33 1px,transparent 1px)",
     gridSize = zoom >= 2.3 ? `${scale}px ${scale}px,${scale}px ${scale}px,${scale / 2}px ${scale / 2}px,${scale / 2}px ${scale / 2}px,${scale / 10}px ${scale / 10}px,${scale / 10}px ${scale / 10}px` : zoom >= 1.3 ? `${scale}px ${scale}px,${scale}px ${scale}px,${scale / 2}px ${scale / 2}px,${scale / 2}px ${scale / 2}px` : `${scale * 10}px ${scale * 10}px,${scale * 10}px ${scale * 10}px,${scale}px ${scale}px,${scale}px ${scale}px`,
-    paperTexture="radial-gradient(circle at 20% 30%,#8a78521c 0 .55px,transparent .8px),radial-gradient(circle at 75% 65%,#fff9 0 .65px,transparent .9px)",
-    canvasBackgroundImage=pageColor==="canson"?`${paperTexture},${gridImage}`:gridImage,
-    canvasBackgroundSize=pageColor==="canson"?`7px 9px,11px 8px,${gridSize}`:gridSize,
+    canvasBackgroundImage=pageColor==="canson"?`url("/textures/canson-paper-yellow.png"),${gridImage}`:gridImage,
+    canvasBackgroundSize=pageColor==="canson"?`640px 640px,${gridSize}`:gridSize,
     labelBelow = box.y < 2.7;
   return (
     <main
@@ -6093,8 +6158,8 @@ export default function Home() {
                           </label>
                           <input
                             type="range"
-                            min="-12"
-                            max="12"
+                            min="-25"
+                            max="25"
                             value={bgEditor.edgeRefine}
                             onChange={(e) =>
                               setBgEditor({
@@ -6565,7 +6630,7 @@ export default function Home() {
                       {bgEditor.edgeRefine} px
                     </b>
                   </label>
-                  <input type="range" min="-12" max="12" step="1" value={bgEditor.edgeRefine} onChange={(e) => setBgEditor({ ...bgEditor, edgeRefine: +e.target.value })} />
+                  <input type="range" min="-25" max="25" step="1" value={bgEditor.edgeRefine} onChange={(e) => setBgEditor({ ...bgEditor, edgeRefine: +e.target.value })} />
                   <small>Positive values contract the edge to remove pale halos. Negative values recover pixels removed by an aggressive cut.</small>
                   <div className="compact-slider edge-smooth-control">
                     <label>

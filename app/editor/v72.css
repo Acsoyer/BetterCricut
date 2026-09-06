@@ -1,0 +1,15 @@
+.page-color-submenu .paper-swatch {
+  background-color: #f6eddd !important;
+  background-image: url("/textures/canson-paper-yellow.png") !important;
+  background-size: 72px 72px !important;
+}
+
+.canvas.grid-off.page-color-canson {
+  background-image: url("/textures/canson-paper-yellow.png") !important;
+  background-size: 640px 640px !important;
+  background-repeat: repeat !important;
+}
+
+.canvas img[src^="data:image/svg+xml"] {
+  image-rendering: auto;
+}
