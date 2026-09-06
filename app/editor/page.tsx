@@ -1180,7 +1180,7 @@ export default function Home() {
     if(Math.abs(nextZoom-zoomRef.current)<.0001)return;
     zoomAnchor.current={clientX,clientY,worldX,worldY};zoomRef.current=nextZoom;setZoom(nextZoom);
   };
-  useEffect(()=>{const stage=stageRef.current;if(!stage)return;const wheel=(event:WheelEvent)=>editorWheel(event);stage.addEventListener("wheel",wheel,{passive:false});return()=>stage.removeEventListener("wheel",wheel)},[]);
+  useEffect(()=>{const stage=stageRef.current;if(!stage)return;const wheel=(event:WheelEvent)=>editorWheel(event);stage.addEventListener("wheel",wheel,{passive:false});return()=>stage.removeEventListener("wheel",wheel)},[A4.w,A4.h]);
   useLayoutEffect(()=>{
     zoomRef.current=zoom;const anchor=zoomAnchor.current,stage=stageRef.current,canvas=canvasRef.current;
     if(!anchor||!stage||!canvas)return;
