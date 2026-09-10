@@ -2292,15 +2292,7 @@ export default function Home() {
   const addGeneratedAsset = async (src: string) => {
     const response = await fetch(new URL(src, window.location.origin));
     if (!response.ok) return setNotice("Could not load the generated image");
-    let blob = await response.blob();
-    if (createImageMode === "text") {
-      const bitmap = await createImageBitmap(blob), canvas = document.createElement("canvas"), context = canvas.getContext("2d");
-      canvas.width = bitmap.width; canvas.height = bitmap.height;
-      if (!context) return setNotice("Could not prepare the generated text");
-      context.drawImage(bitmap, 0, 0); context.globalCompositeOperation = "source-in"; context.fillStyle = "#292b29"; context.fillRect(0,0,canvas.width,canvas.height);
-      blob = await new Promise<Blob>((resolve,reject)=>canvas.toBlob(value=>value?resolve(value):reject(new Error("PNG conversion failed")),"image/png"));
-    }
-    const
+    const blob = await response.blob(),
       filename = src.split("/").pop() || "generated-cake-topper.png";
     await importFiles([new File([blob], filename, { type: blob.type || "image/png" })]);
     setGeneratedPreview(null);
@@ -5855,15 +5847,14 @@ export default function Home() {
                   <button className="active" onClick={() => setCreateImageMode("text")}><Type />Cake topper as text</button>
                   <button onClick={() => setCreateImageMode("image")}><ImageIcon />Cake topper as image</button>
                 </div>
-                <label>The text<input type="text" placeholder="Happy Birthday Sophia" /></label>
-                <figure><img src="/create-examples/happy-birthday-sophia.png" alt="Happy Birthday Sophia cake topper example" /></figure>
+                <div className="prompt-example-row"><label>The text<input type="text" placeholder="Happy Birthday Sophia" /></label><figure><img src="/create-examples/text-black/black-happy-birthday-sophia-v1-mixed.png" alt="Happy Birthday Sophia cake topper example" /></figure></div>
                 <section><b>Fonts</b><div className="visual-option-grid three">
-                  {([['mixed','Mixed font','/create-examples/generated-text/happy-birthday-sophia-v1-mixed.png'],['cursive','Cursive font','/create-examples/generated-text/happy-birthday-sophia-v2-cursive.png'],['serif','Serif font','/create-examples/generated-text/happy-birthday-sophia-v3-serif.png']] as const).map(([value,label,src]) => <button key={value} className={textFontStyle===value?'active':''} onClick={()=>setTextFontStyle(value)}><img src={src} alt={label}/><span>{label}</span></button>)}
+                  {([['mixed','Mixed font','/create-examples/text-black/black-happy-birthday-sophia-v1-mixed.png'],['cursive','Cursive font','/create-examples/text-black/black-happy-birthday-sophia-v2-cursive.png'],['serif','Serif font','/create-examples/text-black/black-happy-birthday-sophia-v3-serif.png']] as const).map(([value,label,src]) => <button key={value} className={textFontStyle===value?'active':''} onClick={()=>setTextFontStyle(value)}><img src={src} alt={label}/><span>{label}</span></button>)}
                 </div></section>
                 <section><b>Layout</b><div className="visual-option-grid three">
-                  {([['square','Square','/create-examples/layouts/happy-birthday-sophia-square.png'],['rectangle','Rectangle','/create-examples/layouts/happy-birthday-sophia-rectangle.png'],['one-line','One-Line','/create-examples/layouts/happy-birthday-sophia-one-line.png']] as const).map(([value,label,src]) => <button key={value} className={textLayout===value?'active':''} onClick={()=>setTextLayout(value)}><img src={src} alt={`${label} layout`}/><span>{label}</span></button>)}
+                  {([['square','Square','/create-examples/text-black/black-happy-birthday-sophia-square.png'],['rectangle','Rectangle','/create-examples/text-black/black-happy-birthday-sophia-rectangle.png'],['one-line','One-Line','/create-examples/text-black/black-happy-birthday-sophia-one-line.png']] as const).map(([value,label,src]) => <button key={value} className={textLayout===value?'active':''} onClick={()=>setTextLayout(value)}><img src={src} alt={`${label} layout`}/><span>{label}</span></button>)}
                 </div></section>
-                <button className="create-soon enabled" onClick={()=>{const src=`/create-examples/layouts/happy-birthday-sophia-${textLayout}.png`;setGeneratedImages(v=>v.concat(src));setGeneratedPreview(src)}}><Sparkles /> Create image <small>Preview simulation</small></button>
+                <button className="create-soon enabled" onClick={()=>{const src=`/create-examples/text-black/black-happy-birthday-sophia-${textLayout}.png`;setGeneratedImages(v=>v.concat(src));setGeneratedPreview(src)}}><Sparkles /> Create image <small>Preview simulation</small></button>
               </div>
               <GeneratedRail images={generatedImages} onOpen={setGeneratedPreview}/>
               </div>
@@ -5874,8 +5865,7 @@ export default function Home() {
                   <button onClick={() => setCreateImageMode("text")}><Type />Cake topper as text</button>
                   <button className="active" onClick={() => setCreateImageMode("image")}><ImageIcon />Cake topper as image</button>
                 </div>
-                <label>Describe the image you want<input type="text" placeholder="Cute giraffe with birthday hat" /></label>
-                <figure><img src="/create-examples/cake-topper-animals-balloons.png" alt="Cute animals and balloons cake topper example" /></figure>
+                <div className="prompt-example-row"><label>Describe the image you want<input type="text" placeholder="Cute giraffe with birthday hat" /></label><figure><img src="/create-examples/cake-topper-animals-balloons.png" alt="Cute animals and balloons cake topper example" /></figure></div>
                 <section><b>Style</b><div className="style-choice-grid">
                   {([['watercolor','Watercolor','/create-examples/image-styles/cute-giraffe-watercolor-v2.png'],['cartoon','Cartoon','/create-examples/image-styles/cute-giraffe-cartoon-v2.png'],['baby','Baby','/create-examples/image-styles/cute-giraffe-baby-v2.png'],['girly','Girly','/create-examples/image-styles/cute-giraffe-girly.png'],['storybook','3D Storybook','/create-examples/image-styles/cute-giraffe-3d-storybook.png'],['paper-cut','Paper Cut','/create-examples/image-styles/cute-giraffe-paper-cut.png']] as const).map(([value,label,src]) => <button key={value} className={imageArtStyle === value ? "active" : ""} onClick={() => setImageArtStyle(value)}><img src={src} alt={label}/><span>{label}</span></button>)}
                 </div></section>
@@ -5886,7 +5876,7 @@ export default function Home() {
               </div>
             )}
           </div>
-          {generatedPreview && <div className={`generated-lightbox ${createImageMode === "text" ? "text-result" : ""}`} onPointerDown={(e)=>{e.stopPropagation();setGeneratedPreview(null)}}><div onPointerDown={(e)=>e.stopPropagation()}><button className="add-new-close" onClick={()=>setGeneratedPreview(null)}><X/></button><img src={generatedPreview} alt="Generated cake topper preview"/><button className="add-generated" onClick={()=>void addGeneratedAsset(generatedPreview)}><Plus/>Add to page</button></div></div>}
+          {generatedPreview && <div className="generated-lightbox" onPointerDown={(e)=>{e.stopPropagation();setGeneratedPreview(null)}}><div onPointerDown={(e)=>e.stopPropagation()}><button className="add-new-close" onClick={()=>setGeneratedPreview(null)}><X/></button><img src={generatedPreview} alt="Generated cake topper preview"/><button className="add-generated" onClick={()=>void addGeneratedAsset(generatedPreview)}><Plus/>Add to page</button></div></div>}
         </div>
       )}
       {bgMenuOpen && (
