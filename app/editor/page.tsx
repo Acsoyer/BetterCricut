@@ -1615,6 +1615,10 @@ export default function Home() {
     [safeOpen, setSafeOpen] = useState(false),
     [gridVisible, setGridVisible] = useState(true),
     [bgMenuOpen, setBgMenuOpen] = useState(false),
+    [addNewOpen, setAddNewOpen] = useState(false),
+    [createImageMode, setCreateImageMode] = useState<"choose" | "text" | "image" | null>(null),
+    [textPaperStyle, setTextPaperStyle] = useState<"gold" | "colored">("gold"),
+    [imageArtStyle, setImageArtStyle] = useState<"watercolor" | "cartoon" | "paper-cut" | "elegant" | "minimal" | "glitter">("watercolor"),
     [cutoutMenuOpen, setCutoutMenuOpen] = useState(false),
     [svgWarningOpen, setSvgWarningOpen] = useState(false),
     [riskLayerId, setRiskLayerId] = useState<string | null>(null),
@@ -4874,7 +4878,7 @@ export default function Home() {
       </div>
       <section className="workspace">
         <div className="left-tools">
-          <button className="left-add" onClick={() => fileRef.current?.click()}>
+          <button className="left-add" onClick={() => { setCreateImageMode(null); setAddNewOpen(true); }}>
             <ImagePlus />
             <span>Add New</span>
           </button>
@@ -5785,6 +5789,68 @@ export default function Home() {
                 <small>{picked.length === 1 ? "Create the detailed cutout and open its editing tools" : "Select one image to continue into the editor"}</small>
               </span>
             </button>
+          </div>
+        </div>
+      )}
+      {addNewOpen && (
+        <div className="preset-modal add-new-modal" role="dialog" aria-modal="true" aria-label="Add New" onPointerDown={() => setAddNewOpen(false)}>
+          <div className="add-new-dialog" onPointerDown={(e) => e.stopPropagation()}>
+            <header>
+              <div>
+                {createImageMode && <button className="add-new-back" onClick={() => setCreateImageMode(createImageMode === "choose" ? null : "choose")} aria-label="Back">←</button>}
+                <span>
+                  <b>{createImageMode === "text" ? "Cake topper as text" : createImageMode === "image" ? "Cake topper as image" : createImageMode === "choose" ? "Create your own image" : "Add New"}</b>
+                  <small>{createImageMode === "text" || createImageMode === "image" ? "Design the artwork you want to create." : createImageMode === "choose" ? "Choose the kind of cake topper you want to make." : "Choose how you want to add artwork to your project."}</small>
+                </span>
+              </div>
+              <button className="add-new-close" onClick={() => setAddNewOpen(false)} aria-label="Close"><X /></button>
+            </header>
+            {!createImageMode ? (
+              <div className="add-new-source-grid">
+                <button onClick={() => setCreateImageMode("choose")}>
+                  <i><Sparkles /></i><b>Create your own image</b><small>Start with AI-ready cake topper options</small>
+                </button>
+                <button onClick={() => { setAddNewOpen(false); fileRef.current?.click(); }}>
+                  <i><ImagePlus /></i><b>Upload from your computer</b><small>JPG, PNG, SVG or WebP</small>
+                </button>
+              </div>
+            ) : createImageMode === "choose" ? (
+              <div className="add-new-source-grid create-kind-grid">
+                <button onClick={() => setCreateImageMode("text")}>
+                  <i><Type /></i><b>Cake topper as text</b><small>Create a topper from names and celebration text</small>
+                </button>
+                <button onClick={() => setCreateImageMode("image")}>
+                  <i><ImageIcon /></i><b>Cake topper as image</b><small>Create characters, objects and decorative artwork</small>
+                </button>
+              </div>
+            ) : createImageMode === "text" ? (
+              <div className="create-art-form">
+                <div className="create-mode-switch">
+                  <button className="active" onClick={() => setCreateImageMode("text")}><Type />Cake topper as text</button>
+                  <button onClick={() => setCreateImageMode("image")}><ImageIcon />Cake topper as image</button>
+                </div>
+                <label>The text<input type="text" placeholder="Happy Birthday Sophia" /></label>
+                <figure><img src="/create-examples/happy-birthday-sophia.png" alt="Happy Birthday Sophia cake topper example" /></figure>
+                <section><b>Paper style</b><div className="style-choice-grid text-styles">
+                  <button className={textPaperStyle === "gold" ? "active" : ""} onClick={() => setTextPaperStyle("gold")}><span className="style-swatch gold" />Gold paper</button>
+                  <button className={textPaperStyle === "colored" ? "active" : ""} onClick={() => setTextPaperStyle("colored")}><span className="style-swatch colored" />Colored paper</button>
+                </div></section>
+                <button className="create-soon" disabled><Sparkles /> Create image <small>API connection coming next</small></button>
+              </div>
+            ) : (
+              <div className="create-art-form">
+                <div className="create-mode-switch">
+                  <button onClick={() => setCreateImageMode("text")}><Type />Cake topper as text</button>
+                  <button className="active" onClick={() => setCreateImageMode("image")}><ImageIcon />Cake topper as image</button>
+                </div>
+                <label>Describe the image you want<input type="text" placeholder="Cute giraffe" /></label>
+                <figure><img src="/create-examples/cake-topper-animals-balloons.png" alt="Cute animals and balloons cake topper example" /></figure>
+                <section><b>Style</b><div className="style-choice-grid">
+                  {([['watercolor','Watercolor'],['cartoon','Cartoon'],['paper-cut','Paper cut'],['elegant','Elegant'],['minimal','Minimal'],['glitter','Glitter-look']] as const).map(([value,label]) => <button key={value} className={imageArtStyle === value ? "active" : ""} onClick={() => setImageArtStyle(value)}><span className={`style-swatch ${value}`} />{label}</button>)}
+                </div></section>
+                <button className="create-soon" disabled><Sparkles /> Create image <small>API connection coming next</small></button>
+              </div>
+            )}
           </div>
         </div>
       )}
