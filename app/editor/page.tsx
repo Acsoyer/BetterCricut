@@ -2304,7 +2304,7 @@ export default function Home() {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const blob = await response.blob(),
         filename = (src.split("/").pop() || "generated-cake-topper.png").split("?")[0];
-      const imported = await importFiles([new File([blob], filename, { type: "image/png" })]);
+      const imported = await importFiles([new window.File([blob], filename, { type: "image/png" })]);
       if (imported !== 1) throw new Error("The generated PNG was not accepted by the canvas importer");
       setGeneratedPreview(null);
       setAddNewOpen(false);
