@@ -125,6 +125,9 @@ const PAGE_COLORS: Record<PageColor, { label: string; color: string }> = {
   darkgray: { label: "Dark Gray", color: "#777d7a" },
   canson: { label: "Canson Paper", color: "#f6eddd" },
 };
+function GeneratedRail({ images, onOpen }: { images: string[]; onOpen: (src: string) => void }) {
+  return <aside className="generated-rail"><header><b>Versions</b><small>Newest at the bottom</small></header>{images.length ? images.map((src,i)=><button key={`${src}-${i}`} onClick={()=>onOpen(src)}><img src={src} alt={`Generated version ${i+1}`}/><span>V{i+1}</span></button>) : <p>Your generated versions will appear here.</p>}</aside>;
+}
 type Drag = {
   mode: string;
   sx: number;
@@ -1618,7 +1621,12 @@ export default function Home() {
     [addNewOpen, setAddNewOpen] = useState(false),
     [createImageMode, setCreateImageMode] = useState<"choose" | "text" | "image" | null>(null),
     [textPaperStyle, setTextPaperStyle] = useState<"gold" | "colored">("gold"),
-    [imageArtStyle, setImageArtStyle] = useState<"watercolor" | "cartoon" | "paper-cut" | "elegant" | "minimal" | "glitter">("watercolor"),
+    [textFontStyle, setTextFontStyle] = useState<"mixed" | "cursive" | "serif">("mixed"),
+    [textLayout, setTextLayout] = useState<"square" | "rectangle" | "one-line">("square"),
+    [imageArtStyle, setImageArtStyle] = useState<"watercolor" | "cartoon" | "baby" | "girly" | "storybook">("watercolor"),
+    [whiteStickerOffset, setWhiteStickerOffset] = useState(false),
+    [generatedImages, setGeneratedImages] = useState<string[]>([]),
+    [generatedPreview, setGeneratedPreview] = useState<string | null>(null),
     [cutoutMenuOpen, setCutoutMenuOpen] = useState(false),
     [svgWarningOpen, setSvgWarningOpen] = useState(false),
     [riskLayerId, setRiskLayerId] = useState<string | null>(null),
@@ -2281,6 +2289,15 @@ export default function Home() {
   const add = async (e: ChangeEvent<HTMLInputElement>) => {
     await importFiles(Array.from(e.target.files || []));
     e.target.value = "";
+  };
+  const addGeneratedAsset = async (src: string) => {
+    const response = await fetch(src),
+      blob = await response.blob(),
+      filename = src.split("/").pop() || "generated-cake-topper.png";
+    await importFiles([new File([blob], filename, { type: blob.type || "image/png" })]);
+    setGeneratedPreview(null);
+    setAddNewOpen(false);
+    setNotice("Generated image added to the page");
   };
   useEffect(() => {
     const pasteImage = (event: ClipboardEvent) => {
@@ -5817,13 +5834,14 @@ export default function Home() {
             ) : createImageMode === "choose" ? (
               <div className="add-new-source-grid create-kind-grid">
                 <button onClick={() => setCreateImageMode("text")}>
-                  <i><Type /></i><b>Cake topper as text</b><small>Create a topper from names and celebration text</small>
+                  <img src="/create-examples/happy-birthday-sophia.png" alt="Cake topper as text example" /><b>Cake topper as text</b><small>Create a topper from names and celebration text</small>
                 </button>
                 <button onClick={() => setCreateImageMode("image")}>
-                  <i><ImageIcon /></i><b>Cake topper as image</b><small>Create characters, objects and decorative artwork</small>
+                  <img src="/create-examples/cake-topper-animals-balloons.png" alt="Cake topper as image example" /><b>Cake topper as image</b><small>Create characters, objects and decorative artwork</small>
                 </button>
               </div>
             ) : createImageMode === "text" ? (
+              <div className="create-studio">
               <div className="create-art-form">
                 <div className="create-mode-switch">
                   <button className="active" onClick={() => setCreateImageMode("text")}><Type />Cake topper as text</button>
@@ -5832,26 +5850,39 @@ export default function Home() {
                 <label>The text<input type="text" placeholder="Happy Birthday Sophia" /></label>
                 <figure><img src="/create-examples/happy-birthday-sophia.png" alt="Happy Birthday Sophia cake topper example" /></figure>
                 <section><b>Paper style</b><div className="style-choice-grid text-styles">
-                  <button className={textPaperStyle === "gold" ? "active" : ""} onClick={() => setTextPaperStyle("gold")}><span className="style-swatch gold" />Gold paper</button>
-                  <button className={textPaperStyle === "colored" ? "active" : ""} onClick={() => setTextPaperStyle("colored")}><span className="style-swatch colored" />Colored paper</button>
+                  <button className={textPaperStyle === "gold" ? "active" : ""} onClick={() => setTextPaperStyle("gold")}><img src="/create-examples/gold-paper.png" alt="Gold paper" /><span>Gold paper</span></button>
+                  <button className={textPaperStyle === "colored" ? "active" : ""} onClick={() => setTextPaperStyle("colored")}><img src="/create-examples/colored-paper.png" alt="Colored paper" /><span>Colored paper</span></button>
                 </div></section>
-                <button className="create-soon" disabled><Sparkles /> Create image <small>API connection coming next</small></button>
+                <section><b>Fonts</b><div className="visual-option-grid three">
+                  {([['mixed','Mixed font','/create-examples/generated-text/happy-birthday-sophia-v1-mixed.png'],['cursive','Cursive font','/create-examples/generated-text/happy-birthday-sophia-v2-cursive.png'],['serif','Serif font','/create-examples/generated-text/happy-birthday-sophia-v3-serif.png']] as const).map(([value,label,src]) => <button key={value} className={textFontStyle===value?'active':''} onClick={()=>setTextFontStyle(value)}><img src={src} alt={label}/><span>{label}</span></button>)}
+                </div></section>
+                <section><b>Layout</b><div className="visual-option-grid three">
+                  {([['square','Square','/create-examples/layouts/happy-birthday-sophia-square.png'],['rectangle','Rectangle','/create-examples/layouts/happy-birthday-sophia-rectangle.png'],['one-line','One-Line','/create-examples/layouts/happy-birthday-sophia-one-line.png']] as const).map(([value,label,src]) => <button key={value} className={textLayout===value?'active':''} onClick={()=>setTextLayout(value)}><img src={src} alt={`${label} layout`}/><span>{label}</span></button>)}
+                </div></section>
+                <button className="create-soon enabled" onClick={()=>{const src=`/create-examples/layouts/happy-birthday-sophia-${textLayout}.png`;setGeneratedImages(v=>v.concat(src));setGeneratedPreview(src)}}><Sparkles /> Create image <small>Preview simulation</small></button>
+              </div>
+              <GeneratedRail images={generatedImages} onOpen={setGeneratedPreview}/>
               </div>
             ) : (
+              <div className="create-studio">
               <div className="create-art-form">
                 <div className="create-mode-switch">
                   <button onClick={() => setCreateImageMode("text")}><Type />Cake topper as text</button>
                   <button className="active" onClick={() => setCreateImageMode("image")}><ImageIcon />Cake topper as image</button>
                 </div>
-                <label>Describe the image you want<input type="text" placeholder="Cute giraffe" /></label>
+                <label>Describe the image you want<input type="text" placeholder="Cute giraffe with birthday hat" /></label>
                 <figure><img src="/create-examples/cake-topper-animals-balloons.png" alt="Cute animals and balloons cake topper example" /></figure>
                 <section><b>Style</b><div className="style-choice-grid">
-                  {([['watercolor','Watercolor'],['cartoon','Cartoon'],['paper-cut','Paper cut'],['elegant','Elegant'],['minimal','Minimal'],['glitter','Glitter-look']] as const).map(([value,label]) => <button key={value} className={imageArtStyle === value ? "active" : ""} onClick={() => setImageArtStyle(value)}><span className={`style-swatch ${value}`} />{label}</button>)}
+                  {([['watercolor','Watercolor','/create-examples/image-styles/cute-giraffe-watercolor-v2.png'],['cartoon','Cartoon','/create-examples/image-styles/cute-giraffe-cartoon-v2.png'],['baby','Baby','/create-examples/image-styles/cute-giraffe-baby-v2.png'],['girly','Girly','/create-examples/image-styles/cute-giraffe-girly.png'],['storybook','3D Storybook','/create-examples/image-styles/cute-giraffe-3d-storybook.png']] as const).map(([value,label,src]) => <button key={value} className={imageArtStyle === value ? "active" : ""} onClick={() => setImageArtStyle(value)}><img src={src} alt={label}/><span>{label}</span></button>)}
                 </div></section>
-                <button className="create-soon" disabled><Sparkles /> Create image <small>API connection coming next</small></button>
+                <label className="sticker-toggle"><input type="checkbox" checked={whiteStickerOffset} onChange={(e)=>setWhiteStickerOffset(e.target.checked)}/><span/><b>White sticker offset</b><small>Add a clean white label border around the artwork</small></label>
+                <button className="create-soon enabled" onClick={()=>{const map={watercolor:'watercolor-v2',cartoon:'cartoon-v2',baby:'baby-v2',girly:'girly',storybook:'3d-storybook'} as const;const src=`/create-examples/image-styles/cute-giraffe-${map[imageArtStyle]}.png`;setGeneratedImages(v=>v.concat(src));setGeneratedPreview(src)}}><Sparkles /> Create image <small>Preview simulation</small></button>
+              </div>
+              <GeneratedRail images={generatedImages} onOpen={setGeneratedPreview}/>
               </div>
             )}
           </div>
+          {generatedPreview && <div className="generated-lightbox" onPointerDown={()=>setGeneratedPreview(null)}><div onPointerDown={(e)=>e.stopPropagation()}><button className="add-new-close" onClick={()=>setGeneratedPreview(null)}><X/></button><img src={generatedPreview} alt="Generated cake topper preview"/><button className="add-generated" onClick={()=>void addGeneratedAsset(generatedPreview)}><Plus/>Add to page</button></div></div>}
         </div>
       )}
       {bgMenuOpen && (
