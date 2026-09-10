@@ -763,8 +763,8 @@ async function layerOpaqueAtWorld(layer:Layer,worldX:number,worldY:number){
 async function smoothVectorCutout(src: string, color: string) {
   const img = await getImage(src),
     longest = Math.max(img.naturalWidth, img.naturalHeight),
-    supersample = clamp(1800 / Math.max(longest, 1), 2, 6),
-    pad = Math.ceil(supersample * 3),
+    supersample = clamp(1800 / Math.max(longest, 1), 1, 3),
+    pad = Math.ceil(supersample * 6),
     mask = document.createElement("canvas"),
     traced = document.createElement("canvas");
   mask.width = Math.max(1, Math.round(img.naturalWidth * supersample));
@@ -772,9 +772,7 @@ async function smoothVectorCutout(src: string, color: string) {
   const mx = mask.getContext("2d")!;
   mx.imageSmoothingEnabled = true;
   mx.imageSmoothingQuality = "high";
-  mx.filter = `blur(${Math.max(0.45, supersample * 0.18)}px)`;
   mx.drawImage(img, 0, 0, mask.width, mask.height);
-  mx.filter = "none";
   const pixels = mx.getImageData(0, 0, mask.width, mask.height);
   traced.width = mask.width + pad * 2;
   traced.height = mask.height + pad * 2;
@@ -790,10 +788,10 @@ async function smoothVectorCutout(src: string, color: string) {
   tx.putImageData(binary, pad, pad);
   const paths = traceCanvas(traced, {
     turnpolicy: "minority",
-    turdsize: Math.max(2, Math.round(supersample * supersample * 0.45)),
-    alphamax: 0.82,
+    turdsize: Math.max(2, Math.round(supersample * supersample * 0.25)),
+    alphamax: 0.62,
     optcurve: true,
-    opttolerance: 0.32,
+    opttolerance: 0.08,
   });
   if (!paths.length) throw new Error("The cutout contour is empty");
   const doc = new DOMParser().parseFromString(getSVG(paths, 1, "fill"), "image/svg+xml"),
@@ -806,14 +804,21 @@ async function smoothVectorCutout(src: string, color: string) {
   root.querySelectorAll("path").forEach((path) => {
     path.setAttribute("fill", color);
     path.setAttribute("fill-rule", "evenodd");
-    path.setAttribute("stroke", "#141715");
-    path.setAttribute("stroke-width", "1.15");
-    path.setAttribute("stroke-linecap", "round");
-    path.setAttribute("stroke-linejoin", "round");
-    path.setAttribute("vector-effect", "non-scaling-stroke");
-    path.setAttribute("paint-order", "stroke fill");
+    path.setAttribute("stroke", "none");
   });
   return `data:image/svg+xml,${encodeURIComponent(new XMLSerializer().serializeToString(root))}`;
+}
+async function hasTransparentCanvas(src: string) {
+  const img = await getImage(src),
+    sample = document.createElement("canvas"),
+    ratio = Math.min(1, 700 / Math.max(img.naturalWidth, img.naturalHeight));
+  sample.width = Math.max(1, Math.round(img.naturalWidth * ratio));
+  sample.height = Math.max(1, Math.round(img.naturalHeight * ratio));
+  const context = sample.getContext("2d", { willReadFrequently: true })!;
+  context.drawImage(img, 0, 0, sample.width, sample.height);
+  const pixels = context.getImageData(0, 0, sample.width, sample.height).data;
+  for (let i = 3; i < pixels.length; i += 4) if (pixels[i] < 16) return true;
+  return false;
 }
 async function vTracerCutout(src: string, color: string, physicalWidthCm?: number, simplify = 1.25) {
   const img = await getImage(src),
@@ -2239,11 +2244,13 @@ export default function Home() {
     };
   };
   const importFiles = async (files: File[]) => {
+    let imported = 0;
     for (const f of files) {
       if (!/image\/(jpeg|png|svg\+xml|webp)/.test(f.type)) continue;
-      const rawSrc = await new Promise<string>((ok) => {
+      const rawSrc = await new Promise<string>((ok, fail) => {
           const r = new FileReader();
           r.onload = () => ok(String(r.result));
+          r.onerror = () => fail(r.error || new Error("The image file could not be read"));
           r.readAsDataURL(f);
         }),
         prepared = f.type === "image/png" ? await trimUniformBorder(rawSrc) : { src: rawSrc, left: 0, top: 0, width: 1, height: 1 },
@@ -2283,21 +2290,28 @@ export default function Home() {
         }),
       );
       setSelected([id]);
+      imported++;
     }
+    return imported;
   };
   const add = async (e: ChangeEvent<HTMLInputElement>) => {
     await importFiles(Array.from(e.target.files || []));
     e.target.value = "";
   };
   const addGeneratedAsset = async (src: string) => {
-    const response = await fetch(new URL(src, window.location.origin));
-    if (!response.ok) return setNotice("Could not load the generated image");
-    const blob = await response.blob(),
-      filename = src.split("/").pop() || "generated-cake-topper.png";
-    await importFiles([new File([blob], filename, { type: blob.type || "image/png" })]);
-    setGeneratedPreview(null);
-    setAddNewOpen(false);
-    setNotice("Generated image added to the page");
+    try {
+      const response = await fetch(new URL(src, window.location.origin));
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const blob = await response.blob(),
+        filename = (src.split("/").pop() || "generated-cake-topper.png").split("?")[0];
+      const imported = await importFiles([new File([blob], filename, { type: "image/png" })]);
+      if (imported !== 1) throw new Error("The generated PNG was not accepted by the canvas importer");
+      setGeneratedPreview(null);
+      setAddNewOpen(false);
+      setNotice("Generated image added to the page");
+    } catch (error) {
+      setNotice(`Could not add the generated image: ${error instanceof Error ? error.message : "Unknown error"}`);
+    }
   };
   useEffect(() => {
     const pasteImage = (event: ClipboardEvent) => {
@@ -3703,11 +3717,13 @@ export default function Home() {
     try {
       const converted: Layer[] = [];
       for (const target of targets) {
-          const refined = await featherAlphaInside(await refineBackground(target.src, 46, [], 12, 0)),
+        const alreadyTransparent = await hasTransparentCanvas(target.src),
+          refined = alreadyTransparent ? target.src : await featherAlphaInside(await refineBackground(target.src, 46, [], 12, 0)),
           trimmed = await trimTransparent(refined),
           color = COLORS[Math.floor(Math.random() * 21)],
-          solid = await silhouette(trimmed.src, color, 255),
-          vectorSrc = await vTracerCutout(solid, color, target.w * trimmed.width, extraSmooth ? 2.25 : 1.25),
+          vectorSrc = alreadyTransparent
+            ? await smoothVectorCutout(trimmed.src, color)
+            : await vTracerCutout(await silhouette(trimmed.src, color, 255), color, undefined, extraSmooth ? 2.25 : 1.25),
           safety = await analyzeCutSafety(vectorSrc, target.w * trimmed.width),
           noBgLayer: Layer = {
             ...target,
