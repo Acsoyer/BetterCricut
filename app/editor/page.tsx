@@ -2904,9 +2904,7 @@ export default function Home() {
     setWorking(true);
     try {
       const result = await renderCutoutEdit(cutEditor, true),
-        baked = await silhouette(result.src, target.color, 255),
-        hasEdgeFix = cutEditor.strokes.some((stroke) => stroke.tool === "smooth"),
-        finalSrc = await vTracerCutout(baked, target.color, target.w * result.width, hasEdgeFix ? 1.8 : 1.25),
+        finalSrc = await smoothVectorCutout(result.src, target.color),
         safety = await analyzeCutSafety(finalSrc, target.w * result.width),
         next: Layer = {
           ...target,
@@ -2949,9 +2947,8 @@ export default function Home() {
     setWorking(true);
     try {
       const rendered = await renderCutoutEdit(cutEditor),
-        baked = await silhouette(rendered.src, target.color, 255),
         pass = cutEditor.smoothPasses + 1,
-        src = await vTracerCutout(baked, target.color, target.w, Math.min(3.4, 1.7 + pass * 0.55));
+        src = await smoothVectorCutout(rendered.src, target.color);
       setCutEditor({
         ...cutEditor,
         source: src,
