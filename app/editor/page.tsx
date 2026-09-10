@@ -1,7 +1,7 @@
 "use client";
 /* eslint-disable react-hooks/set-state-in-effect, react-hooks/refs, react-hooks/purity */
 import { ChangeEvent, PointerEvent as RPointer, WheelEvent as RWheel, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { AlignVerticalJustifyCenter, AlignEndHorizontal, AlignEndVertical, AlignHorizontalJustifyCenter, AlignStartHorizontal, AlignStartVertical, AlertTriangle, BringToFront, ChevronDown, Check, Copy, Crosshair, Download, Eye, EyeOff, FileImage, File, ImagePlus, Paintbrush, Eraser, GripVertical, Grid3X3, Link as LinkIcon, Link2Off, Layers3, Maximize2, Palette, Pipette, Plus, RotateCw, Replace, Ruler, Scissors, SlidersHorizontal, SendToBack, Sparkles, Star, Trash2, Type, Undo2, ZoomIn, ZoomOut, User, FolderOpen, Image as ImageIcon, LogOut, X } from "lucide-react";
+import { AlignVerticalJustifyCenter, AlignEndHorizontal, AlignEndVertical, AlignHorizontalJustifyCenter, AlignStartHorizontal, AlignStartVertical, AlertTriangle, BringToFront, ChevronDown, Check, Copy, Crosshair, Download, Eye, EyeOff, FileImage, File, ImagePlus, Paintbrush, Eraser, GripVertical, Grid3X3, Link as LinkIcon, Link2Off, Layers3, Maximize2, Palette, Pipette, Plus, RotateCw, Replace, Ruler, Scissors, ShieldCheck, SlidersHorizontal, SendToBack, Sparkles, Star, Trash2, Type, Undo2, ZoomIn, ZoomOut, User, FolderOpen, Image as ImageIcon, LogOut, X } from "lucide-react";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
 import { EDITOR_VERSION, editorDevLog } from "../editor-dev-log";
@@ -100,6 +100,7 @@ type Layer = {
   };
   cutRisk?: boolean;
   cutRiskReason?: string;
+  cutRiskOverlay?: string;
 };
 type SavedProject = {
   id: string;
@@ -112,6 +113,7 @@ type SavedProject = {
     safeMargin: number;
     thumbnail?: string;
     sessionLog?: SessionLogEntry[];
+    cutSafetyEnabled?: boolean;
   };
 };
 type SessionLogEntry = { id: string; at: string; action: string; details: string };
@@ -223,6 +225,7 @@ type CutoutEditor = {
   tool: EditTool | null;
   brush: number;
   strokes: EditStroke[];
+  redoStrokes: EditStroke[];
   crop: { left: number; top: number; right: number; bottom: number };
   zoom: number;
   panX: number;
@@ -893,8 +896,9 @@ async function analyzeCutSafety(src: string, widthCm: number) {
   const data = x.getImageData(0, 0, w, h).data,
     solid = new Uint8Array(w * h);
   for (let i = 0; i < solid.length; i++) solid[i] = data[i * 4 + 3] >= 96 ? 1 : 0;
-  const threshold = Math.max(1, (0.2 / Math.max(widthCm, 0.01)) * w),
-    seen = new Uint8Array(w * h);
+  const threshold = Math.max(1, (0.1 / Math.max(widthCm, 0.01)) * w),
+    seen = new Uint8Array(w * h),
+    riskMask = new Uint8Array(w * h);
   let tinyIslandCount = 0,
     tinyHoleCount = 0;
   const scan = (foreground: boolean) => {
@@ -908,12 +912,14 @@ async function analyzeCutSafety(src: string, widthCm: number) {
         maxY = 0,
         touches = false,
         count = 0;
+      const component: number[] = [];
       seen[start] = 1;
       while (stack.length) {
         const p = stack.pop()!,
           px = p % w,
           py = (p / w) | 0;
         count++;
+        component.push(p);
         minX = Math.min(minX, px);
         maxX = Math.max(maxX, px);
         minY = Math.min(minY, py);
@@ -927,8 +933,14 @@ async function analyzeCutSafety(src: string, widthCm: number) {
       }
       const bw = maxX - minX + 1,
         bh = maxY - minY + 1;
-      if (foreground && count > 1 && Math.min(bw, bh) < threshold && Math.max(bw, bh) < threshold * 5) tinyIslandCount++;
-      if (!foreground && !touches && Math.min(bw, bh) < threshold * 1.5) tinyHoleCount++;
+      if (foreground && count > 1 && Math.min(bw, bh) < threshold && Math.max(bw, bh) < threshold * 5) {
+        tinyIslandCount++;
+        component.forEach((position) => (riskMask[position] = 1));
+      }
+      if (!foreground && !touches && Math.min(bw, bh) < threshold) {
+        tinyHoleCount++;
+        component.forEach((position) => (riskMask[position] = 1));
+      }
     }
   };
   scan(true);
@@ -984,12 +996,14 @@ async function analyzeCutSafety(src: string, widthCm: number) {
       maxY = 0,
       minWidth = Number.POSITIVE_INFINITY,
       count = 0;
+    const component: number[] = [];
     seen[start] = 1;
     while (stack.length) {
       const p = stack.pop()!,
         px = p % w,
         py = (p / w) | 0;
       count++;
+      component.push(p);
       minX = Math.min(minX, px);
       maxX = Math.max(maxX, px);
       minY = Math.min(minY, py);
@@ -1005,15 +1019,50 @@ async function analyzeCutSafety(src: string, widthCm: number) {
     if (span >= threshold * 2 && count >= threshold) {
       thinRegionCount++;
       minStructuralWidth = Math.min(minStructuralWidth, minWidth);
+      component.forEach((position) => (riskMask[position] = 1));
     }
   }
   const minThinMm = Number.isFinite(minStructuralWidth) ? (minStructuralWidth / w) * widthCm * 10 : 0,
     reasons = [
-      thinRegionCount > 0 && `${thinRegionCount} structurally thin region${thinRegionCount === 1 ? "" : "s"} detected; thinnest is approximately ${minThinMm.toFixed(1)} mm (minimum 2.0 mm)`,
-      tinyIslandCount > 0 && `${tinyIslandCount} detached positive island${tinyIslandCount === 1 ? "" : "s"} smaller than 2 mm`,
-      tinyHoleCount > 0 && `${tinyHoleCount} enclosed gap${tinyHoleCount === 1 ? "" : "s"} smaller than 2 mm`,
+      thinRegionCount > 0 && `${thinRegionCount} structurally thin region${thinRegionCount === 1 ? "" : "s"} detected; thinnest is approximately ${minThinMm.toFixed(1)} mm (minimum 1.0 mm)`,
+      tinyIslandCount > 0 && `${tinyIslandCount} detached positive island${tinyIslandCount === 1 ? "" : "s"} smaller than 1 mm`,
+      tinyHoleCount > 0 && `${tinyHoleCount} enclosed gap${tinyHoleCount === 1 ? "" : "s"} smaller than 1 mm`,
     ].filter(Boolean) as string[];
-  return { cutRisk: reasons.length > 0, cutRiskReason: reasons.join(", ") };
+  if (!reasons.length) return { cutRisk: false, cutRiskReason: "", cutRiskOverlay: "" };
+  const overlay = document.createElement("canvas");
+  overlay.width = w;
+  overlay.height = h;
+  const overlayContext = overlay.getContext("2d")!,
+    overlayData = overlayContext.createImageData(w, h);
+  let baseR = 20,
+    baseG = 23,
+    baseB = 21;
+  for (let i = 0; i < solid.length; i++)
+    if (solid[i]) {
+      baseR = data[i * 4];
+      baseG = data[i * 4 + 1];
+      baseB = data[i * 4 + 2];
+      break;
+    }
+  const marker = [255 - baseR, 255 - baseG, 255 - baseB];
+  for (let p = 0; p < riskMask.length; p++) {
+    if (!riskMask[p]) continue;
+    const px = p % w,
+      py = (p / w) | 0;
+    for (let oy = -2; oy <= 2; oy++)
+      for (let ox = -2; ox <= 2; ox++) {
+        const nx = px + ox,
+          ny = py + oy;
+        if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+        const q = (ny * w + nx) * 4;
+        overlayData.data[q] = marker[0];
+        overlayData.data[q + 1] = marker[1];
+        overlayData.data[q + 2] = marker[2];
+        overlayData.data[q + 3] = 220;
+      }
+  }
+  overlayContext.putImageData(overlayData, 0, 0);
+  return { cutRisk: true, cutRiskReason: reasons.join(", "), cutRiskOverlay: overlay.toDataURL("image/png") };
 }
 async function renderCutoutEdit(editor: CutoutEditor, applyCrop = false) {
   const img = await getImage(editor.source),
@@ -1521,7 +1570,7 @@ async function findOpaqueIslands(src: string) {
   });
   return { preview: preview.toDataURL("image/png"), parts };
 }
-const projectSignature = (layers: Layer[], pageMode: PageMode, safeMargin: number) => JSON.stringify({ layers, pageMode, safeMargin });
+const projectSignature = (layers: Layer[], pageMode: PageMode, safeMargin: number, cutSafetyEnabled = false) => JSON.stringify({ layers, pageMode, safeMargin, cutSafetyEnabled });
 const formatProjectSize = (project: SavedProject) => {
   const bytes = new Blob([JSON.stringify(project.data)]).size;
   return bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
@@ -1633,6 +1682,8 @@ export default function Home() {
     [generatedPreview, setGeneratedPreview] = useState<string | null>(null),
     [cutoutMenuOpen, setCutoutMenuOpen] = useState(false),
     [svgWarningOpen, setSvgWarningOpen] = useState(false),
+    [validationIntroOpen, setValidationIntroOpen] = useState(false),
+    [cutSafetyEnabled, setCutSafetyEnabled] = useState(false),
     [riskLayerId, setRiskLayerId] = useState<string | null>(null),
     [clipEditor, setClipEditor] = useState<ClipEditor | null>(null),
     [imageOnShapeTarget, setImageOnShapeTarget] = useState<string | null>(null),
@@ -1667,10 +1718,8 @@ export default function Home() {
     [cutCropActive, setCutCropActive] = useState(false),
     [splitPreview, setSplitPreview] = useState<SplitPreview | null>(null),
     [cutCursor, setCutCursor] = useState<{
-      x: number;
-      y: number;
       visible: boolean;
-    }>({ x: 0, y: 0, visible: false }),
+    }>({ visible: false }),
     [imageEditor, setImageEditor] = useState<ImageEditor | null>(null),
     [imageTab, setImageTab] = useState<"edit" | "background" | "preset">("edit"),
     [imagePreset, setImagePreset] = useState<"image" | "rim" | "text">("image"),
@@ -1703,6 +1752,9 @@ export default function Home() {
     menuRef = useRef<HTMLElement>(null),
     clipboard = useRef<Layer[]>([]),
     history = useRef<Layer[][]>([]),
+    redoHistory = useRef<Layer[][]>([]),
+    imageRedoHistory = useRef<ImageEditState[]>([]),
+    bgRedoStrokes = useRef<BgStroke[]>([]),
     lastLayers = useRef<Layer[]>([]),
     lastChange = useRef(0),
     undoing = useRef(false),
@@ -1714,6 +1766,11 @@ export default function Home() {
       panY: number;
     } | null>(null),
     cutDrawing = useRef<string | null>(null),
+    cutDraftStroke = useRef<EditStroke | null>(null),
+    cutCursorRef = useRef<HTMLElement>(null),
+    cutLivePathRef = useRef<SVGPolylineElement>(null),
+    cutLiveRectRef = useRef<SVGRectElement>(null),
+    cutFrame = useRef<number | null>(null),
     cutPanDrag = useRef<{
       x: number;
       y: number;
@@ -1786,7 +1843,7 @@ export default function Home() {
     displayBox = one && drag?.mode === "rotate" ? { x: one.x, y: one.y, w: one.w, h: one.h } : one && one.rotation ? rotatedBounds(one) : box,
     scale = PPCM * zoom * calibration,
     vectorsOnly = picked.length > 0 && picked.every((l) => ["stroke", "vector"].includes(l.kind));
-  const currentSignature = useMemo(() => projectSignature(layers, pageMode, safeMargin), [layers, pageMode, safeMargin]),
+  const currentSignature = useMemo(() => projectSignature(layers, pageMode, safeMargin, cutSafetyEnabled), [layers, pageMode, safeMargin, cutSafetyEnabled]),
     projectDirty = currentSignature !== lastSavedSignature;
   const addSessionLog = (action: string, details: string) =>
     setSessionLog((items) => [...items, { id: uid(), at: new Date().toISOString(), action, details }].slice(-1000));
@@ -1853,7 +1910,7 @@ export default function Home() {
       thumbnail = await createProjectThumbnail(layers),
       saveEntry: SessionLogEntry = { id: uid(), at: new Date().toISOString(), action: "Project saved", details: `${name} was ${asNew ? "saved as a new project" : "saved"}.` },
       nextSessionLog = [...sessionLog, saveEntry].slice(-1000),
-      projectData = { layers, landscape, pageMode, safeMargin, thumbnail, sessionLog: nextSessionLog },
+      projectData = { layers, landscape, pageMode, safeMargin, thumbnail, sessionLog: nextSessionLog, cutSafetyEnabled },
       payload = {
         name,
         data: projectData,
@@ -1874,7 +1931,7 @@ export default function Home() {
     setCurrentProjectId(data.id);
     setSessionLog(nextSessionLog);
     setProjectName(data.name);
-    setLastSavedSignature(projectSignature(layers, pageMode, safeMargin));
+    setLastSavedSignature(projectSignature(layers, pageMode, safeMargin, cutSafetyEnabled));
     setProjects((items) => [data as SavedProject, ...items.filter((project) => project.id !== data.id)]);
     void refreshProjects(false);
     if (closePanel) setProjectsOpen(false);
@@ -1891,10 +1948,11 @@ export default function Home() {
     setSessionLog([...(project.data.sessionLog || []), { id: uid(), at: new Date().toISOString(), action: "Project opened", details: `${project.name} was opened.` }]);
     setPageMode(project.data.pageMode || (project.data.landscape ? "landscape" : "portrait"));
     setSafeMargin(project.data.safeMargin ?? 1);
+    setCutSafetyEnabled(Boolean(project.data.cutSafetyEnabled));
     setSelected([]);
     setCurrentProjectId(project.id);
     setProjectName(project.name);
-    setLastSavedSignature(projectSignature(project.data.layers || [], project.data.pageMode || (project.data.landscape ? "landscape" : "portrait"), project.data.safeMargin ?? 1));
+    setLastSavedSignature(projectSignature(project.data.layers || [], project.data.pageMode || (project.data.landscape ? "landscape" : "portrait"), project.data.safeMargin ?? 1, Boolean(project.data.cutSafetyEnabled)));
     history.current = [];
     setProjectsOpen(false);
     setNotice(`${project.name} opened`);
@@ -1930,8 +1988,10 @@ export default function Home() {
     setProjectName("Untitled Project");
     setPageMode("portrait");
     setSafeMargin(1);
+    setCutSafetyEnabled(false);
     setLastSavedSignature(projectSignature([], "portrait", 1));
     history.current = [];
+    redoHistory.current = [];
     setProjectsOpen(false);
     window.setTimeout(centerDocument, 40);
     setNotice("New project created");
@@ -2062,6 +2122,7 @@ export default function Home() {
       if (now - lastChange.current > 300) {
         history.current.push(lastLayers.current.map((l) => ({ ...l })));
         if (history.current.length > 60) history.current.shift();
+        redoHistory.current = [];
       }
       lastChange.current = now;
       lastLayers.current = layers;
@@ -2085,10 +2146,20 @@ export default function Home() {
   const undo = () => {
     const previous = history.current.pop();
     if (!previous) return;
+    redoHistory.current.push(layers.map((layer) => ({ ...layer })));
     undoing.current = true;
     setLayers(previous);
     setSelected([]);
     setNotice("Undone");
+  };
+  const redo = () => {
+    const next = redoHistory.current.pop();
+    if (!next) return;
+    history.current.push(layers.map((layer) => ({ ...layer })));
+    undoing.current = true;
+    setLayers(next);
+    setSelected([]);
+    setNotice("Redone");
   };
   useEffect(() => {
     const close = (e: PointerEvent) => {
@@ -2127,15 +2198,39 @@ export default function Home() {
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
         e.preventDefault();
+        const wantsRedo = e.shiftKey;
+        if (cutEditor) {
+          setCutEditor((value) => {
+            if (!value) return value;
+            if (wantsRedo) {
+              const restored = value.redoStrokes.at(-1);
+              return restored ? { ...value, strokes: [...value.strokes, restored], redoStrokes: value.redoStrokes.slice(0, -1) } : value;
+            }
+            const removed = value.strokes.at(-1);
+            return removed ? { ...value, strokes: value.strokes.slice(0, -1), redoStrokes: [...value.redoStrokes, removed] } : value;
+          });
+          return;
+        }
         if (imageEditor) {
-          undoImageStage();
+          if (wantsRedo) redoImageStage();
+          else undoImageStage();
           return;
         }
         if (bgEditor) {
-          setBgEditor((value) => (value && value.strokes.length ? { ...value, strokes: value.strokes.slice(0, -1) } : value));
+          setBgEditor((value) => {
+            if (!value) return value;
+            if (wantsRedo) {
+              const restored = bgRedoStrokes.current.pop();
+              return restored ? { ...value, strokes: [...value.strokes, restored] } : value;
+            }
+            const removed = value.strokes.at(-1);
+            if (removed) bgRedoStrokes.current.push(removed);
+            return removed ? { ...value, strokes: value.strokes.slice(0, -1) } : value;
+          });
           return;
         }
-        undo();
+        if (wantsRedo) redo();
+        else undo();
         return;
       }
       if ((e.key === "Delete" || e.key === "Backspace") && !(e.target as HTMLElement).matches("input,textarea")) {
@@ -2146,7 +2241,7 @@ export default function Home() {
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [selected, bgEditor, imageEditor, imageOnShapeTarget, shapeImageEditing]);
+  }, [selected, bgEditor, imageEditor, cutEditor, imageOnShapeTarget, shapeImageEditing]);
   useEffect(() => {
     const stopBrowserZoom = (e: WheelEvent) => {
       if (e.ctrlKey && !stageRef.current?.contains(e.target as Node)) e.preventDefault();
@@ -2341,6 +2436,7 @@ export default function Home() {
   };
   const noBackground = (chosen: Layer | null | undefined = one) => {
     if (!chosen) return;
+    bgRedoStrokes.current = [];
     const latestStep = chosen.steps[chosen.activeStep] || chosen.steps[chosen.steps.length - 1],
       priorRemoval = latestStep?.type === "remove-bg" && latestStep.before ? latestStep : undefined,
       base = priorRemoval?.before || snapshot(chosen),
@@ -2703,6 +2799,7 @@ export default function Home() {
       reach,
       points: [bgPointFromEvent(e)],
     };
+    bgRedoStrokes.current = [];
     setBgEditor({ ...bgEditor, strokes: [...bgEditor.strokes, stroke] });
   };
   const moveBackgroundStroke = (e: RPointer<HTMLImageElement>) => {
@@ -2808,6 +2905,7 @@ export default function Home() {
       tool: null,
       brush: 3,
       strokes: [],
+      redoStrokes: [],
       crop: { left: 0, top: 0, right: 0, bottom: 0 },
       zoom: 1,
       panX: 0,
@@ -2834,34 +2932,51 @@ export default function Home() {
     const stroke: EditStroke = {
       id,
       tool: cutEditor.tool,
-      brush: cutEditor.brush,
+      brush: cutEditor.brush / Math.sqrt(Math.max(1, cutEditor.zoom)),
       points: [cutPoint(e)],
     };
-    setCutEditor({ ...cutEditor, strokes: [...cutEditor.strokes, stroke] });
+    cutDraftStroke.current = stroke;
+    if (cutLivePathRef.current) {
+      cutLivePathRef.current.setAttribute("class", `edit-brush-stroke ${stroke.tool}`);
+      cutLivePathRef.current.setAttribute("points", `${stroke.points[0].x * 100},${stroke.points[0].y * 100}`);
+    }
   };
   const moveCutEdit = (e: RPointer<HTMLImageElement>) => {
     const cursor = cutPoint(e);
-    setCutCursor({ ...cursor, visible: true });
-    if (!cutDrawing.current || e.buttons !== 1) return;
-    const id = cutDrawing.current,
-      p = cursor;
-    setCutEditor((v) =>
-      v
-        ? {
-            ...v,
-            strokes: v.strokes.map((s) => {
-              if (s.id !== id) return s;
-              const last = s.points.at(-1);
-              return last && Math.hypot(p.x - last.x, p.y - last.y) < 0.003 ? s : { ...s, points: [...s.points, p] };
-            }),
-          }
-        : v,
-    );
+    if (cutCursorRef.current) {
+      cutCursorRef.current.style.left = `${cursor.x * 100}%`;
+      cutCursorRef.current.style.top = `${cursor.y * 100}%`;
+    }
+    const draft = cutDraftStroke.current;
+    if (!draft || !cutDrawing.current || e.buttons !== 1) return;
+    const last = draft.points.at(-1);
+    if (last && Math.hypot(cursor.x - last.x, cursor.y - last.y) < 0.0012) return;
+    draft.points.push(cursor);
+    if (cutFrame.current !== null) return;
+    cutFrame.current = window.requestAnimationFrame(() => {
+      cutFrame.current = null;
+      const current = cutDraftStroke.current;
+      if (!current) return;
+      const first = current.points[0],
+        lastPoint = current.points.at(-1)!;
+      if (current.tool === "rectangle" && cutLiveRectRef.current) {
+        cutLiveRectRef.current.setAttribute("x", String(Math.min(first.x, lastPoint.x) * 100));
+        cutLiveRectRef.current.setAttribute("y", String(Math.min(first.y, lastPoint.y) * 100));
+        cutLiveRectRef.current.setAttribute("width", String(Math.abs(lastPoint.x - first.x) * 100));
+        cutLiveRectRef.current.setAttribute("height", String(Math.abs(lastPoint.y - first.y) * 100));
+        cutLiveRectRef.current.style.display = "block";
+      } else if (cutLivePathRef.current) cutLivePathRef.current.setAttribute("points", current.points.map((point) => `${point.x * 100},${point.y * 100}`).join(" "));
+    });
   };
   const endCutEdit = () => {
     const id = cutDrawing.current;
+    const completed = cutDraftStroke.current;
     cutDrawing.current = null;
+    cutDraftStroke.current = null;
     setCutActiveStroke(null);
+    if (cutLivePathRef.current) cutLivePathRef.current.setAttribute("points", "");
+    if (cutLiveRectRef.current) cutLiveRectRef.current.style.display = "none";
+    if (completed) setCutEditor((value) => (value ? { ...value, strokes: [...value.strokes, completed], redoStrokes: [] } : value));
     if (id) {
       setCutFinishedStroke(id);
       window.setTimeout(() => setCutFinishedStroke((value) => (value === id ? null : value)), 1000);
@@ -3211,6 +3326,7 @@ export default function Home() {
         heightScale: imageEditor.heightScale,
       },
       rendered = await renderImageStage(imageEditor);
+    imageRedoHistory.current = [];
     setImageEditor((v) =>
       v
         ? {
@@ -3231,6 +3347,7 @@ export default function Home() {
     setImageEditor((v) => {
       if (!v || !v.history.length) return v;
       const prior = v.history[v.history.length - 1];
+      imageRedoHistory.current.push({ source: v.source, offsetX: v.offsetX, offsetY: v.offsetY, widthScale: v.widthScale, heightScale: v.heightScale });
       return {
         ...v,
         ...prior,
@@ -3238,6 +3355,13 @@ export default function Home() {
         strokes: [],
         crop: { left: 0, top: 0, right: 0, bottom: 0 },
       };
+    });
+  const redoImageStage = () =>
+    setImageEditor((v) => {
+      const next = imageRedoHistory.current.pop();
+      if (!v || !next) return v;
+      const current = { source: v.source, offsetX: v.offsetX, offsetY: v.offsetY, widthScale: v.widthScale, heightScale: v.heightScale };
+      return { ...v, ...next, history: [...v.history, current], strokes: [], crop: { left: 0, top: 0, right: 0, bottom: 0 } };
     });
   const resetImageStage = () => {
     if (!imageEditor) return;
@@ -4523,6 +4647,22 @@ export default function Home() {
     }
     return c;
   };
+  const validateLayers = async () => {
+    const candidates = layers.filter((layer) => ["vector", "stroke"].includes(layer.kind));
+    setValidationIntroOpen(false);
+    setWorking(true);
+    try {
+      const checks = await Promise.all(candidates.map(async (layer) => ({ id: layer.id, ...(await analyzeCutSafety(layer.src, layer.w)) })));
+      const byId = new Map(checks.map((check) => [check.id, check]));
+      setLayers((items) => items.map((layer) => ({ ...layer, ...(byId.get(layer.id) || { cutRisk: false, cutRiskReason: "", cutRiskOverlay: "" }) })));
+      setCutSafetyEnabled(true);
+      const risky = checks.filter((check) => check.cutRisk);
+      setNotice(risky.length ? `${risky.length} layer${risky.length === 1 ? "" : "s"} marked for review` : "Layer validation complete · no sub-1 mm risks found");
+      addSessionLog("Layers validated", risky.length ? `${risky.length} layer(s) contain sub-1 mm cut details.` : "No sub-1 mm cut details were detected.");
+    } finally {
+      setWorking(false);
+    }
+  };
   const canExport = picked.length > 0 && picked.every((l) => !l.invalid),
     canSVG = picked.length > 0 && picked.every((l) => ["vector", "stroke"].includes(l.kind) && !l.invalid),
     exportPNG = async () => {
@@ -4535,35 +4675,9 @@ export default function Home() {
     },
     exportSVG = async (confirmed = false) => {
       if (!canSVG) return;
-      if (!confirmed) {
-        setWorking(true);
-        try {
-          const checks = await Promise.all(
-              picked.map(async (layer) => ({
-                id: layer.id,
-                ...(await analyzeCutSafety(layer.src, layer.w)),
-              })),
-            ),
-            risky = checks.filter((check) => check.cutRisk);
-          setLayers((items) =>
-            items.map((layer) => {
-              const check = checks.find((item) => item.id === layer.id);
-              return check
-                ? {
-                    ...layer,
-                    cutRisk: check.cutRisk,
-                    cutRiskReason: check.cutRiskReason,
-                  }
-                : layer;
-            }),
-          );
-          if (risky.length) {
-            setSvgWarningOpen(true);
-            return;
-          }
-        } finally {
-          setWorking(false);
-        }
+      if (!confirmed && cutSafetyEnabled && picked.some((layer) => layer.cutRisk)) {
+        setSvgWarningOpen(true);
+        return;
       }
       setWorking(true);
       try {
@@ -5163,7 +5277,7 @@ export default function Home() {
               )}
               {picked.length > 0 && (
                 <div
-                  className={`selection-box ${picked.some((layer) => layer.cutRisk) ? "cut-risk" : ""}`}
+                  className={`selection-box ${cutSafetyEnabled && picked.some((layer) => layer.cutRisk) ? "cut-risk" : ""}`}
                   onPointerDown={(e) => void startSelectionMove(e)}
                   style={
                     {
@@ -5181,7 +5295,7 @@ export default function Home() {
                   <div className={`measure ${labelBelow ? "below" : ""}`}>
                     {fmt(displayBox.w)} × {fmt(displayBox.h)} cm
                     {one && one.rotation !== 0 && ` · ${Math.round(one.rotation)}°`}
-                    {picked.some((layer) => layer.cutRisk) && (
+                    {cutSafetyEnabled && picked.some((layer) => layer.cutRisk) && (
                       <button
                         className="measure-warning"
                         title="Cut safety warning"
@@ -5299,7 +5413,7 @@ export default function Home() {
               </div>
               <div className="fill-gaps-row">
                 <div className="gap-control-row" title="Fills enclosed holes whose total area is below the selected square-mm threshold">
-                  <input disabled={!one || !["stroke", "vector"].includes(one.kind)} type="number" min="0" step="1" value={Math.round(fillGapsDraft)} onChange={(e) => setFillGapsDraft(Math.max(0, Math.round(+e.target.value)))} />
+                  <input disabled={!one || !["stroke", "vector"].includes(one.kind)} type="number" min="0" max="30" step={fillGapsDraft < 5 ? ".5" : "1"} value={fillGapsDraft} onChange={(e) => setFillGapsDraft(clamp(+e.target.value, 0, 30))} />
                   <span>mm²</span>
                   <button className="gap-apply" disabled={!one || !["stroke", "vector"].includes(one.kind)} onClick={() => void applyGapPreview()}>
                     Apply Fill
@@ -5333,7 +5447,7 @@ export default function Home() {
               <div
                 key={l.id}
                 draggable={editingName !== l.id}
-                className={`card ${selected.includes(l.id) ? "active" : ""} ${l.cutRisk ? "cut-risk" : ""} ${!l.visible ? "hidden" : ""} ${dragLayer === l.id ? "dragging" : ""}`}
+                className={`card ${selected.includes(l.id) ? "active" : ""} ${cutSafetyEnabled && l.cutRisk ? "cut-risk" : ""} ${!l.visible ? "hidden" : ""} ${dragLayer === l.id ? "dragging" : ""}`}
                 onDragStart={() => setDragLayer(l.id)}
                 onDragOver={(e) => e.preventDefault()}
                 onDragEnter={() => {
@@ -5390,7 +5504,7 @@ export default function Home() {
                     {l.kind === "original" ? "Original" : l.kind === "nobg" ? "Background removed" : l.kind === "stroke" ? `Stroke · ${fmt(l.strokeCm)} cm` : "Acetate"} · {fmt(l.w)} × {fmt(l.h)} cm
                   </small>
                 </div>
-                {(l.invalid || l.cutRisk) && (
+                {(l.invalid || (cutSafetyEnabled && l.cutRisk)) && (
                   <button
                     className="layer-warning"
                     title={l.cutRisk ? l.cutRiskReason : "Safe area warning"}
@@ -5448,6 +5562,9 @@ export default function Home() {
             ))}
             {!layers.length && <div className="no-layers">Your uploaded designs will appear here.</div>}
           </div>
+          <button className="validate-layers" disabled={!layers.some((layer) => ["vector", "stroke"].includes(layer.kind))} onClick={() => setValidationIntroOpen(true)}>
+            <ShieldCheck /> Validate the Layers
+          </button>
           <footer>
             <span className={invalid ? "bad" : ""}>
               {invalid ? (
@@ -5951,6 +6068,21 @@ export default function Home() {
           </div>
         </div>
       )}
+      {validationIntroOpen && (
+        <div className="project-transition-modal validation-intro-modal" role="dialog" aria-modal="true" aria-label="Validate the Layers">
+          <div>
+            <button className="modal-x" onClick={() => setValidationIntroOpen(false)}><X /></button>
+            <ShieldCheck />
+            <h3>Validate the Layers</h3>
+            <p>We will now check your cutout layers. Areas with cut lines closer than 1 mm, extremely small islands, or enclosed gaps smaller than 1 mm will be marked as a warning on the layer and during SVG export.</p>
+            <p>This is guidance, not a block. If the design looks intentional, you can continue. During Cricut cutting, make especially sure that your material is firmly attached to the Cricut mat because very small pieces and nearby cut lines can lift or shift.</p>
+            <footer>
+              <button onClick={() => setValidationIntroOpen(false)}>Not now</button>
+              <button className="confirm" onClick={() => void validateLayers()}><ShieldCheck /> Start validation</button>
+            </footer>
+          </div>
+        </div>
+      )}
       {svgWarningOpen && (
         <div className="project-transition-modal cut-safety-modal" role="dialog" aria-modal="true">
           <div>
@@ -5958,18 +6090,18 @@ export default function Home() {
               <X />
             </button>
             <AlertTriangle />
-            <h3>Critical cut warning</h3>
-            <p>There are areas thinner than 2 mm, tiny islands, gaps or bridges in this design. Cricut may cut these parts poorly or detach them from the main shape.</p>
+            <h3>Layer validation note</h3>
+            <p>Your optional layer validation found details smaller than 1 mm. Very small islands or nearby cut lines may move while Cricut is cutting.</p>
             <footer>
-              <button onClick={() => setSvgWarningOpen(false)}>No, review design</button>
+              <button onClick={() => setSvgWarningOpen(false)}>Review layers</button>
               <button
-                className="confirm danger"
+                className="confirm"
                 onClick={() => {
                   setSvgWarningOpen(false);
                   void exportSVG(true);
                 }}
               >
-                Yes, export SVG
+                Continue and export SVG
               </button>
             </footer>
           </div>
@@ -5988,10 +6120,14 @@ export default function Home() {
                 </button>
                 <AlertTriangle />
                 <h3>Cut safety issue</h3>
+                <div className="cut-risk-preview">
+                  <img src={risk.src} alt={`${risk.name} cutout`} />
+                  {risk.cutRiskOverlay && <img className="cut-risk-overlay" src={risk.cutRiskOverlay} alt="Highlighted areas that may be difficult to cut" />}
+                </div>
                 <p>
                   <b>The detected measurements are listed below.</b>
                   <br />
-                  {risk.cutRiskReason || "This layer contains details smaller than 2 mm."}
+                  {risk.cutRiskReason || "This layer contains details smaller than 1 mm."}
                   <br />
                   <small>Quick Fix widens the outside contour by 1.1 mm, smooths it, and then measures it again. If a warning remains, the message will show what still needs manual editing.</small>
                 </p>
@@ -6552,7 +6688,7 @@ export default function Home() {
                 1. Cutout Edit
               </button>
               <button className={cutoutTab === "stroke" ? "active" : ""} onClick={() => setCutoutTab("stroke")}>
-                2. Stroke &amp; Fill Gaps
+                2. Fill Gaps
               </button>
             </div>
             <div className="bg-editor-body">
@@ -6564,6 +6700,7 @@ export default function Home() {
                       {
                         "--fit-w": cutImageSize.w ? `${cutImageSize.w}px` : "auto",
                         "--fit-h": cutImageSize.h ? `${cutImageSize.h}px` : "auto",
+                        "--cut-zoom": String(cutEditor.zoom),
                         transform: `translate(${cutEditor.panX}px,${cutEditor.panY}px) scale(${cutEditor.zoom})`,
                       } as React.CSSProperties
                     }
@@ -6571,24 +6708,17 @@ export default function Home() {
                     <img className={`cut-tool-${cutEditor.tool}`} src={cutPreview} alt="Cutout edit preview" draggable={false} onLoad={(e) => setCutImageSize(fitEditorImage(e.currentTarget, cutPreviewRef.current))} onPointerDown={startCutEdit} onPointerMove={moveCutEdit} onPointerUp={endCutEdit} onPointerCancel={endCutEdit} onPointerEnter={() => setCutCursor((v) => ({ ...v, visible: true }))} onPointerLeave={() => setCutCursor((v) => ({ ...v, visible: false }))} />
                     {cutEdgeOverlay && <img className="cut-selected-edge" src={cutEdgeOverlay} alt="" draggable={false} />}
                     <svg className="cut-edit-overlay" viewBox="0 0 100 100" preserveAspectRatio="none">
-                      {cutEditor.strokes
-                        .filter((s) => s.id === cutActiveStroke && s.tool !== "smooth")
-                        .map((s) => {
-                          const first = s.points[0],
-                            last = s.points.at(-1)!,
-                            pts = s.points.map((p) => `${p.x * 100},${p.y * 100}`).join(" ");
-                          if (s.tool === "rectangle") return <rect key={s.id} x={Math.min(first.x, last.x) * 100} y={Math.min(first.y, last.y) * 100} width={Math.abs(last.x - first.x) * 100} height={Math.abs(last.y - first.y) * 100} className="eraser-selection" />;
-                          if (s.tool === "lasso") return <polyline key={s.id} points={pts} className="eraser-selection lasso-selection" />;
-                          return <polyline key={s.id} points={pts} className={`edit-brush-stroke ${s.tool}`} style={{ strokeWidth: s.brush }} />;
-                        })}
+                      <polyline ref={cutLivePathRef} points="" className="edit-brush-stroke" style={{ strokeWidth: cutEditor.brush / Math.sqrt(Math.max(1, cutEditor.zoom)) / cutEditor.zoom }} />
+                      <rect ref={cutLiveRectRef} className="eraser-selection" style={{ display: "none" }} />
                     </svg>
                     {cutCursor.visible && cutEditor.tool && ["bridge", "erase", "smooth"].includes(cutEditor.tool) && (
                       <i
                         className="cut-round-cursor"
+                        ref={cutCursorRef}
                         style={{
-                          left: `${cutCursor.x * 100}%`,
-                          top: `${cutCursor.y * 100}%`,
-                          width: `${Math.max(4, (cutEditor.brush / 100) * Math.min(cutImageSize.w, cutImageSize.h))}px`,
+                          left: "50%",
+                          top: "50%",
+                          width: `${clamp(((cutEditor.brush / Math.sqrt(Math.max(1, cutEditor.zoom)) / 100) * Math.min(cutImageSize.w, cutImageSize.h)) / cutEditor.zoom, 6 / cutEditor.zoom, 72 / cutEditor.zoom)}px`,
                           aspectRatio: "1",
                         }}
                       />
@@ -6663,7 +6793,10 @@ export default function Home() {
                       <label>
                         Brush Size <b>{cutEditor.brush}%</b>
                       </label>
-                      <input type="range" min=".3" max="35" step=".1" value={cutEditor.brush} onChange={(e) => setCutEditor({ ...cutEditor, brush: +e.target.value })} />
+                      <div className="brush-size-control">
+                        <input type="range" min=".3" max="20" step=".1" value={cutEditor.brush} onChange={(e) => setCutEditor({ ...cutEditor, brush: +e.target.value })} />
+                        <span className="brush-size-preview"><i style={{ width: `${clamp(cutEditor.brush * 1.4, 5, 34)}px`, height: `${clamp(cutEditor.brush * 1.4, 5, 34)}px` }} /></span>
+                      </div>
                     </section>
                     <section>
                       <label>Crop Canvas</label>
@@ -6676,17 +6809,18 @@ export default function Home() {
                     <div className="bg-history-actions">
                       <button
                         disabled={!cutEditor.strokes.length}
-                        onClick={() =>
-                          setCutEditor({
-                            ...cutEditor,
-                            strokes: cutEditor.strokes.slice(0, -1),
-                          })
-                        }
+                        onClick={() => setCutEditor((value) => {
+                          const removed = value?.strokes.at(-1);
+                          return value && removed ? { ...value, strokes: value.strokes.slice(0, -1), redoStrokes: [...value.redoStrokes, removed] } : value;
+                        })}
                       >
                         Undo Edit
                       </button>
-                      <button disabled={!cutEditor.strokes.length} onClick={() => setCutEditor({ ...cutEditor, strokes: [] })}>
-                        Reset Edits
+                      <button disabled={!cutEditor.redoStrokes.length} onClick={() => setCutEditor((value) => {
+                        const restored = value?.redoStrokes.at(-1);
+                        return value && restored ? { ...value, strokes: [...value.strokes, restored], redoStrokes: value.redoStrokes.slice(0, -1) } : value;
+                      })}>
+                        Redo Edit
                       </button>
                     </div>
                   </>
@@ -6694,19 +6828,12 @@ export default function Home() {
                   <div className="cutout-stroke-tab">
                     <section>
                       <label>
-                        Stroke Width <b>{strokeDraft.toFixed(1)} cm</b>
+                        Fill Gaps <b>{fillGapsDraft.toFixed(fillGapsDraft < 5 ? 1 : 0)} mm²</b>
                       </label>
-                      <input type="range" min="0" max="3" step=".1" value={strokeDraft} onChange={(e) => setStrokeDraft(+e.target.value)} />
-                      <button onClick={() => (one?.kind === "stroke" ? void updateStroke() : void addStroke())}>Apply Stroke</button>
-                    </section>
-                    <section>
-                      <label>
-                        Fill Gaps <b>{Math.round(fillGapsDraft)} mm²</b>
-                      </label>
-                      <input type="range" min="0" max="100" step="1" value={fillGapsDraft} onChange={(e) => setFillGapsDraft(+e.target.value)} />
+                      <input type="range" min="0" max="30" step={fillGapsDraft < 5 ? ".5" : "1"} value={fillGapsDraft} onChange={(e) => setFillGapsDraft(+e.target.value)} />
                       <button onClick={() => void applyGapPreview()}>Apply Fill Gaps</button>
                     </section>
-                    <p>Stroke creates an outer cutting area. Fill Gaps removes small enclosed holes that would create unnecessary blade movements.</p>
+                    <p>Fill Gaps removes small enclosed holes that would create unnecessary blade movements.</p>
                   </div>
                 )}
               </aside>
