@@ -251,6 +251,7 @@ type CutoutEditor = {
   color: string;
   tool: EditTool | null;
   brush: number;
+  smoothing: number;
   strokes: EditStroke[];
   redoStrokes: EditStroke[];
   crop: { left: number; top: number; right: number; bottom: number };
@@ -275,6 +276,18 @@ const uid = () => Math.random().toString(36).slice(2, 10),
       maximumFractionDigits: 1,
     }),
   clamp = (n: number, a: number, b: number) => Math.max(a, Math.min(b, n));
+const smoothBrushPoints = (points: EditStroke["points"], amount: number) => {
+  if (points.length < 3 || amount <= 0) return points.map((point)=>({...point}));
+  const radius = Math.max(1, Math.round(amount / 10)), passes = Math.max(1, Math.round(amount / 15));
+  let result = points.map((point)=>({...point}));
+  for (let pass=0; pass<passes; pass++) result = result.map((point,index,array)=>{
+    if(index===0||index===array.length-1)return point;
+    const from=Math.max(0,index-radius),to=Math.min(array.length-1,index+radius),window=array.slice(from,to+1),weight=amount/100;
+    const average={x:window.reduce((sum,item)=>sum+item.x,0)/window.length,y:window.reduce((sum,item)=>sum+item.y,0)/window.length};
+    return {x:point.x*(1-weight)+average.x*weight,y:point.y*(1-weight)+average.y*weight};
+  });
+  return result;
+};
 const save = (url: string, name: string) => {
   const a = document.createElement("a");
   a.href = url;
@@ -3140,6 +3153,7 @@ export default function Home() {
       color: chosen.color,
       tool: null,
       brush: 3,
+      smoothing: 5,
       strokes: [],
       redoStrokes: [],
       crop: { left: 0, top: 0, right: 0, bottom: 0 },
@@ -3168,16 +3182,17 @@ export default function Home() {
     const stroke: EditStroke = {
       id,
       tool: cutEditor.tool,
-      brush: cutEditor.brush / Math.max(1, cutEditor.zoom),
+      brush: cutEditor.brush / cutEditor.zoom,
       points: [cutPoint(e)],
     };
     cutDraftStroke.current = stroke;
     if (cutLivePathRef.current) {
       cutLivePathRef.current.setAttribute("class", `edit-brush-stroke ${stroke.tool}`);
-      cutLivePathRef.current.setAttribute("points", `${stroke.points[0].x * 100},${stroke.points[0].y * 100}`);
+      cutLivePathRef.current.setAttribute("points", `${stroke.points[0].x * cutImageSize.w},${stroke.points[0].y * cutImageSize.h}`);
     }
   };
   const moveCutEdit = (e: RPointer<HTMLImageElement>) => {
+    if (!cutEditor) return;
     const cursor = cutPoint(e);
     if (cutCursorRef.current) {
       cutCursorRef.current.style.left = `${cursor.x * 100}%`;
@@ -3189,19 +3204,20 @@ export default function Home() {
     if (last && Math.hypot(cursor.x - last.x, cursor.y - last.y) < 0.0012) return;
     draft.points.push(cursor);
     if (cutFrame.current !== null) return;
+    const smoothing = cutEditor.smoothing;
     cutFrame.current = window.requestAnimationFrame(() => {
       cutFrame.current = null;
       const current = cutDraftStroke.current;
       if (!current) return;
-      const first = current.points[0],
-        lastPoint = current.points.at(-1)!;
+      const shownPoints = ["bridge","erase"].includes(current.tool) ? smoothBrushPoints(current.points,smoothing) : current.points,
+        first = shownPoints[0], lastPoint = shownPoints.at(-1)!;
       if (current.tool === "rectangle" && cutLiveRectRef.current) {
-        cutLiveRectRef.current.setAttribute("x", String(Math.min(first.x, lastPoint.x) * 100));
-        cutLiveRectRef.current.setAttribute("y", String(Math.min(first.y, lastPoint.y) * 100));
-        cutLiveRectRef.current.setAttribute("width", String(Math.abs(lastPoint.x - first.x) * 100));
-        cutLiveRectRef.current.setAttribute("height", String(Math.abs(lastPoint.y - first.y) * 100));
+        cutLiveRectRef.current.setAttribute("x", String(Math.min(first.x, lastPoint.x) * cutImageSize.w));
+        cutLiveRectRef.current.setAttribute("y", String(Math.min(first.y, lastPoint.y) * cutImageSize.h));
+        cutLiveRectRef.current.setAttribute("width", String(Math.abs(lastPoint.x - first.x) * cutImageSize.w));
+        cutLiveRectRef.current.setAttribute("height", String(Math.abs(lastPoint.y - first.y) * cutImageSize.h));
         cutLiveRectRef.current.style.display = "block";
-      } else if (cutLivePathRef.current) cutLivePathRef.current.setAttribute("points", current.points.map((point) => `${point.x * 100},${point.y * 100}`).join(" "));
+      } else if (cutLivePathRef.current) cutLivePathRef.current.setAttribute("points", shownPoints.map((point) => `${point.x * cutImageSize.w},${point.y * cutImageSize.h}`).join(" "));
     });
   };
   const endCutEdit = () => {
@@ -3212,7 +3228,10 @@ export default function Home() {
     setCutActiveStroke(null);
     if (cutLivePathRef.current) cutLivePathRef.current.setAttribute("points", "");
     if (cutLiveRectRef.current) cutLiveRectRef.current.style.display = "none";
-    if (completed) setCutEditor((value) => (value ? { ...value, strokes: [...value.strokes, completed], redoStrokes: [] } : value));
+    if (completed) {
+      const finalStroke = ["bridge","erase"].includes(completed.tool) ? {...completed,points:smoothBrushPoints(completed.points,cutEditor?.smoothing || 5)} : completed;
+      setCutEditor((value) => (value ? { ...value, strokes: [...value.strokes, finalStroke], redoStrokes: [] } : value));
+    }
     if (id) {
       setCutFinishedStroke(id);
       window.setTimeout(() => setCutFinishedStroke((value) => (value === id ? null : value)), 1000);
@@ -7076,8 +7095,8 @@ export default function Home() {
                   >
                     <img className={`cut-tool-${cutEditor.tool} cutout-edge-preview`} src={cutPreview} alt="Cutout edit preview" draggable={false} onLoad={(e) => setCutImageSize(fitEditorImage(e.currentTarget, cutPreviewRef.current))} onPointerDown={startCutEdit} onPointerMove={moveCutEdit} onPointerUp={endCutEdit} onPointerCancel={endCutEdit} onPointerEnter={() => setCutCursor((v) => ({ ...v, visible: true }))} onPointerLeave={() => setCutCursor((v) => ({ ...v, visible: false }))} />
                     {cutEdgeOverlay && <img className="cut-selected-edge" src={cutEdgeOverlay} alt="" draggable={false} />}
-                    <svg className="cut-edit-overlay" viewBox="0 0 100 100" preserveAspectRatio="none">
-                      <polyline ref={cutLivePathRef} points="" className="edit-brush-stroke" style={{ strokeWidth: cutEditor.brush }} />
+                    <svg className="cut-edit-overlay" viewBox={`0 0 ${cutImageSize.w || 100} ${cutImageSize.h || 100}`} preserveAspectRatio="none">
+                      <polyline ref={cutLivePathRef} points="" className="edit-brush-stroke" style={{ strokeWidth: (cutEditor.brush / cutEditor.zoom / 100) * Math.min(cutImageSize.w || 100, cutImageSize.h || 100) }} />
                       <rect ref={cutLiveRectRef} className="eraser-selection" style={{ display: "none" }} />
                     </svg>
                     {cutCursor.visible && cutEditor.tool && ["bridge", "erase", "smooth"].includes(cutEditor.tool) && (
@@ -7087,7 +7106,7 @@ export default function Home() {
                         style={{
                           left: "50%",
                           top: "50%",
-                          width: `${clamp((cutEditor.brush / 100) * Math.min(cutImageSize.w, cutImageSize.h), 2, 160)}px`,
+                          width: `${(cutEditor.brush / cutEditor.zoom / 100) * Math.min(cutImageSize.w || 100, cutImageSize.h || 100)}px`,
                           aspectRatio: "1",
                         }}
                       />
@@ -7164,9 +7183,14 @@ export default function Home() {
                       </label>
                       <div className="brush-size-control">
                         <input type="range" min=".3" max="20" step=".1" value={cutEditor.brush} onChange={(e) => setCutEditor({ ...cutEditor, brush: +e.target.value })} />
-                        <span className="brush-size-preview"><i style={{ width: `${clamp(cutEditor.brush * 1.4, 5, 34)}px`, height: `${clamp(cutEditor.brush * 1.4, 5, 34)}px` }} /></span>
+                        <span className="brush-size-preview" style={{ width: `${Math.max(38, (cutEditor.brush / 100) * Math.min(cutImageSize.w || 100, cutImageSize.h || 100) + 10)}px`, height: `${Math.max(38, (cutEditor.brush / 100) * Math.min(cutImageSize.w || 100, cutImageSize.h || 100) + 10)}px` }}><i style={{ width: `${(cutEditor.brush / 100) * Math.min(cutImageSize.w || 100, cutImageSize.h || 100)}px`, height: `${(cutEditor.brush / 100) * Math.min(cutImageSize.w || 100, cutImageSize.h || 100)}px` }} /></span>
                       </div>
                     </section>
+                    {cutEditor.tool && ["bridge","erase"].includes(cutEditor.tool) && <section className="brush-smoothing-control">
+                      <label>Smoothing <b>{cutEditor.smoothing}%</b></label>
+                      <input type="range" min="5" max="40" step="1" value={cutEditor.smoothing} onChange={(event)=>setCutEditor({...cutEditor,smoothing:+event.target.value})}/>
+                      <small>Straightens hand jitter without changing the visible brush diameter.</small>
+                    </section>}
                     <section>
                       <label>Crop Canvas</label>
                       <button className={cutCropActive ? "crop-mode active" : "crop-mode"} onClick={() => setCutCropActive((value) => !value)}>
@@ -7466,8 +7490,8 @@ export default function Home() {
                       }
                     />
                     <small>Smooths both outer and inner alpha contours at pixel level. The result remains fully opaque or transparent.</small>
-                  </div>
-                </section>
+                      </div>
+                    </section>
                 <section>
                   <label>
                     Remove Speckles <b>{bgEditor.speckles} px</b>
