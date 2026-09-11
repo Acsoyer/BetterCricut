@@ -42,6 +42,7 @@ import "./v88.css";
 import "./v89.css";
 import "./v90.css";
 import "./v93.css";
+import "./v95.css";
 
 export default function EditorLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();

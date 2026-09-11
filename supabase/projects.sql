@@ -53,3 +53,21 @@ end $$;
 drop trigger if exists projects_enforce_limits on public.projects;
 create trigger projects_enforce_limits before insert or update on public.projects
 for each row execute function public.enforce_project_limits();
+
+-- Persistent archive for every AI-generated text and illustration.
+create table if not exists public.ai_generations (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  mode text not null check (mode in ('text', 'image')),
+  name text not null,
+  src text not null,
+  created_at timestamptz not null default now()
+);
+alter table public.ai_generations enable row level security;
+drop policy if exists "Users can view their own AI generations" on public.ai_generations;
+drop policy if exists "Users can create their own AI generations" on public.ai_generations;
+drop policy if exists "Users can delete their own AI generations" on public.ai_generations;
+create policy "Users can view their own AI generations" on public.ai_generations for select using (auth.uid() = user_id);
+create policy "Users can create their own AI generations" on public.ai_generations for insert with check (auth.uid() = user_id);
+create policy "Users can delete their own AI generations" on public.ai_generations for delete using (auth.uid() = user_id);
+create index if not exists ai_generations_user_created_idx on public.ai_generations (user_id, created_at desc);

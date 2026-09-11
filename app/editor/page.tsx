@@ -102,8 +102,9 @@ type Layer = {
   cutRiskReason?: string;
   cutRiskOverlay?: string;
   groupId?: string;
-  stickerOffset?: { enabled: boolean; sizeMm: number; color: string; smoothness: number };
+  stickerOffset?: { enabled: boolean; sizeMm: number; color: string; smoothness: number; baseSrc: string; baseX: number; baseY: number; baseW: number; baseH: number; previewSrc: string };
 };
+type AIGeneration = { id: string; mode: "text" | "image"; name: string; src: string; created_at: string };
 type SavedProject = {
   id: string;
   name: string;
@@ -1615,12 +1616,12 @@ const packLayers = (layers: Layer[]) => {
     if (!id) { id = `asset-${bySource.size + 1}`; bySource.set(src, id); assets[id] = src; }
     return `asset://${id}`;
   };
-  const packed = layers.map((layer) => ({ ...layer, src: ref(layer.src)!, originalSrc: ref(layer.originalSrc)!, innerSrc: ref(layer.innerSrc), shapeBaseSrc: ref(layer.shapeBaseSrc), steps: layer.steps.map((step) => ({ ...step, before: step.before ? { ...step.before, src: ref(step.before.src)! } : undefined, snapshot: { ...step.snapshot, src: ref(step.snapshot.src)! } })) }));
+  const packed = layers.map((layer) => ({ ...layer, src: ref(layer.src)!, originalSrc: ref(layer.originalSrc)!, innerSrc: ref(layer.innerSrc), shapeBaseSrc: ref(layer.shapeBaseSrc), stickerOffset: layer.stickerOffset ? { ...layer.stickerOffset, baseSrc: ref(layer.stickerOffset.baseSrc)!, previewSrc: ref(layer.stickerOffset.previewSrc)! } : undefined, steps: layer.steps.map((step) => ({ ...step, before: step.before ? { ...step.before, src: ref(step.before.src)! } : undefined, snapshot: { ...step.snapshot, src: ref(step.snapshot.src)! } })) }));
   return { layers: packed, assets };
 };
 const unpackLayers = (data: SavedProject["data"]) => {
   const resolve = (src?: string) => src?.startsWith("asset://") ? data.assets?.[src.slice(8)] || "" : src;
-  return (data.layers || []).map((layer) => ({ ...layer, src: resolve(layer.src)!, originalSrc: resolve(layer.originalSrc)!, innerSrc: resolve(layer.innerSrc), shapeBaseSrc: resolve(layer.shapeBaseSrc), steps: (layer.steps || []).map((step) => ({ ...step, before: step.before ? { ...step.before, src: resolve(step.before.src)! } : undefined, snapshot: { ...step.snapshot, src: resolve(step.snapshot.src)! } })) }));
+  return (data.layers || []).map((layer) => ({ ...layer, src: resolve(layer.src)!, originalSrc: resolve(layer.originalSrc)!, innerSrc: resolve(layer.innerSrc), shapeBaseSrc: resolve(layer.shapeBaseSrc), stickerOffset: layer.stickerOffset ? { ...layer.stickerOffset, baseSrc: resolve(layer.stickerOffset.baseSrc)!, previewSrc: resolve(layer.stickerOffset.previewSrc)! } : undefined, steps: (layer.steps || []).map((step) => ({ ...step, before: step.before ? { ...step.before, src: resolve(step.before.src)! } : undefined, snapshot: { ...step.snapshot, src: resolve(step.snapshot.src)! } })) }));
 };
 const projectLayerPreview = (project: SavedProject, src: string) => src.startsWith("asset://") ? project.data?.assets?.[src.slice(8)] || "" : src;
 const formatProjectSize = (project: SavedProject) => {
@@ -1640,7 +1641,7 @@ async function createProjectThumbnail(layers: Layer[]) {
   const scale = Math.min(160 / Math.max(b.w, 0.1), 100 / Math.max(b.h, 0.1));
   for (const layer of visible) {
     try {
-      const img = await getImage(layer.src),
+      const img = await getImage(layer.stickerOffset?.previewSrc || layer.src),
         w = layer.w * scale,
         h = layer.h * scale,
         cx = 10 + (layer.x - b.x) * scale + w / 2,
@@ -1656,10 +1657,10 @@ async function createProjectThumbnail(layers: Layer[]) {
   return canvas.toDataURL("image/webp", 0.62);
 }
 async function renderStickerOffset(layer: Layer, multiplier = 1) {
-  const style = layer.stickerOffset!, scale = DPI * multiplier / 2.54, pad = Math.max(1, Math.round((style.sizeMm / 10) * scale)), w = Math.max(1, Math.round(layer.w * scale)), h = Math.max(1, Math.round(layer.h * scale)), source = await getImage(layer.src), output = document.createElement("canvas");
+  const style = layer.stickerOffset!, scale = DPI * multiplier / 2.54, pad = Math.max(1, Math.round((style.sizeMm / 10) * scale)), baseW = style.baseW || Math.max(.01, layer.w - style.sizeMm / 5), baseH = style.baseH || Math.max(.01, layer.h - style.sizeMm / 5), w = Math.max(1, Math.round(baseW * scale)), h = Math.max(1, Math.round(baseH * scale)), source = await getImage(style.baseSrc || layer.src), output = document.createElement("canvas");
   output.width = w + pad * 2; output.height = h + pad * 2;
   const context = output.getContext("2d")!; context.imageSmoothingEnabled = true; context.imageSmoothingQuality = "high";
-  const steps = Math.max(32, Math.min(128, Math.ceil(pad * Math.PI * 2)));
+  const steps = Math.max(64, Math.min(256, Math.ceil(pad * Math.PI * 4)));
   context.fillStyle = style.color;
   for (let index = 0; index < steps; index++) { const angle = index / steps * Math.PI * 2; context.drawImage(source, pad + Math.cos(angle) * pad, pad + Math.sin(angle) * pad, w, h); }
   context.globalCompositeOperation = "source-in"; context.fillRect(0, 0, output.width, output.height); context.globalCompositeOperation = "source-over"; context.drawImage(source, pad, pad, w, h);
@@ -1677,6 +1678,10 @@ const lighten = (hex: string, amount = 0.34) => {
         .padStart(2, "0"),
     )
     .join("")}`;
+};
+const aiArtworkName = (value: string) => {
+  const title = value.trim().replace(/\s+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+  return `${title.length > 13 ? `${title.slice(0, 13).trim()}..` : title || "Generated Art"} AI`;
 };
 const bounds = (ls: Layer[]) => {
   if (!ls.length) return { x: 0, y: 0, w: 0, h: 0 };
@@ -1732,6 +1737,7 @@ export default function Home() {
     [unit, setUnit] = useState<Unit>("cm"),
     [pageColor,setPageColor]=useState<PageColor>("white"),
     [pageSetupOpen, setPageSetupOpen] = useState(false),
+    [settingsSection, setSettingsSection] = useState<"size" | "orientation" | "units" | "color" | "grid" | "safe" | null>(null),
     [safeMargin, setSafeMargin] = useState(1),
     [safeOpen, setSafeOpen] = useState(false),
     [gridVisible, setGridVisible] = useState(true),
@@ -1742,7 +1748,7 @@ export default function Home() {
     [textLineCount, setTextLineCount] = useState<1 | 2 | 3 | 4>(3),
     [textLines, setTextLines] = useState(["", "", "", ""]),
     [textExtraPrompt, setTextExtraPrompt] = useState(""),
-    [connectEverything, setConnectEverything] = useState(false),
+    [connectEverything, setConnectEverything] = useState(true),
     [textDetailsOpen, setTextDetailsOpen] = useState(false),
     [optionGallery, setOptionGallery] = useState<{ kind: "font" | "style"; index: number } | null>(null),
     [imageArtStyle, setImageArtStyle] = useState<"watercolor" | "cartoon" | "baby" | "girly" | "storybook" | "paper-cut">("watercolor"),
@@ -1753,6 +1759,11 @@ export default function Home() {
     [hasGeneratedText, setHasGeneratedText] = useState(false),
     [generationBusy, setGenerationBusy] = useState<"text" | "image" | null>(null),
     [generatedPreview, setGeneratedPreview] = useState<string | null>(null),
+    [aiLibrary, setAiLibrary] = useState<AIGeneration[]>([]),
+    [aiLibraryOpen, setAiLibraryOpen] = useState(false),
+    [aiLibraryTab, setAiLibraryTab] = useState<"text" | "image">("image"),
+    [aiLibraryIndex, setAiLibraryIndex] = useState<number | null>(null),
+    [stickerPreviewSrc, setStickerPreviewSrc] = useState(""),
     [splashOpen, setSplashOpen] = useState(false),
     [hideSplashOnStartup, setHideSplashOnStartup] = useState(false),
     [cutoutMenuOpen, setCutoutMenuOpen] = useState(false),
@@ -1949,6 +1960,8 @@ export default function Home() {
         setHasGeneratedText(true);
         setGeneratedTextImages((images) => images.concat(result.image!));
       } else setGeneratedArtImages((images) => images.concat(result.image!));
+      const generation: AIGeneration = { id: crypto.randomUUID(), mode, name: aiArtworkName(mode === "text" ? lines.join(" ") : imagePrompt), src: result.image, created_at: new Date().toISOString() };
+      void rememberAIGeneration(generation);
       setGeneratedPreview(result.image);
       addSessionLog("AI image generated", `${mode === "text" ? "Text" : "Illustration"} · ${mode === "text" ? textFontStyle : imageArtStyle} · 1024 × 1024 px`);
       setNotice("Image created successfully");
@@ -2009,6 +2022,28 @@ export default function Home() {
   }, [selected]);
   const mutate = (id: string, fn: (l: Layer) => Layer) => setLayers((v) => v.map((l) => (l.id === id ? fn(l) : l)));
   const projectCacheKey = session?.user?.id ? `cake-topper-project-index:${session.user.id}` : "";
+  const aiCacheKey = session?.user?.id ? `cake-topper-ai-library:${session.user.id}` : "";
+  const projectsStorageBytes = useMemo(() => projects.reduce((sum, project) => sum + (project.byte_size || projectBytes(project.data || {})), 0), [projects]);
+  const cacheAIGenerations = (items: AIGeneration[]) => {
+    if (!aiCacheKey) return;
+    try { localStorage.setItem(aiCacheKey, JSON.stringify(items)); } catch {}
+  };
+  const refreshAIGenerations = async () => {
+    if (!session?.user) return;
+    if (aiCacheKey) try { const cached = localStorage.getItem(aiCacheKey); if (cached) setAiLibrary(JSON.parse(cached)); } catch {}
+    const { data, error } = await supabase.from("ai_generations").select("id,mode,name,src,created_at").eq("user_id", session.user.id).order("created_at", { ascending: false });
+    if (!error && data) { const items = data as AIGeneration[]; setAiLibrary(items); cacheAIGenerations(items); }
+  };
+  const rememberAIGeneration = async (item: AIGeneration) => {
+    setAiLibrary((items) => { const next = [item, ...items.filter((entry) => entry.id !== item.id)]; cacheAIGenerations(next); return next; });
+    if (!session?.user) return;
+    await supabase.from("ai_generations").insert({ ...item, user_id: session.user.id });
+  };
+  const deleteAIGeneration = async (id: string) => {
+    setAiLibrary((items) => { const next = items.filter((entry) => entry.id !== id); cacheAIGenerations(next); return next; });
+    if (session?.user) await supabase.from("ai_generations").delete().eq("id", id).eq("user_id", session.user.id);
+    setAiLibraryIndex(null);
+  };
   const refreshProjects = async (showLoading = projects.length === 0) => {
     if (showLoading) setProjectsLoading(true);
     let { data, error } = await supabase.from("projects").select("id,name,updated_at,thumbnail,byte_size,layer_count,is_autosave").order("updated_at", { ascending: false }) as { data: unknown[] | null; error: { message?: string } | null };
@@ -2018,7 +2053,7 @@ export default function Home() {
       setNotice("Projects could not be loaded. Please try again.");
       return;
     }
-    const next = (data || []) as SavedProject[];
+    const next = ((data || []) as SavedProject[]).map((project) => ({ ...project, thumbnail: project.thumbnail || project.data?.thumbnail, byte_size: project.byte_size || projectBytes(project.data || {}), layer_count: project.layer_count ?? project.data?.layers?.length ?? 0 }));
     await Promise.all(next.map((project) => project.thumbnail || project.data?.thumbnail).filter((src): src is string => Boolean(src)).map((src)=>getImage(src).catch(()=>null)));
     setProjectsLoading(false);
     setProjects(next);
@@ -2216,21 +2251,37 @@ export default function Home() {
       setSession(data.session);
       if (data.session) {
         try { const cached = localStorage.getItem(`cake-topper-project-index:${data.session.user.id}`); if (cached) { setProjects(JSON.parse(cached)); setProjectsLoading(false); } } catch {}
+        try { const cached = localStorage.getItem(`cake-topper-ai-library:${data.session.user.id}`); if (cached) setAiLibrary(JSON.parse(cached)); } catch {}
         void refreshProjects();
       }
     });
-    const { data } = supabase.auth.onAuthStateChange((_event, next) => {
+    const { data } = supabase.auth.onAuthStateChange((event, next) => {
       setSession(next);
-      if (next) void refreshProjects();
-      else setProjects([]);
+      if (next) {
+        try { const cached = localStorage.getItem(`cake-topper-project-index:${next.user.id}`); if (cached) { setProjects(JSON.parse(cached)); setProjectsLoading(false); } } catch {}
+        try { const cached = localStorage.getItem(`cake-topper-ai-library:${next.user.id}`); if (cached) setAiLibrary(JSON.parse(cached)); } catch {}
+        if (event !== "TOKEN_REFRESHED") void refreshProjects(false);
+      } else if (event === "SIGNED_OUT") { setProjects([]); setAiLibrary([]); }
     });
     return () => data.subscription.unsubscribe();
   }, []);
+  useEffect(() => { if (session?.user) void refreshAIGenerations(); }, [session?.user.id]);
   useEffect(() => {
     if (!session) return;
     const timer = window.setInterval(() => autosaveRunner.current(), 300000);
     return () => window.clearInterval(timer);
   }, [session]);
+  useEffect(() => {
+    if (!imageEditor || imageTab !== "sticker") { setStickerPreviewSrc(""); return; }
+    const target = layers.find((layer) => layer.id === imageEditor.layerId); if (!target) return;
+    const prior = target.stickerOffset, baseSrc = prior?.baseSrc || imageEditor.source, baseW = prior?.baseW || target.w, baseH = prior?.baseH || target.h;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      const draft: Layer = { ...target, src: baseSrc, w: baseW, h: baseH, stickerOffset: { enabled: true, sizeMm: stickerSizeMm, color: stickerColor, smoothness: .7, baseSrc, baseX: prior?.baseX ?? target.x, baseY: prior?.baseY ?? target.y, baseW, baseH, previewSrc: "" } };
+      void renderStickerOffset(draft, 1).then((canvas) => { if (!cancelled) setStickerPreviewSrc(canvas.toDataURL("image/png")); });
+    }, 70);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [imageEditor?.layerId, imageTab, stickerSizeMm, stickerColor]);
   useEffect(() => {
     if (!bgEditor) return;
     let cancelled = false;
@@ -2343,6 +2394,7 @@ export default function Home() {
   };
   useEffect(() => {
     const close = (e: PointerEvent) => {
+      if (!(e.target as HTMLElement).closest(".page-setup-slot")) { setPageSetupOpen(false); setSettingsSection(null); }
       if (!(e.target as HTMLElement).closest(".wrap")) {
         setAlignOpen(false);
         setColorOpen(false);
@@ -2518,7 +2570,7 @@ export default function Home() {
       y: clamp((s.top + s.height / 2 - c.top) / scale - h / 2, SAFE.y, Math.max(SAFE.y, SAFE.y + SAFE.h - h)),
     };
   };
-  const importFiles = async (files: File[], convertTextToCutout = false) => {
+  const importFiles = async (files: File[], convertTextToCutout = false, generatedName?: string) => {
     let imported = 0;
     for (const f of files) {
       if (!/image\/(jpeg|png|svg\+xml|webp)/.test(f.type)) continue;
@@ -2545,7 +2597,7 @@ export default function Home() {
       setLayers((v) =>
         v.concat({
           id,
-          name: clean(f.name),
+          name: generatedName || clean(f.name),
           src: cutoutSrc,
           originalSrc: src,
           visible: true,
@@ -2575,13 +2627,13 @@ export default function Home() {
     await importFiles(Array.from(e.target.files || []));
     e.target.value = "";
   };
-  const addGeneratedAsset = async (src: string) => {
+  const addGeneratedAsset = async (src: string, generatedName?: string, mode: "text" | "image" = createImageMode === "text" ? "text" : "image") => {
     try {
       const response = await fetch(new URL(src, window.location.origin));
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const blob = await response.blob(),
         filename = src.startsWith("data:") ? "generated-cake-topper.png" : (src.split("/").pop() || "generated-cake-topper.png").split("?")[0];
-      const imported = await importFiles([new window.File([blob], filename, { type: "image/png" })], createImageMode === "text");
+      const imported = await importFiles([new window.File([blob], filename, { type: "image/png" })], mode === "text", generatedName);
       if (imported !== 1) throw new Error("The generated PNG was not accepted by the canvas importer");
       setGeneratedPreview(null);
       setAddNewOpen(false);
@@ -3314,9 +3366,10 @@ export default function Home() {
     if (!chosen || ["vector", "stroke", "acetate"].includes(chosen.kind)) return;
     setImageEditorSize({ w: 0, h: 0 });
     setImageTab("edit");
+    if (chosen.stickerOffset?.enabled) { setStickerSizeMm(chosen.stickerOffset.sizeMm); setStickerColor(chosen.stickerOffset.color); }
     setImageEditor({
       layerId: chosen.id,
-      source: chosen.src,
+      source: chosen.stickerOffset?.baseSrc || chosen.src,
       crop: { left: 0, top: 0, right: 0, bottom: 0 },
       upscale: 1,
       tool: "crop",
@@ -4827,11 +4880,26 @@ export default function Home() {
     if (!EyeDropperCtor) return setNotice("Color picker is not supported by this browser");
     try { const { sRGBHex } = await new EyeDropperCtor().open(); setStickerColor(sRGBHex); } catch {}
   };
-  const applyStickerStyle = () => {
+  const removeStickerStyle = (target: Layer) => {
+    const style = target.stickerOffset;
+    if (!style) return;
+    mutate(target.id, (layer) => ({ ...layer, src: style.baseSrc || layer.src, x: style.baseX ?? layer.x, y: style.baseY ?? layer.y, w: style.baseW || layer.w, h: style.baseH || layer.h, stickerOffset: undefined }));
+    setStickerPreviewSrc(""); setNotice("Sticker offset removed");
+  };
+  const applyStickerStyle = async () => {
     if (!imageEditor) return;
     const target = layers.find((layer) => layer.id === imageEditor.layerId); if (!target) return;
-    mutate(target.id, (layer) => ({ ...layer, stickerOffset: { enabled: true, sizeMm: stickerSizeMm, color: stickerColor, smoothness: 0.7 } }));
+    const previous = target.stickerOffset, baseSrc = previous?.baseSrc || target.src, baseX = previous?.baseX ?? target.x, baseY = previous?.baseY ?? target.y, baseW = previous?.baseW || target.w, baseH = previous?.baseH || target.h,
+      draft: Layer = { ...target, src: baseSrc, x: baseX, y: baseY, w: baseW, h: baseH, stickerOffset: { enabled: true, sizeMm: stickerSizeMm, color: stickerColor, smoothness: 0.7, baseSrc, baseX, baseY, baseW, baseH, previewSrc: "" } },
+      previewSrc = (await renderStickerOffset(draft, 1)).toDataURL("image/png"), padCm = stickerSizeMm / 10;
+    mutate(target.id, (layer) => ({ ...layer, src: baseSrc, x: baseX - padCm, y: baseY - padCm, w: baseW + padCm * 2, h: baseH + padCm * 2, stickerOffset: { ...draft.stickerOffset!, previewSrc } }));
     addSessionLog("Sticker offset applied", `${target.name} · ${stickerSizeMm.toFixed(1)} mm · ${stickerColor}`); setImageEditor(null); setBgEditor(null); setNotice("Editable sticker offset applied");
+  };
+  const bakeStickerImage = async () => {
+    if (!one?.stickerOffset?.enabled) return;
+    const src = one.stickerOffset.previewSrc || (await renderStickerOffset(one, 1)).toDataURL("image/png"), image = await getImage(src);
+    mutate(one.id, (layer) => ({ ...layer, src, originalSrc: src, naturalW: image.naturalWidth, naturalH: image.naturalHeight, stickerOffset: undefined }));
+    addSessionLog("Sticker offset baked", `${one.name} became one transparent PNG.`); setNotice("Sticker offset baked into image");
   };
   const ungroupSelection = () => {
     if (!picked.some((layer) => layer.groupId)) return;
@@ -5087,16 +5155,16 @@ export default function Home() {
       <div className="sub-toolbar">
         <div className="sub-left">
           <div className="wrap page-setup-slot">
-            <button onClick={() => setPageSetupOpen((value) => !value)}>
+            <button onClick={() => { setPageSetupOpen((value) => !value); setSettingsSection(null); }}>
               <SlidersHorizontal /> Settings <ChevronDown />
             </button>
             {pageSetupOpen && (
               <div className="pop page-setup-menu setup-root">
                 <div className="setup-group">
-                  <button>
+                  <button onClick={()=>setSettingsSection(settingsSection === "size" ? null : "size")}>
                     Page Size <ChevronDown />
                   </button>
-                  <div className="setup-submenu">
+                  <div className={`setup-submenu ${settingsSection === "size" ? "open" : ""}`}>
                     {(["a4", "letter", "a5", "full"] as PageSize[]).map((size) => (
                       <button
                         key={size}
@@ -5105,6 +5173,8 @@ export default function Home() {
                           setPageSize(size);
                           setPageMode(size === "full" ? "full" : pageMode === "landscape" ? "landscape" : "portrait");
                           setSelected([]);
+                          setPageSetupOpen(false);
+                          setSettingsSection(null);
                         }}
                       >
                         <b>{PAGE_SIZES[size].label}</b>
@@ -5114,30 +5184,30 @@ export default function Home() {
                   </div>
                 </div>
                 <div className="setup-group">
-                  <button>Orientation <ChevronDown /></button>
-                  <div className="setup-submenu">
+                  <button onClick={()=>setSettingsSection(settingsSection === "orientation" ? null : "orientation")}>Orientation <ChevronDown /></button>
+                  <div className={`setup-submenu ${settingsSection === "orientation" ? "open" : ""}`}>
                     {(["portrait", "landscape"] as const).map((orientation) => <button key={orientation} disabled={pageSize === "full"} className={pageMode === orientation ? "active" : ""} onClick={() => { setPageMode(orientation); setPageSetupOpen(false); setSelected([]); }}><b>{orientation === "portrait" ? "Portrait" : "Landscape"}</b></button>)}
                   </div>
                 </div>
                 <div className="setup-group">
-                  <button>Units <ChevronDown /></button>
-                  <div className="setup-submenu">
+                  <button onClick={()=>setSettingsSection(settingsSection === "units" ? null : "units")}>Units <ChevronDown /></button>
+                  <div className={`setup-submenu ${settingsSection === "units" ? "open" : ""}`}>
                     {(["cm", "in"] as Unit[]).map((value) => <button key={value} className={unit === value ? "active" : ""} onClick={() => { setUnit(value); setPageSetupOpen(false); }}><b>{value === "cm" ? "Centimeters" : "Inches"}</b></button>)}
                   </div>
                 </div>
                 <div className="setup-group page-color-group">
-                  <button>
+                  <button onClick={()=>setSettingsSection(settingsSection === "color" ? null : "color")}>
                     Page Color <ChevronDown />
                   </button>
-                  <div className="setup-submenu page-color-submenu">
+                  <div className={`setup-submenu page-color-submenu ${settingsSection === "color" ? "open" : ""}`}>
                     {(Object.keys(PAGE_COLORS) as PageColor[]).map(value=><button key={value} className={pageColor===value?"active":""} onClick={()=>{setPageColor(value);setPageSetupOpen(false)}}><i style={{background:PAGE_COLORS[value].color}} className={value==="canson"?"paper-swatch":""}/><b>{PAGE_COLORS[value].label}</b></button>)}
                   </div>
                 </div>
                 <div className="setup-group">
-                  <button>
+                  <button onClick={()=>setSettingsSection(settingsSection === "grid" ? null : "grid")}>
                     Grid <ChevronDown />
                   </button>
-                  <div className="setup-submenu">
+                  <div className={`setup-submenu ${settingsSection === "grid" ? "open" : ""}`}>
                     <button
                       className={gridVisible ? "active" : ""}
                       onClick={() => {
@@ -5159,10 +5229,10 @@ export default function Home() {
                   </div>
                 </div>
                 <div className="setup-group">
-                  <button>
+                  <button onClick={()=>setSettingsSection(settingsSection === "safe" ? null : "safe")}>
                     Safe Area <ChevronDown />
                   </button>
-                  <div className="setup-submenu">
+                  <div className={`setup-submenu ${settingsSection === "safe" ? "open" : ""}`}>
                     {[0, 0.5, 1].map((margin) => (
                       <button
                         key={margin}
@@ -5181,7 +5251,7 @@ export default function Home() {
             )}
           </div>
         </div>
-        <div className="sub-center">
+        <div className={`sub-center ${pageSetupOpen ? "settings-hidden" : ""}`}>
           <div className="wrap color-slot">
             <button disabled={!vectorsOnly} className="color-current" style={{ "--swatch": one?.color || DARK } as React.CSSProperties} onClick={() => setColorOpen((v) => !v)}>
               <Palette /> Color <ChevronDown className="tiny-chevron" />
@@ -5237,6 +5307,7 @@ export default function Home() {
           <button className="bake-cutout" disabled={!one || !["vector", "stroke"].includes(one.kind)} onClick={() => void makeGapsPermanent()}>
             <Sparkles /> Bake Cutout
           </button>
+          {one?.stickerOffset?.enabled && <button className="bake-image" onClick={() => void bakeStickerImage()}><Sparkles /> Bake Image</button>}
           <button disabled={picked.length < 2 && !picked.some((layer)=>layer.groupId)} onClick={picked.some((layer)=>layer.groupId) ? ungroupSelection : groupSelection}>
             <Layers3 /> {picked.some((layer)=>layer.groupId) ? "Ungroup" : "Group"}
           </button>
@@ -5245,6 +5316,7 @@ export default function Home() {
           </button>
         </div>
         <div className="save-actions">
+          <input className="top-project-name" value={projectName} maxLength={80} onChange={(event)=>setProjectName(event.target.value)} aria-label="Project name" />
           <button className="new-project" onClick={newProject} title="Start a new project">
             <Plus /> New Project
           </button>
@@ -5311,6 +5383,10 @@ export default function Home() {
             )}
           </div>
           <div className="left-future">
+            <button className="left-ai-library" onClick={()=>{setAiLibraryOpen(true);setProjectsOpen(false);setAccountOpen(false)}}>
+              <Sparkles />
+              <small>My AI Gen</small>
+            </button>
             <button
               className="left-projects"
               onClick={() => {
@@ -5473,7 +5549,7 @@ export default function Home() {
                       transform: `rotate(${l.rotation}deg)`,
                     }}
                   >
-                    <img className={["vector", "stroke"].includes(l.kind) ? "cutout-edge-preview" : l.stickerOffset?.enabled ? "sticker-offset-layer" : ""} src={["vector", "stroke"].includes(l.kind) ? scalableSvgPreview(l.src) : l.src} alt="" draggable={false} style={{ opacity: l.acetateOn ? 0.8 : 1, ...(l.stickerOffset?.enabled ? { "--offset-color": l.stickerOffset.color, "--offset-px": `${Math.max(1,(l.stickerOffset.sizeMm/10)*scale)}px` } as React.CSSProperties : {}) }} />
+                    <img className={["vector", "stroke"].includes(l.kind) ? "cutout-edge-preview" : ""} src={["vector", "stroke"].includes(l.kind) ? scalableSvgPreview(l.src) : l.stickerOffset?.previewSrc || l.src} alt="" draggable={false} style={{ opacity: l.acetateOn ? 0.8 : 1 }} />
                   </div>
                 ))}
               {shapeImageEditing &&
@@ -5737,7 +5813,7 @@ export default function Home() {
                   {l.visible ? <Eye /> : <EyeOff />}
                 </button>
                 <div className="thumb">
-                  <img src={l.src} alt="" />
+                  <img src={l.stickerOffset?.previewSrc || l.src} alt="" />
                 </div>
                 <div className="info">
                   <input
@@ -5793,6 +5869,13 @@ export default function Home() {
                     </button>
                   </div>
                 )}
+                {l.stickerOffset?.enabled && (
+                  <div className="sticker-layer-style" onClick={(event)=>event.stopPropagation()} onDoubleClick={()=>{setSelected([l.id]);openImageEditor(l);setImageTab("sticker")}}>
+                    <span className="sticker-style-swatch" style={{background:l.stickerOffset.color}} />
+                    <button className="sticker-style-name" onClick={()=>{setSelected([l.id]);openImageEditor(l);window.setTimeout(()=>setImageTab("sticker"),0)}}><b>Sticker Offset</b><small>{l.stickerOffset.sizeMm.toFixed(1)} mm</small></button>
+                    <button className="sticker-style-remove" title="Remove Sticker Offset" onClick={()=>removeStickerStyle(l)}>×</button>
+                  </div>
+                )}
                 {l.steps.length > 0 && (
                   <div className="layer-styles" onClick={(e) => e.stopPropagation()}>
                     {l.steps.map((step, index) => (
@@ -5837,9 +5920,18 @@ export default function Home() {
           </footer>
         </aside>
       </section>
+      {aiLibraryOpen && (()=>{const visible=aiLibrary.filter((item)=>item.mode===aiLibraryTab),active=aiLibraryIndex===null?null:visible[aiLibraryIndex],move=(amount:number)=>setAiLibraryIndex((index)=>index===null?0:(index+amount+visible.length)%visible.length);return (
+        <div className="ai-library-modal" role="dialog" aria-modal="true" aria-label="My AI Generations" onPointerDown={()=>{setAiLibraryOpen(false);setAiLibraryIndex(null)}}>
+          <div className="ai-library-dialog" onPointerDown={(event)=>event.stopPropagation()}>
+            <header><div><b>My AI Generations</b><small>Your generated artwork stays available here.</small></div><button onClick={()=>setAiLibraryOpen(false)}><X/></button></header>
+            <nav><button className={aiLibraryTab==="text"?"active":""} onClick={()=>{setAiLibraryTab("text");setAiLibraryIndex(null)}}>Text</button><button className={aiLibraryTab==="image"?"active":""} onClick={()=>{setAiLibraryTab("image");setAiLibraryIndex(null)}}>Images</button></nav>
+            <div className="ai-library-grid">{visible.length?visible.map((item,index)=><article key={item.id}><button className="ai-library-preview" onClick={()=>setAiLibraryIndex(index)}><img src={item.src} alt={item.name}/></button><div><b>{item.name}</b><small>{new Date(item.created_at).toLocaleString()}</small></div><button className="ai-library-delete" title="Delete" onClick={()=>void deleteAIGeneration(item.id)}><Trash2/></button></article>):<div className="ai-library-empty"><Sparkles/><b>No {aiLibraryTab} generations yet</b><span>New AI artwork will be saved here automatically.</span></div>}</div>
+            {active&&<div className="ai-library-lightbox" onPointerDown={()=>setAiLibraryIndex(null)}><div onPointerDown={(event)=>event.stopPropagation()}><button className="gallery-close" onClick={()=>setAiLibraryIndex(null)}><X/></button><button className="gallery-arrow previous" onClick={()=>move(-1)}>←</button><figure><img src={active.src} alt={active.name}/><figcaption><b>{active.name}</b><small>{new Date(active.created_at).toLocaleString()}</small></figcaption></figure><button className="gallery-arrow next" onClick={()=>move(1)}>→</button><button className="add-generated" onClick={()=>void addGeneratedAsset(active.src,active.name,active.mode)}><Plus/> Add to Page</button></div></div>}
+          </div>
+        </div>);})()}
       {projectsOpen && (
-        <div className="project-modal" role="dialog" aria-modal="true" aria-label="My Projects">
-          <div className="project-dialog">
+        <div className="project-modal" role="dialog" aria-modal="true" aria-label="My Projects" onPointerDown={()=>setProjectsOpen(false)}>
+          <div className="project-dialog" onPointerDown={(event)=>event.stopPropagation()}>
             <header>
               <div>
                 <b>My Projects</b>
@@ -5896,10 +5988,10 @@ export default function Home() {
                         </button>
                         <div className="project-quick-actions">
                           <button className="open" onClick={() => requestOpenProject(project)} title="Open project">
-                            <FolderOpen />
+                            <FolderOpen /> <span>Open</span>
                           </button>
                           <button onClick={() => setPendingOverwriteProject(project)} title="Overwrite with current">
-                            <Replace />
+                            <Replace /> <span>Overwrite</span>
                           </button>
                           <button className="delete" onClick={() => void deleteProject(project.id)} title="Delete project">
                             <Trash2 />
@@ -6072,6 +6164,7 @@ export default function Home() {
                 <b>{projects.length}</b>
                 <small>Saved projects</small>
               </span>
+              <span className="account-storage"><b>{(projectsStorageBytes/1048576).toFixed(1)} / 20 MB</b><small>Storage used</small></span>
             </div>
             <button className="sign-out" onClick={() => void supabase.auth.signOut()}>
               <LogOut /> Sign Out
@@ -6274,7 +6367,7 @@ export default function Home() {
             )}
           </div>
           {optionGallery&&(()=>{const options=optionGallery.kind==="font"?TEXT_FONT_OPTIONS:IMAGE_STYLE_OPTIONS,current=options[optionGallery.index],previous=(optionGallery.index-1+options.length)%options.length,next=(optionGallery.index+1)%options.length;return <div className={`option-gallery ${whiteStickerOffset && optionGallery.kind === "style" ? "sticker-preview" : ""}`} onPointerDown={()=>setOptionGallery(null)}><div onPointerDown={(e)=>e.stopPropagation()}><button className="gallery-close" onClick={()=>setOptionGallery(null)}><X/></button><button className="gallery-arrow previous" onClick={()=>setOptionGallery({...optionGallery,index:previous})} aria-label="Previous option">←</button><figure><img src={current[2]} alt={current[1]}/><figcaption><b>{current[1]}</b><small>{optionGallery.index+1} of {options.length}</small></figcaption></figure><button className="gallery-arrow next" onClick={()=>setOptionGallery({...optionGallery,index:next})} aria-label="Next option">→</button><button className={`gallery-use ${optionGallery.kind}`} onClick={()=>{if(optionGallery.kind==="font")setTextFontStyle(current[0] as "mixed"|"cursive"|"serif");else setImageArtStyle(current[0] as "watercolor"|"cartoon"|"baby"|"girly"|"storybook"|"paper-cut");setOptionGallery(null)}}>Use this {optionGallery.kind}</button></div></div>})()}
-          {generatedPreview && <div className={`generated-lightbox ${createImageMode === "text" ? "text-result" : "image-result"}`} onPointerDown={(e)=>{e.stopPropagation();setGeneratedPreview(null)}}><div onPointerDown={(e)=>e.stopPropagation()}><button className="add-new-close" onClick={()=>setGeneratedPreview(null)}><X/></button><img src={generatedPreview} alt="Generated cake topper preview"/><button className="add-generated" onClick={()=>void addGeneratedAsset(generatedPreview)}><Plus/>Add to Page</button></div></div>}
+          {generatedPreview && <div className={`generated-lightbox ${createImageMode === "text" ? "text-result" : "image-result"}`} onPointerDown={(e)=>{e.stopPropagation();setGeneratedPreview(null)}}><div onPointerDown={(e)=>e.stopPropagation()}><button className="add-new-close" onClick={()=>setGeneratedPreview(null)}><X/></button><img src={generatedPreview} alt="Generated cake topper preview"/><button className="add-generated" onClick={()=>{const item=aiLibrary.find((entry)=>entry.src===generatedPreview);void addGeneratedAsset(generatedPreview,item?.name,item?.mode)}}><Plus/>Add to Page</button></div></div>}
         </div>
       )}
       {splashOpen && <div className="welcome-splash" role="dialog" aria-modal="true" aria-label="Welcome to Cake Topper Maker" onPointerDown={dismissSplash}>
@@ -6723,15 +6816,15 @@ export default function Home() {
                 ) : imageTab === "sticker" ? (
                   <>
                     <div className="sticker-offset-body">
-                      <div className="sticker-offset-preview" style={{ "--sticker-color": stickerColor, "--sticker-size": `${Math.max(2, stickerSizeMm * 2.4)}px` } as React.CSSProperties}><img src={imageEditor.source} alt="Sticker offset preview" /></div>
+                      <div className="sticker-offset-preview"><img src={stickerPreviewSrc || imageEditor.source} alt="Sticker offset preview" /></div>
                       <aside className="sticker-offset-controls">
                         <h3>Create Sticker Offset</h3><p>Add a smooth, editable border around the image. It stays proportional in physical units and is baked into PNG exports.</p>
                         <label>Offset width <b>{stickerSizeMm.toFixed(1)} mm</b></label><input type="range" min="0.5" max="15" step="0.5" value={stickerSizeMm} onChange={(event)=>setStickerSizeMm(+event.target.value)} />
                         <label>Offset color</label><div className="sticker-color-row"><button className={stickerColor.toLowerCase()==="#ffffff"?"active":""} onClick={()=>setStickerColor("#ffffff")}><i style={{background:"#fff"}}/>White preset</button><input type="color" value={stickerColor} onChange={(event)=>setStickerColor(event.target.value)} /><button onClick={()=>void pickStickerColor()}><Pipette/> Pick Color</button></div>
-                        {target?.stickerOffset?.enabled && <button className="remove-sticker-style" onClick={()=>{mutate(target.id,layer=>({...layer,stickerOffset:undefined}));setNotice("Sticker offset removed")}}><Trash2/> Remove current offset</button>}
+                        {target?.stickerOffset?.enabled && <button className="remove-sticker-style" onClick={()=>removeStickerStyle(target)}><Trash2/> Remove current offset</button>}
                       </aside>
                     </div>
-                    <footer><span className="footer-spacer"/><button className="cancel" onClick={()=>setImageTab("edit")}>Back</button><button className="confirm" onClick={applyStickerStyle}><Sparkles/> Apply Sticker Offset</button></footer>
+                    <footer><span className="footer-spacer"/><button className="cancel" onClick={()=>setImageTab("edit")}>Back</button><button className="confirm" onClick={()=>void applyStickerStyle()}><Sparkles/> Apply Sticker Offset</button></footer>
                   </>
                 ) : imageTab === "preset" ? (
                   <>
@@ -7461,10 +7554,6 @@ export default function Home() {
                   <ul><li>{new Date(entry.at).toLocaleString()} · {entry.details}</li></ul>
                 </article>
               )) : <article><div><span>No actions recorded yet.</span></div></article>}
-            </div>
-            <div className={`account-stat ${storageBlocked ? "storage-over" : ""}`}>
-              <Download />
-              <span><b>{(projects.reduce((sum, project)=>sum+(project.byte_size || projectBytes(project.data || {})),0)/1048576).toFixed(1)} / 20 MB</b><small>Project storage used</small></span>
             </div>
             <footer>
               <span>{sessionLog.length} recorded actions · saved with this project</span>
