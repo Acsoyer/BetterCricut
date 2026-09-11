@@ -1811,6 +1811,8 @@ export default function Home() {
     [stickerSizeMm, setStickerSizeMm] = useState(2),
     [stickerColor, setStickerColor] = useState("#ffffff"),
     [imagePreset, setImagePreset] = useState<"image" | "rim" | "text">("image"),
+    [imagePresetPreview, setImagePresetPreview] = useState("") ,
+    [imagePresetResult, setImagePresetResult] = useState<Layer | null>(null),
     [imageEditorSize, setImageEditorSize] = useState({ w: 0, h: 0 }),
     [rulerOrigin, setRulerOrigin] = useState({ x: 0, y: 0 }),
     [session, setSession] = useState<Session | null>(null),
@@ -3365,6 +3367,7 @@ export default function Home() {
   const openImageEditor = (chosen: Layer | null = one) => {
     if (!chosen || ["vector", "stroke", "acetate"].includes(chosen.kind)) return;
     setImageEditorSize({ w: 0, h: 0 });
+    setImagePresetPreview(""); setImagePresetResult(null);
     setImageTab("edit");
     if (chosen.stickerOffset?.enabled) { setStickerSizeMm(chosen.stickerOffset.sizeMm); setStickerColor(chosen.stickerOffset.color); }
     setImageEditor({
@@ -3676,49 +3679,6 @@ export default function Home() {
       setImageEditor(null);
       setBgEditor(null);
       setNotice(createLayer ? "Edited result created as a separate layer" : `Image edited at ${out.width} × ${out.height} px`);
-    } finally {
-      setWorking(false);
-    }
-  };
-  const applyPresetInImageEditor = async () => {
-    if (!imageEditor) return;
-    const target = layers.find((l) => l.id === imageEditor.layerId);
-    if (!target) return;
-    setWorking(true);
-    setNotice("Applying preset…");
-    try {
-      const pending = imageEditor.strokes.length || Object.values(imageEditor.crop).some(Boolean),
-        rendered = pending
-          ? await renderImageStage(imageEditor)
-          : {
-              src: imageEditor.source,
-              l: 0,
-              t: 0,
-              w: 1,
-              h: 1,
-              naturalW: (await getImage(imageEditor.source)).naturalWidth,
-              naturalH: (await getImage(imageEditor.source)).naturalHeight,
-            },
-        virtual = {
-          ...target,
-          src: rendered.src,
-          originalSrc: rendered.src,
-          x: target.x + target.w * (imageEditor.offsetX + imageEditor.widthScale * rendered.l),
-          y: target.y + target.h * (imageEditor.offsetY + imageEditor.heightScale * rendered.t),
-          w: target.w * imageEditor.widthScale * rendered.w,
-          h: target.h * imageEditor.heightScale * rendered.h,
-          naturalW: rendered.naturalW,
-          naturalH: rendered.naturalH,
-          steps: target.steps.filter((step) => step.type !== "remove-bg"),
-        },
-        next = await buildBackgroundPreset(imagePreset, virtual);
-      mutate(target.id, () => next);
-      setImageEditor(null);
-      setBgEditor(null);
-      setRiskLayerId(null);
-      setNotice("Preset applied");
-    } catch {
-      setNotice("Preset could not be applied");
     } finally {
       setWorking(false);
     }
@@ -4875,6 +4835,21 @@ export default function Home() {
     addSessionLog("Layers grouped", `${picked.map((layer) => layer.name).join(", ")} now move and resize together.`);
     setNotice("Layers grouped");
   };
+  const previewPresetInImageEditor = async (preset: "image" | "rim" | "text") => {
+    if (!imageEditor) return;
+    const target = layers.find((layer)=>layer.id===imageEditor.layerId); if (!target) return;
+    setImagePreset(preset); setWorking(true);
+    try {
+      const pending = imageEditor.strokes.length || Object.values(imageEditor.crop).some(Boolean), rendered = pending ? await renderImageStage(imageEditor) : { src:imageEditor.source,l:0,t:0,w:1,h:1,naturalW:(await getImage(imageEditor.source)).naturalWidth,naturalH:(await getImage(imageEditor.source)).naturalHeight },
+        virtual = { ...target, src:rendered.src, originalSrc:rendered.src, x:target.x+target.w*(imageEditor.offsetX+imageEditor.widthScale*rendered.l), y:target.y+target.h*(imageEditor.offsetY+imageEditor.heightScale*rendered.t), w:target.w*imageEditor.widthScale*rendered.w, h:target.h*imageEditor.heightScale*rendered.h, naturalW:rendered.naturalW, naturalH:rendered.naturalH, steps:target.steps.filter((step)=>step.type!=="remove-bg") },
+        result = await buildBackgroundPreset(preset,virtual);
+      setImagePresetResult(result); setImagePresetPreview(result.src);
+    } catch { setNotice("Preset preview could not be prepared"); } finally { setWorking(false); }
+  };
+  const acceptPresetResult = () => {
+    if (!imageEditor || !imagePresetResult) return;
+    mutate(imageEditor.layerId,()=>imagePresetResult); setImageEditor(null); setBgEditor(null); setImagePresetPreview(""); setImagePresetResult(null); setNotice("Background removal result added to the page");
+  };
   const pickStickerColor = async () => {
     const EyeDropperCtor = (window as typeof window & { EyeDropper?: new () => { open: () => Promise<{ sRGBHex: string }> } }).EyeDropper;
     if (!EyeDropperCtor) return setNotice("Color picker is not supported by this browser");
@@ -5320,7 +5295,7 @@ export default function Home() {
           <button className="new-project" onClick={newProject} title="Start a new project">
             <Plus /> New Project
           </button>
-          <button className="save-project" onClick={() => (currentProjectId ? void saveProject(false) : (setSaveAsMode(false), setProjectsOpen(true)))} title="Save current project">
+          <button className="save-project" onClick={() => void saveProject(false, undefined, projectName, false)} title="Save current project">
             <Download /> Save
           </button>
           <button
@@ -5385,7 +5360,7 @@ export default function Home() {
           <div className="left-future">
             <button className="left-ai-library" onClick={()=>{setAiLibraryOpen(true);setProjectsOpen(false);setAccountOpen(false)}}>
               <Sparkles />
-              <small>My AI Gen</small>
+              <small>My Archive</small>
             </button>
             <button
               className="left-projects"
@@ -5595,7 +5570,7 @@ export default function Home() {
                   }}
                 />
               )}
-              {picked.length > 0 && (
+              {picked.length > 0 && !imageOnShapeTarget && (
                 <div
                   className={`selection-box ${cutSafetyEnabled && picked.some((layer) => layer.cutRisk) ? "cut-risk" : ""}`}
                   onPointerDown={(e) => void startSelectionMove(e)}
@@ -5921,11 +5896,12 @@ export default function Home() {
         </aside>
       </section>
       {aiLibraryOpen && (()=>{const visible=aiLibrary.filter((item)=>item.mode===aiLibraryTab),active=aiLibraryIndex===null?null:visible[aiLibraryIndex],move=(amount:number)=>setAiLibraryIndex((index)=>index===null?0:(index+amount+visible.length)%visible.length);return (
-        <div className="ai-library-modal" role="dialog" aria-modal="true" aria-label="My AI Generations" onPointerDown={()=>{setAiLibraryOpen(false);setAiLibraryIndex(null)}}>
+        <div className="ai-library-modal" role="dialog" aria-modal="true" aria-label="My Creations Archive" onPointerDown={()=>{setAiLibraryOpen(false);setAiLibraryIndex(null)}}>
           <div className="ai-library-dialog" onPointerDown={(event)=>event.stopPropagation()}>
-            <header><div><b>My AI Generations</b><small>Your generated artwork stays available here.</small></div><button onClick={()=>setAiLibraryOpen(false)}><X/></button></header>
+            <header><div><b>My Creations Archive</b><small>Your generated artwork stays available here.</small></div><button type="button" onClick={(event)=>{event.stopPropagation();setAiLibraryIndex(null);setAiLibraryOpen(false)}} aria-label="Close archive"><X/></button></header>
             <nav><button className={aiLibraryTab==="text"?"active":""} onClick={()=>{setAiLibraryTab("text");setAiLibraryIndex(null)}}>Text</button><button className={aiLibraryTab==="image"?"active":""} onClick={()=>{setAiLibraryTab("image");setAiLibraryIndex(null)}}>Images</button></nav>
             <div className="ai-library-grid">{visible.length?visible.map((item,index)=><article key={item.id}><button className="ai-library-preview" onClick={()=>setAiLibraryIndex(index)}><img src={item.src} alt={item.name}/></button><div><b>{item.name}</b><small>{new Date(item.created_at).toLocaleString()}</small></div><button className="ai-library-delete" title="Delete" onClick={()=>void deleteAIGeneration(item.id)}><Trash2/></button></article>):<div className="ai-library-empty"><Sparkles/><b>No {aiLibraryTab} generations yet</b><span>New AI artwork will be saved here automatically.</span></div>}</div>
+            <footer><button onClick={()=>{setAiLibraryOpen(false);setAiLibraryIndex(null);setCreateImageMode("choose");setAddNewOpen(true)}}><Sparkles/> Create New</button></footer>
             {active&&<div className="ai-library-lightbox" onPointerDown={()=>setAiLibraryIndex(null)}><div onPointerDown={(event)=>event.stopPropagation()}><button className="gallery-close" onClick={()=>setAiLibraryIndex(null)}><X/></button><button className="gallery-arrow previous" onClick={()=>move(-1)}>←</button><figure><img src={active.src} alt={active.name}/><figcaption><b>{active.name}</b><small>{new Date(active.created_at).toLocaleString()}</small></figcaption></figure><button className="gallery-arrow next" onClick={()=>move(1)}>→</button><button className="add-generated" onClick={()=>void addGeneratedAsset(active.src,active.name,active.mode)}><Plus/> Add to Page</button></div></div>}
           </div>
         </div>);})()}
@@ -6328,13 +6304,14 @@ export default function Home() {
                   <div className="text-compose-fields">
                     <div className="text-line-inputs">
                       {Array.from({length:textLineCount},(_,index)=><label key={index}>Line {index+1}<input value={textLines[index]} placeholder={textPlaceholders(textLineCount)[index]} onChange={(e)=>setTextLines((lines)=>lines.map((line,lineIndex)=>lineIndex===index?e.target.value:line))}/></label>)}
+                      <div className="line-actions"><button disabled={textLineCount>=4} onClick={()=>setTextLineCount(Math.min(4,textLineCount+1) as 1|2|3|4)}><Plus/> Add line</button><button disabled={textLineCount<=1} onClick={()=>setTextLineCount(Math.max(1,textLineCount-1) as 1|2|3|4)}>− Remove line</button></div>
                     </div>
                     <small className="effective-lines">{activeTextLines.length || textLineCount} line{(activeTextLines.length || textLineCount) === 1 ? "" : "s"} will be generated{activeTextLines.length < textLineCount && activeTextLines.length > 0 ? " — empty lines are ignored" : ""}.</small>
                   </div>
-                  <div className="text-reference"><label className="line-count-label">Number of lines<input type="number" min="1" max="4" step="1" value={textLineCount} onChange={(e)=>setTextLineCount(clamp(Math.round(+e.target.value),1,4) as 1|2|3|4)}/></label><figure><img src="/create-examples/text-black/black-happy-birthday-sophia-v1-mixed.png" alt="Happy Birthday Sophia cake topper example" /></figure></div>
+                  <div className="text-reference"><figure><img src="/create-examples/text-black/black-happy-birthday-sophia-v1-mixed.png" alt="Happy Birthday Sophia cake topper example" /></figure></div>
                 </div>
                 <section><b>Fonts</b><div className="visual-option-grid three font-option-grid">
-                  {TEXT_FONT_OPTIONS.map(([value,label,src],index) => <button key={value} className={textFontStyle===value?'active':''} onClick={()=>{setTextFontStyle(value);setOptionGallery({kind:"font",index})}}><img src={src} alt={label}/><span>{label}<Maximize2 /></span></button>)}
+                  {TEXT_FONT_OPTIONS.map(([value,label,src],index) => <div key={value} className={`visual-option-card ${textFontStyle===value?'active':''}`}><button className="option-select" onClick={()=>setTextFontStyle(value)}><img src={src} alt={label}/><span>{label}</span></button><button className="option-expand" onClick={()=>setOptionGallery({kind:"font",index})} aria-label={`Enlarge ${label}`}><Maximize2/></button></div>)}
                 </div></section>
                 <section className="letter-details-section">
                   <button className="optional-prompt-toggle" onClick={()=>setTextDetailsOpen((open)=>!open)}><span><b>Extra Prompt</b><small>Optional instructions for decorative lettering</small></span><ChevronDown className={textDetailsOpen?"open":""}/></button>
@@ -6355,9 +6332,9 @@ export default function Home() {
                   <button onClick={() => setCreateImageMode("text")}><Type />Cake topper as text</button>
                   <button className="active" onClick={() => setCreateImageMode("image")}><ImageIcon />Cake topper as image</button>
                 </div>
-                <div className="prompt-example-row"><label>Describe the image you want<input type="text" value={imagePrompt} onChange={(event)=>setImagePrompt(event.target.value)} placeholder="Cute giraffe with birthday hat" maxLength={500}/></label><figure><img src="/create-examples/cake-topper-animals-balloons.png" alt="Cute animals and balloons cake topper example" /></figure></div>
+                <div className="prompt-example-row"><label>Describe the image you want<textarea value={imagePrompt} onChange={(event)=>setImagePrompt(event.target.value)} placeholder="Cute giraffe with birthday hat" maxLength={500}/></label><figure><img src="/create-examples/cake-topper-animals-balloons.png" alt="Cute animals and balloons cake topper example" /></figure></div>
                 <section><b>Style</b><div className={`style-choice-grid ${whiteStickerOffset ? "sticker-preview" : ""}`}>
-                  {IMAGE_STYLE_OPTIONS.map(([value,label,src],index) => <button key={value} className={imageArtStyle === value ? "active" : ""} onClick={() => {setImageArtStyle(value);setOptionGallery({kind:"style",index})}}><img src={src} alt={label}/><span>{label}<Maximize2 /></span></button>)}
+                  {IMAGE_STYLE_OPTIONS.map(([value,label,src],index) => <div key={value} className={`visual-option-card ${imageArtStyle===value?'active':''}`}><button className="option-select" onClick={()=>setImageArtStyle(value)}><img src={src} alt={label}/><span>{label}</span></button><button className="option-expand" onClick={()=>setOptionGallery({kind:"style",index})} aria-label={`Enlarge ${label}`}><Maximize2/></button></div>)}
                 </div></section>
                 <label className="sticker-toggle"><input type="checkbox" checked={whiteStickerOffset} onChange={(e)=>setWhiteStickerOffset(e.target.checked)}/><span/><b>White sticker offset</b><small>Add a clean white label border around the artwork</small></label>
                 <button className="create-soon enabled" disabled={Boolean(generationBusy)} onClick={()=>void generateArtwork("image")}><Sparkles /> {generationBusy === "image" ? "Creating…" : "Create Image"}</button>
@@ -6654,7 +6631,7 @@ export default function Home() {
                     2. Advanced Background Removal
                   </button>
                   <button className={imageTab === "preset" ? "active" : ""} onClick={() => setImageTab("preset")}>
-                    3. Apply Preset
+                    3. Background Removal Presets
                   </button>
                   <button className={imageTab === "sticker" ? "active" : ""} onClick={() => setImageTab("sticker")}>
                     4. Create Sticker Offset
@@ -6820,7 +6797,7 @@ export default function Home() {
                       <aside className="sticker-offset-controls">
                         <h3>Create Sticker Offset</h3><p>Add a smooth, editable border around the image. It stays proportional in physical units and is baked into PNG exports.</p>
                         <label>Offset width <b>{stickerSizeMm.toFixed(1)} mm</b></label><input type="range" min="0.5" max="15" step="0.5" value={stickerSizeMm} onChange={(event)=>setStickerSizeMm(+event.target.value)} />
-                        <label>Offset color</label><div className="sticker-color-row"><button className={stickerColor.toLowerCase()==="#ffffff"?"active":""} onClick={()=>setStickerColor("#ffffff")}><i style={{background:"#fff"}}/>White preset</button><input type="color" value={stickerColor} onChange={(event)=>setStickerColor(event.target.value)} /><button onClick={()=>void pickStickerColor()}><Pipette/> Pick Color</button></div>
+                        <label>Offset color</label><div className="sticker-color-palette">{COLORS.slice(-8).map((color)=><button key={color} className={stickerColor.toLowerCase()===color.toLowerCase()?"active":""} style={{background:color}} onClick={()=>setStickerColor(color)} aria-label={`Use ${color}`}/>)}</div><div className="sticker-color-row"><input type="color" value={stickerColor} onChange={(event)=>setStickerColor(event.target.value)} aria-label="Custom offset color"/><button className="pick-color-button" onClick={()=>void pickStickerColor()}><Pipette/> Pick Color</button></div>
                         {target?.stickerOffset?.enabled && <button className="remove-sticker-style" onClick={()=>removeStickerStyle(target)}><Trash2/> Remove current offset</button>}
                       </aside>
                     </div>
@@ -6831,7 +6808,7 @@ export default function Home() {
                     <div className="image-preset-body">
                       <div className="image-preset-summary">
                         <div className="image-preset-preview-wrap">
-                          <img src={imageEditor.source} alt="Current edited image preview" draggable={false} />
+                          <img src={imagePresetPreview || imageEditor.source} alt="Current edited image preview" draggable={false} />
                         </div>
                         <small>The selected preset will be applied to this edited image.</small>
                       </div>
@@ -6858,7 +6835,7 @@ export default function Home() {
                             },
                           ] as const
                         ).map((preset) => (
-                          <button key={preset.id} className={imagePreset === preset.id ? "active" : ""} onClick={() => setImagePreset(preset.id)}>
+                          <button key={preset.id} className={imagePreset === preset.id ? "active" : ""} onClick={() => void previewPresetInImageEditor(preset.id)}>
                             <img src={preset.image} alt="" />
                             <span>
                               <b>{preset.title}</b>
@@ -6871,11 +6848,11 @@ export default function Home() {
                     </div>
                     <footer>
                       <span className="footer-spacer" />
-                      <button className="cancel" onClick={() => setImageTab("edit")}>
-                        Back
+                      <button className="cancel" onClick={() => {setImagePresetPreview("");setImagePresetResult(null);setImagePreset("image")}}>
+                        Reset
                       </button>
-                      <button className="confirm" onClick={() => void applyPresetInImageEditor()}>
-                        <Sparkles /> Apply Preset
+                      <button className="confirm" disabled={!imagePresetResult} onClick={acceptPresetResult}>
+                        <Sparkles /> Accept the result and Bring to Page
                       </button>
                     </footer>
                   </>
