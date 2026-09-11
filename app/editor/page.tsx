@@ -7,7 +7,7 @@ import { supabase } from "../lib/supabase";
 import { EDITOR_VERSION, editorDevLog } from "../editor-dev-log";
 import { getSVG, traceCanvas } from "@cadit-app/potrace-ts";
 import { faStar, faHeart, faArrowRight, faBolt, faBurst, faCloud, faMoon, faSun, faDiamond, faShield, faDroplet, faLeaf, faCrown, faBell, faGift, faTag, faBookmark, faLocationPin, faComment, faPuzzlePiece } from "@fortawesome/free-solid-svg-icons";
-const PORTRAIT = { w: 21, h: 29.7 },
+const PAGE_SIZES = { a4: { label: "A4", w: 21, h: 29.7 }, letter: { label: "Letter", w: 21.59, h: 27.94 }, a5: { label: "A5", w: 14.8, h: 21 }, full: { label: "Large canvas", w: 100, h: 100 } } as const,
   PPCM = 34,
   DPI = 150,
   DARK = "#3c4144";
@@ -101,6 +101,8 @@ type Layer = {
   cutRisk?: boolean;
   cutRiskReason?: string;
   cutRiskOverlay?: string;
+  groupId?: string;
+  stickerOffset?: { enabled: boolean; sizeMm: number; color: string; smoothness: number };
 };
 type SavedProject = {
   id: string;
@@ -114,10 +116,20 @@ type SavedProject = {
     thumbnail?: string;
     sessionLog?: SessionLogEntry[];
     cutSafetyEnabled?: boolean;
+    pageSize?: PageSize;
+    unit?: Unit;
+    assets?: Record<string, string>;
   };
+  byte_size?: number;
+  layer_count?: number;
+  thumbnail?: string;
+  is_autosave?: boolean;
+  loaded?: boolean;
 };
 type SessionLogEntry = { id: string; at: string; action: string; details: string };
 type PageMode = "portrait" | "landscape" | "full";
+type PageSize = keyof typeof PAGE_SIZES;
+type Unit = "cm" | "in";
 type PageColor = "white" | "offwhite" | "warm" | "lightgray" | "darkgray" | "canson";
 const PAGE_COLORS: Record<PageColor, { label: string; color: string }> = {
   white: { label: "White", color: "#ffffff" },
@@ -140,8 +152,8 @@ const IMAGE_STYLE_OPTIONS = [
   ["storybook", "3D Storybook", "/create-examples/image-styles/cute-giraffe-3d-storybook.png"],
   ["paper-cut", "Paper Cut", "/create-examples/image-styles/cute-giraffe-paper-cut.png"],
 ] as const;
-function GeneratedRail({ images, onOpen }: { images: string[]; onOpen: (src: string) => void }) {
-  return <aside className="generated-rail"><header><b>Versions</b><small>Newest at the bottom</small></header>{images.length ? images.map((src,i)=><button key={`${src}-${i}`} onClick={()=>onOpen(src)}><img src={src} alt={`Generated version ${i+1}`}/><span>V{i+1}</span></button>) : <p>Your generated versions will appear here.</p>}</aside>;
+function GeneratedRail({ images, onOpen, busy = false }: { images: string[]; onOpen: (src: string) => void; busy?: boolean }) {
+  return <aside className="generated-rail"><header><b>Versions</b><small>Newest at the bottom</small></header>{images.map((src,i)=><button key={`${src}-${i}`} onClick={()=>onOpen(src)}><img src={src} alt={`Generated version ${i+1}`}/><span>V{i+1}</span></button>)}{busy&&<div className="generation-placeholder" aria-label="Creating image"><i/><i/><i/><i/><i/><i/><i/><i/><i/><span>Creating next version…</span></div>}{!images.length&&!busy&&<p>Your generated versions will appear here.</p>}</aside>;
 }
 const textPlaceholders = (count: 1 | 2 | 3 | 4) => count === 1 ? ["Happy Birthday Sophia"] : count === 2 ? ["Happy Birthday", "Sophia"] : count === 3 ? ["Happy", "Birthday", "Sophia"] : ["Happy", "Birthday", "Dear", "Sophia"];
 type Drag = {
@@ -903,12 +915,7 @@ async function vTracerCutout(src: string, color: string, physicalWidthCm?: numbe
   output.setAttribute("shape-rendering", "geometricPrecision");
   output.querySelectorAll("path").forEach((path) => {
     path.setAttribute("fill", color);
-    path.setAttribute("stroke", "#141715");
-    path.setAttribute("stroke-width", "1.1");
-    path.setAttribute("stroke-linecap", "round");
-    path.setAttribute("stroke-linejoin", "round");
-    path.setAttribute("vector-effect", "non-scaling-stroke");
-    path.setAttribute("paint-order", "stroke fill");
+    path.setAttribute("stroke", "none");
   });
   return `data:image/svg+xml,${encodeURIComponent(new XMLSerializer().serializeToString(output))}`;
 }
@@ -1597,9 +1604,27 @@ async function findOpaqueIslands(src: string) {
   });
   return { preview: preview.toDataURL("image/png"), parts };
 }
-const projectSignature = (layers: Layer[], pageMode: PageMode, safeMargin: number, cutSafetyEnabled = false) => JSON.stringify({ layers, pageMode, safeMargin, cutSafetyEnabled });
+const projectSignature = (layers: Layer[], pageMode: PageMode, safeMargin: number, cutSafetyEnabled = false, pageSize: PageSize = "a4", unit: Unit = "cm") => JSON.stringify({ layers, pageMode, safeMargin, cutSafetyEnabled, pageSize, unit });
+const PROJECT_LIMIT = 10, STORAGE_LIMIT = 20 * 1024 * 1024;
+const projectBytes = (data: unknown) => new Blob([JSON.stringify(data)]).size;
+const packLayers = (layers: Layer[]) => {
+  const assets: Record<string, string> = {}, bySource = new Map<string, string>();
+  const ref = (src?: string) => {
+    if (!src || !src.startsWith("data:")) return src;
+    let id = bySource.get(src);
+    if (!id) { id = `asset-${bySource.size + 1}`; bySource.set(src, id); assets[id] = src; }
+    return `asset://${id}`;
+  };
+  const packed = layers.map((layer) => ({ ...layer, src: ref(layer.src)!, originalSrc: ref(layer.originalSrc)!, innerSrc: ref(layer.innerSrc), shapeBaseSrc: ref(layer.shapeBaseSrc), steps: layer.steps.map((step) => ({ ...step, before: step.before ? { ...step.before, src: ref(step.before.src)! } : undefined, snapshot: { ...step.snapshot, src: ref(step.snapshot.src)! } })) }));
+  return { layers: packed, assets };
+};
+const unpackLayers = (data: SavedProject["data"]) => {
+  const resolve = (src?: string) => src?.startsWith("asset://") ? data.assets?.[src.slice(8)] || "" : src;
+  return (data.layers || []).map((layer) => ({ ...layer, src: resolve(layer.src)!, originalSrc: resolve(layer.originalSrc)!, innerSrc: resolve(layer.innerSrc), shapeBaseSrc: resolve(layer.shapeBaseSrc), steps: (layer.steps || []).map((step) => ({ ...step, before: step.before ? { ...step.before, src: resolve(step.before.src)! } : undefined, snapshot: { ...step.snapshot, src: resolve(step.snapshot.src)! } })) }));
+};
+const projectLayerPreview = (project: SavedProject, src: string) => src.startsWith("asset://") ? project.data?.assets?.[src.slice(8)] || "" : src;
 const formatProjectSize = (project: SavedProject) => {
-  const bytes = new Blob([JSON.stringify(project.data)]).size;
+  const bytes = project.byte_size || projectBytes(project.data || {});
   return bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
 };
 async function createProjectThumbnail(layers: Layer[]) {
@@ -1629,6 +1654,16 @@ async function createProjectThumbnail(layers: Layer[]) {
     } catch {}
   }
   return canvas.toDataURL("image/webp", 0.62);
+}
+async function renderStickerOffset(layer: Layer, multiplier = 1) {
+  const style = layer.stickerOffset!, scale = DPI * multiplier / 2.54, pad = Math.max(1, Math.round((style.sizeMm / 10) * scale)), w = Math.max(1, Math.round(layer.w * scale)), h = Math.max(1, Math.round(layer.h * scale)), source = await getImage(layer.src), output = document.createElement("canvas");
+  output.width = w + pad * 2; output.height = h + pad * 2;
+  const context = output.getContext("2d")!; context.imageSmoothingEnabled = true; context.imageSmoothingQuality = "high";
+  const steps = Math.max(32, Math.min(128, Math.ceil(pad * Math.PI * 2)));
+  context.fillStyle = style.color;
+  for (let index = 0; index < steps; index++) { const angle = index / steps * Math.PI * 2; context.drawImage(source, pad + Math.cos(angle) * pad, pad + Math.sin(angle) * pad, w, h); }
+  context.globalCompositeOperation = "source-in"; context.fillRect(0, 0, output.width, output.height); context.globalCompositeOperation = "source-over"; context.drawImage(source, pad, pad, w, h);
+  return output;
 }
 const lighten = (hex: string, amount = 0.34) => {
   const n = parseInt(hex.slice(1), 16),
@@ -1693,6 +1728,8 @@ export default function Home() {
     [widthDraft, setWidthDraft] = useState("0.0"),
     [heightDraft, setHeightDraft] = useState("0.0"),
     [pageMode, setPageMode] = useState<PageMode>("portrait"),
+    [pageSize, setPageSize] = useState<PageSize>("a4"),
+    [unit, setUnit] = useState<Unit>("cm"),
     [pageColor,setPageColor]=useState<PageColor>("white"),
     [pageSetupOpen, setPageSetupOpen] = useState(false),
     [safeMargin, setSafeMargin] = useState(1),
@@ -1759,13 +1796,17 @@ export default function Home() {
       visible: boolean;
     }>({ visible: false }),
     [imageEditor, setImageEditor] = useState<ImageEditor | null>(null),
-    [imageTab, setImageTab] = useState<"edit" | "background" | "preset">("edit"),
+    [imageTab, setImageTab] = useState<"edit" | "background" | "preset" | "sticker">("edit"),
+    [stickerSizeMm, setStickerSizeMm] = useState(2),
+    [stickerColor, setStickerColor] = useState("#ffffff"),
     [imagePreset, setImagePreset] = useState<"image" | "rim" | "text">("image"),
     [imageEditorSize, setImageEditorSize] = useState({ w: 0, h: 0 }),
     [rulerOrigin, setRulerOrigin] = useState({ x: 0, y: 0 }),
     [session, setSession] = useState<Session | null>(null),
     [projects, setProjects] = useState<SavedProject[]>([]),
     [projectsLoading, setProjectsLoading] = useState(true),
+    [storageBlocked, setStorageBlocked] = useState(false),
+    [autosaveStatus, setAutosaveStatus] = useState<"saving" | "saved" | "failed" | null>(null),
     [projectsOpen, setProjectsOpen] = useState(false),
     [expandedProjectId, setExpandedProjectId] = useState<string | null>(null),
     [pendingOpenProject, setPendingOpenProject] = useState<SavedProject | null>(null),
@@ -1782,6 +1823,7 @@ export default function Home() {
     [saveStatus, setSaveStatus] = useState<"saving" | "saved" | null>(null),
     [savedCountdown, setSavedCountdown] = useState<number | null>(null),
     [currentProjectId, setCurrentProjectId] = useState<string | null>(null),
+    [currentProjectAutosave, setCurrentProjectAutosave] = useState(false),
     [projectName, setProjectName] = useState("Untitled Project");
   const fileRef = useRef<HTMLInputElement>(null),
     clipFileRef = useRef<HTMLInputElement>(null),
@@ -1867,8 +1909,10 @@ export default function Home() {
     logTimer = useRef<number | null>(null),
     suppressLayerLog = useRef(false);
   const saveToastDismissed = useRef(false);
+  const autosaveRunner = useRef<() => void>(()=>{});
   const landscape = pageMode === "landscape",
-    A4 = pageMode === "full" ? { w: 100, h: 100 } : landscape ? { w: PORTRAIT.h, h: PORTRAIT.w } : PORTRAIT,
+    selectedPaper = PAGE_SIZES[pageMode === "full" ? "full" : pageSize],
+    A4 = pageMode === "full" ? { w: 100, h: 100 } : landscape ? { w: selectedPaper.h, h: selectedPaper.w } : { w: selectedPaper.w, h: selectedPaper.h },
     SAFE = {
       x: safeMargin,
       y: safeMargin,
@@ -1881,7 +1925,7 @@ export default function Home() {
     displayBox = one && drag?.mode === "rotate" ? { x: one.x, y: one.y, w: one.w, h: one.h } : one && one.rotation ? rotatedBounds(one) : box,
     scale = PPCM * zoom * calibration,
     vectorsOnly = picked.length > 0 && picked.every((l) => ["stroke", "vector"].includes(l.kind));
-  const currentSignature = useMemo(() => projectSignature(layers, pageMode, safeMargin, cutSafetyEnabled), [layers, pageMode, safeMargin, cutSafetyEnabled]),
+  const currentSignature = useMemo(() => projectSignature(layers, pageMode, safeMargin, cutSafetyEnabled, pageSize, unit), [layers, pageMode, safeMargin, cutSafetyEnabled, pageSize, unit]),
     projectDirty = currentSignature !== lastSavedSignature;
   const activeTextLines = textLines.slice(0, textLineCount).map((line) => line.trim()).filter(Boolean);
   const generateArtwork = async (mode: "text" | "image", variation = false) => {
@@ -1964,81 +2008,127 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected]);
   const mutate = (id: string, fn: (l: Layer) => Layer) => setLayers((v) => v.map((l) => (l.id === id ? fn(l) : l)));
+  const projectCacheKey = session?.user?.id ? `cake-topper-project-index:${session.user.id}` : "";
   const refreshProjects = async (showLoading = projects.length === 0) => {
     if (showLoading) setProjectsLoading(true);
-    const { data, error } = await supabase.from("projects").select("id,name,updated_at,data").order("updated_at", { ascending: false });
-    setProjectsLoading(false);
+    let { data, error } = await supabase.from("projects").select("id,name,updated_at,thumbnail,byte_size,layer_count,is_autosave").order("updated_at", { ascending: false }) as { data: unknown[] | null; error: { message?: string } | null };
+    if (error) ({ data, error } = await supabase.from("projects").select("id,name,updated_at,data").order("updated_at", { ascending: false }) as { data: unknown[] | null; error: { message?: string } | null });
     if (error) {
+      setProjectsLoading(false);
       setNotice("Projects could not be loaded. Please try again.");
       return;
     }
-    setProjects((data || []) as SavedProject[]);
+    const next = (data || []) as SavedProject[];
+    await Promise.all(next.map((project) => project.thumbnail || project.data?.thumbnail).filter((src): src is string => Boolean(src)).map((src)=>getImage(src).catch(()=>null)));
+    setProjectsLoading(false);
+    setProjects(next);
+    setStorageBlocked(next.reduce((sum, project) => sum + (project.byte_size || projectBytes(project.data || {})), 0) > STORAGE_LIMIT);
+    if (projectCacheKey) try { localStorage.setItem(projectCacheKey, JSON.stringify(next.map(({ id, name, updated_at, thumbnail, byte_size, layer_count, is_autosave }) => ({ id, name, updated_at, thumbnail, byte_size, layer_count, is_autosave })))); } catch {}
   };
-  const saveProject = async (asNew = false, targetId?: string, targetName?: string, closePanel = true) => {
+  const saveProject = async (asNew = false, targetId?: string, targetName?: string, closePanel = true, autosave = false) => {
     if (!session?.user) {
       setNotice("Sign in to save a project");
       return false;
     }
+    if ((asNew || !currentProjectId) && projects.filter((project) => !project.is_autosave).length >= PROJECT_LIMIT && !autosave) {
+      setNotice("10 project limit reached. Please delete an old project first.");
+      return false;
+    }
     saveToastDismissed.current = false;
-    setSaveStatus("saving");
+    if (!autosave) setSaveStatus("saving");
+    if (autosave) setAutosaveStatus("saving");
     setSavedCountdown(null);
     const name = (targetName ?? projectName).trim() || "Untitled Project",
       thumbnail = await createProjectThumbnail(layers),
       saveEntry: SessionLogEntry = { id: uid(), at: new Date().toISOString(), action: "Project saved", details: `${name} was ${asNew ? "saved as a new project" : "saved"}.` },
       nextSessionLog = [...sessionLog, saveEntry].slice(-1000),
-      projectData = { layers, landscape, pageMode, safeMargin, thumbnail, sessionLog: nextSessionLog, cutSafetyEnabled },
+      packed = packLayers(layers),
+      projectData = { layers: packed.layers as Layer[], assets: packed.assets, landscape, pageMode, pageSize, unit, safeMargin, thumbnail, sessionLog: nextSessionLog, cutSafetyEnabled },
+      byteSize = projectBytes(projectData),
       payload = {
         name,
         data: projectData,
         user_id: session.user.id,
         updated_at: new Date().toISOString(),
+        thumbnail,
+        byte_size: byteSize,
+        layer_count: layers.length,
+        is_autosave: autosave && (currentProjectAutosave || !currentProjectId),
       },
       updateId = targetId ?? currentProjectId;
-    let { data, error } = updateId && !asNew ? await supabase.from("projects").update({ name, data: projectData, updated_at: payload.updated_at }).eq("id", updateId).eq("user_id", session.user.id).select("id,name,updated_at,data").single() : await supabase.from("projects").insert(payload).select("id,name,updated_at,data").single();
+    const previousBytes = projects.find((project)=>project.id===updateId)?.byte_size || Number.POSITIVE_INFINITY;
+    if (storageBlocked && (!updateId || byteSize >= previousBytes)) {
+      setSaveStatus(null); setAutosaveStatus(autosave ? "failed" : null);
+      setNotice(`${(projects.reduce((sum, project) => sum + (project.byte_size || projectBytes(project.data || {})), 0) / 1048576).toFixed(1)}/20 MB limit exceeded. Please delete old projects before saving again.`);
+      return false;
+    }
+    let { data, error } = updateId && !asNew ? await supabase.from("projects").update({ name, data: projectData, updated_at: payload.updated_at, thumbnail, byte_size: byteSize, layer_count: layers.length, is_autosave: autosave && currentProjectAutosave }).eq("id", updateId).eq("user_id", session.user.id).select("id,name,updated_at,data,thumbnail,byte_size,layer_count,is_autosave").single() : await supabase.from("projects").insert(payload).select("id,name,updated_at,data,thumbnail,byte_size,layer_count,is_autosave").single();
+    if (error && /column|schema cache/i.test(error.message || "")) ({ data, error } = updateId && !asNew ? await supabase.from("projects").update({ name, data: projectData, updated_at: payload.updated_at }).eq("id", updateId).eq("user_id", session.user.id).select("id,name,updated_at,data").single() : await supabase.from("projects").insert({ name, data: projectData, user_id: session.user.id, updated_at: payload.updated_at }).select("id,name,updated_at,data").single());
     if ((error || !data) && updateId && !asNew) {
       const listed = projects.find((project) => project.id === updateId) || projects.find((project) => project.name === name);
       if (listed && listed.id !== updateId) ({ data, error } = await supabase.from("projects").update({ name, data: projectData, updated_at: payload.updated_at }).eq("id", listed.id).eq("user_id", session.user.id).select("id,name,updated_at,data").single());
     }
     if (error || !data) {
-      setSaveStatus(null);
+      if (!autosave) setSaveStatus(null);
+      else setAutosaveStatus("failed");
       setNotice("Project could not be saved");
       return false;
     }
     setCurrentProjectId(data.id);
+    setCurrentProjectAutosave(Boolean(autosave && (currentProjectAutosave || !currentProjectId)));
     setSessionLog(nextSessionLog);
-    setProjectName(data.name);
-    setLastSavedSignature(projectSignature(layers, pageMode, safeMargin, cutSafetyEnabled));
+    if (!autosave) setProjectName(currentProjectAutosave && /^Autosave-/.test(data.name) ? "Untitled Project" : data.name);
+    setLastSavedSignature(projectSignature(layers, pageMode, safeMargin, cutSafetyEnabled, pageSize, unit));
     setProjects((items) => [data as SavedProject, ...items.filter((project) => project.id !== data.id)]);
     void refreshProjects(false);
     if (closePanel) setProjectsOpen(false);
     setSaveAsMode(false);
-    if (!saveToastDismissed.current) {
+    if (autosave) setAutosaveStatus("saved");
+    if (!autosave && !saveToastDismissed.current) {
       setSaveStatus("saved");
       setSavedCountdown(2);
     }
     return true;
   };
-  const openProject = (project: SavedProject) => {
+  autosaveRunner.current = () => {
+    if (!session || !projectDirty || !layers.length || saveStatus === "saving" || storageBlocked) return;
+    const stamp = new Date().toISOString().replace("T", "-").slice(0, 16).replace(/:/g, "-");
+    const autosaveName = `Autosave-${stamp}`;
+    void saveProject(false, undefined, currentProjectAutosave ? projects.find((project)=>project.id===currentProjectId)?.name || autosaveName : currentProjectId ? projectName : autosaveName, false, true).then((saved) => { if (!saved) setAutosaveStatus("failed"); });
+  };
+  const openProject = async (project: SavedProject) => {
+    let full = project;
+    if (!project.data?.layers) {
+      setProjectsLoading(true);
+      const { data, error } = await supabase.from("projects").select("id,name,updated_at,data").eq("id", project.id).single();
+      setProjectsLoading(false);
+      if (error || !data) { setNotice("Project could not be opened. Please retry."); return; }
+      full = { ...project, ...(data as SavedProject), loaded: true };
+    }
+    const restoredLayers = unpackLayers(full.data);
     suppressLayerLog.current = true;
-    setLayers(project.data.layers || []);
-    setSessionLog([...(project.data.sessionLog || []), { id: uid(), at: new Date().toISOString(), action: "Project opened", details: `${project.name} was opened.` }]);
-    setPageMode(project.data.pageMode || (project.data.landscape ? "landscape" : "portrait"));
-    setSafeMargin(project.data.safeMargin ?? 1);
-    setCutSafetyEnabled(Boolean(project.data.cutSafetyEnabled));
+    setLayers(restoredLayers);
+    setSessionLog([...(full.data.sessionLog || []), { id: uid(), at: new Date().toISOString(), action: "Project opened", details: `${full.name} was opened.` }]);
+    setPageMode(full.data.pageMode || (full.data.landscape ? "landscape" : "portrait"));
+    setPageSize(full.data.pageSize || (full.data.pageMode === "full" ? "full" : "a4"));
+    setUnit(full.data.unit || "cm");
+    setSafeMargin(full.data.safeMargin ?? 1);
+    setCutSafetyEnabled(Boolean(full.data.cutSafetyEnabled));
     setSelected([]);
-    setCurrentProjectId(project.id);
-    setProjectName(project.name);
-    setLastSavedSignature(projectSignature(project.data.layers || [], project.data.pageMode || (project.data.landscape ? "landscape" : "portrait"), project.data.safeMargin ?? 1, Boolean(project.data.cutSafetyEnabled)));
+    setCurrentProjectId(full.id);
+    setCurrentProjectAutosave(Boolean(full.is_autosave));
+    setProjectName(full.name);
+    setLastSavedSignature(projectSignature(restoredLayers, full.data.pageMode || (full.data.landscape ? "landscape" : "portrait"), full.data.safeMargin ?? 1, Boolean(full.data.cutSafetyEnabled), full.data.pageSize || "a4", full.data.unit || "cm"));
     history.current = [];
     setProjectsOpen(false);
-    setNotice(`${project.name} opened`);
+    setNotice(`${full.name} opened`);
   };
   const requestOpenProject = (project: SavedProject) => {
     if (projectDirty && layers.length) {
       setPendingOpenProject(project);
       return;
     }
-    openProject(project);
+    void openProject(project);
   };
   const deleteProject = async (id: string) => {
     const previous = projects;
@@ -2061,8 +2151,11 @@ export default function Home() {
     setSessionLog([{ id: uid(), at: new Date().toISOString(), action: "Project started", details: "A new editing session was created." }]);
     setSelected([]);
     setCurrentProjectId(null);
+    setCurrentProjectAutosave(false);
     setProjectName("Untitled Project");
     setPageMode("portrait");
+    setPageSize("a4");
+    setUnit("cm");
     setSafeMargin(1);
     setCutSafetyEnabled(false);
     setLastSavedSignature(projectSignature([], "portrait", 1));
@@ -2083,7 +2176,7 @@ export default function Home() {
     const target = pendingOpenProject;
     setPendingOpenProject(null);
     setPendingNewProject(false);
-    if (target) openProject(target);
+    if (target) void openProject(target);
     else createNewProject();
   };
   const saveAndContinue = async () => {
@@ -2094,7 +2187,7 @@ export default function Home() {
     if (!saved) return;
     setPendingOpenProject(null);
     setPendingNewProject(false);
-    if (target) openProject(target);
+    if (target) await openProject(target);
     else createNewProject();
   };
   useEffect(() => {
@@ -2117,10 +2210,14 @@ export default function Home() {
     );
     return () => window.clearTimeout(timer);
   }, [savedCountdown]);
+  useEffect(() => { if (autosaveStatus !== "saved") return; const timer = window.setTimeout(()=>setAutosaveStatus(null), 4000); return ()=>window.clearTimeout(timer); }, [autosaveStatus]);
   useEffect(() => {
     void supabase.auth.getSession().then(({ data }) => {
       setSession(data.session);
-      if (data.session) void refreshProjects();
+      if (data.session) {
+        try { const cached = localStorage.getItem(`cake-topper-project-index:${data.session.user.id}`); if (cached) { setProjects(JSON.parse(cached)); setProjectsLoading(false); } } catch {}
+        void refreshProjects();
+      }
     });
     const { data } = supabase.auth.onAuthStateChange((_event, next) => {
       setSession(next);
@@ -2129,6 +2226,11 @@ export default function Home() {
     });
     return () => data.subscription.unsubscribe();
   }, []);
+  useEffect(() => {
+    if (!session) return;
+    const timer = window.setInterval(() => autosaveRunner.current(), 300000);
+    return () => window.clearInterval(timer);
+  }, [session]);
   useEffect(() => {
     if (!bgEditor) return;
     let cancelled = false;
@@ -2257,9 +2359,9 @@ export default function Home() {
     }
   }, [one?.id, one?.strokeCm]);
   useEffect(() => {
-    setWidthDraft(box.w.toFixed(1));
-    setHeightDraft(box.h.toFixed(1));
-  }, [selected.join(":"), box.w, box.h]);
+    setWidthDraft((unit === "cm" ? box.w : box.w / 2.54).toFixed(unit === "cm" ? 1 : 2));
+    setHeightDraft((unit === "cm" ? box.h : box.h / 2.54).toFixed(unit === "cm" ? 1 : 2));
+  }, [selected.join(":"), box.w, box.h, unit]);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && ["+", "=", "-", "0"].includes(e.key)) {
@@ -4304,8 +4406,9 @@ export default function Home() {
     if (l.isShape) {
       const rect=canvasRef.current?.getBoundingClientRect();if(!rect||!await layerOpaqueAtWorld(l,(e.clientX-rect.left)/scale,(e.clientY-rect.top)/scale))return;
     }
-    if (e.shiftKey || e.ctrlKey || e.metaKey) setSelected((v) => (v.includes(l.id) ? v.filter((x) => x !== l.id) : [...v, l.id]));
-    else if (!selected.includes(l.id)) setSelected([l.id]);
+    const groupIds = l.groupId ? layers.filter((item) => item.groupId === l.groupId).map((item) => item.id) : [l.id];
+    if (e.shiftKey || e.ctrlKey || e.metaKey) setSelected((v) => groupIds.every((id) => v.includes(id)) ? v.filter((id) => !groupIds.includes(id)) : [...new Set([...v, ...groupIds])]);
+    else if (!selected.includes(l.id)) setSelected(groupIds);
   };
   const startDrag = (e: RPointer, mode: string) => {
     e.stopPropagation();
@@ -4529,9 +4632,10 @@ export default function Home() {
       i = sameSpot ? (cycle.index + 1) % h.length : 0;
     setCycle({ key, index: i, x: e.clientX, y: e.clientY });
     const target = h[i];
-    if (e.shiftKey || e.ctrlKey || e.metaKey) setSelected((v) => (v.includes(target.id) ? v.filter((q) => q !== target.id) : [...v, target.id]));
-    else setSelected([target.id]);
-    const moving = selected.includes(target.id) ? picked : [target];
+    const targetGroup = target.groupId ? layers.filter((layer)=>layer.groupId===target.groupId) : [target], targetIds = targetGroup.map((layer)=>layer.id);
+    if (e.shiftKey || e.ctrlKey || e.metaKey) setSelected((v) => targetIds.every((id)=>v.includes(id)) ? v.filter((id)=>!targetIds.includes(id)) : [...new Set([...v,...targetIds])]);
+    else setSelected(targetIds);
+    const moving = selected.includes(target.id) ? picked : targetGroup;
     setDrag({
       mode: "move",
       sx: e.clientX,
@@ -4612,9 +4716,9 @@ export default function Home() {
   };
   const commitDimension = (key: "w" | "h", value: string) => {
     const parsed = Number(value.replace(",", "."));
-    if (Number.isFinite(parsed) && parsed > 0) dimension(key, parsed);
-    else if (key === "w") setWidthDraft(box.w.toFixed(1));
-    else setHeightDraft(box.h.toFixed(1));
+    if (Number.isFinite(parsed) && parsed > 0) dimension(key, unit === "cm" ? parsed : parsed * 2.54);
+    else if (key === "w") setWidthDraft((unit === "cm" ? box.w : box.w / 2.54).toFixed(unit === "cm" ? 1 : 2));
+    else setHeightDraft((unit === "cm" ? box.h : box.h / 2.54).toFixed(unit === "cm" ? 1 : 2));
   };
   const align = (mode: string) => {
     if (picked.length < 2) return;
@@ -4711,7 +4815,48 @@ export default function Home() {
       copy();
       removeSelected();
     };
+  const groupSelection = () => {
+    if (picked.length < 2) return;
+    const existing = picked.map((layer) => layer.groupId).find(Boolean), groupId = existing || uid();
+    setLayers((items) => items.map((layer) => selected.includes(layer.id) ? { ...layer, groupId } : layer));
+    addSessionLog("Layers grouped", `${picked.map((layer) => layer.name).join(", ")} now move and resize together.`);
+    setNotice("Layers grouped");
+  };
+  const pickStickerColor = async () => {
+    const EyeDropperCtor = (window as typeof window & { EyeDropper?: new () => { open: () => Promise<{ sRGBHex: string }> } }).EyeDropper;
+    if (!EyeDropperCtor) return setNotice("Color picker is not supported by this browser");
+    try { const { sRGBHex } = await new EyeDropperCtor().open(); setStickerColor(sRGBHex); } catch {}
+  };
+  const applyStickerStyle = () => {
+    if (!imageEditor) return;
+    const target = layers.find((layer) => layer.id === imageEditor.layerId); if (!target) return;
+    mutate(target.id, (layer) => ({ ...layer, stickerOffset: { enabled: true, sizeMm: stickerSizeMm, color: stickerColor, smoothness: 0.7 } }));
+    addSessionLog("Sticker offset applied", `${target.name} · ${stickerSizeMm.toFixed(1)} mm · ${stickerColor}`); setImageEditor(null); setBgEditor(null); setNotice("Editable sticker offset applied");
+  };
+  const ungroupSelection = () => {
+    if (!picked.some((layer) => layer.groupId)) return;
+    setLayers((items) => items.map((layer) => selected.includes(layer.id) ? { ...layer, groupId: undefined } : layer));
+    addSessionLog("Layers ungrouped", picked.map((layer) => layer.name).join(", "));
+    setNotice("Group removed");
+  };
+  const weldSelection = async () => {
+    if (picked.length < 2 || !picked.every((layer) => ["vector", "stroke"].includes(layer.kind))) return;
+    setWorking(true);
+    try {
+      const area = bounds(picked), pxPerCm = 180, pad = 8, canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.ceil(area.w * pxPerCm) + pad * 2); canvas.height = Math.max(1, Math.ceil(area.h * pxPerCm) + pad * 2);
+      const context = canvas.getContext("2d")!;
+      for (const layer of picked) {
+        const image = await getImage(layer.src), w = layer.w * pxPerCm, h = layer.h * pxPerCm;
+        context.save(); context.translate(pad + (layer.x - area.x) * pxPerCm + w / 2, pad + (layer.y - area.y) * pxPerCm + h / 2); context.rotate(layer.rotation * Math.PI / 180); context.drawImage(image, -w / 2, -h / 2, w, h); context.restore();
+      }
+      const top = [...picked].sort((a,b)=>layers.indexOf(b)-layers.indexOf(a))[0], src = await vTracerCutout(canvas.toDataURL("image/png"), top.color, area.w + pad * 2 / pxPerCm, 1.55), welded: Layer = { ...top, id: uid(), name: `${top.name} Weld`, src, originalSrc: src, x: area.x - pad / pxPerCm, y: area.y - pad / pxPerCm, w: area.w + pad * 2 / pxPerCm, h: area.h + pad * 2 / pxPerCm, rotation: 0, groupId: undefined, strokeCm: 0, fillGapsMm: 0, steps: [], activeStep: 0 };
+      setLayers((items) => [...items.filter((layer) => !selected.includes(layer.id)), welded]); setSelected([welded.id]);
+      addSessionLog("Cutouts welded", `${picked.length} cutouts became one SVG using ${top.name}'s colour.`); setNotice("Cutouts welded into one SVG layer");
+    } catch (error) { setNotice(`Weld failed: ${error instanceof Error ? error.message : "Unknown error"}`); } finally { setWorking(false); }
+  };
   const renderCanvas = async (l: Layer, colored = true, multiplier = 1) => {
+    if (colored && l.stickerOffset?.enabled && !["stroke", "acetate", "vector"].includes(l.kind)) return renderStickerOffset(l, multiplier);
     const w = Math.round((l.w / 2.54) * DPI * multiplier),
       h = Math.round((l.h / 2.54) * DPI * multiplier),
       c = document.createElement("canvas");
@@ -4850,11 +4995,11 @@ export default function Home() {
       }
       const pdf = new jsPDF({
         unit: "cm",
-        format: pageMode === "full" ? [100, 100] : "a4",
+        format: pageMode === "full" ? [100, 100] : pageSize,
         orientation: landscape ? "landscape" : "portrait",
       });
       pdf.addImage(c.toDataURL("image/jpeg", 0.95), "JPEG", 0, 0, A4.w, A4.h);
-      pdf.save(pageMode === "full" ? "Cricut_100x100cm_150DPI.pdf" : "Cricut_A4_150DPI.pdf");
+      pdf.save(pageMode === "full" ? "Cricut_100x100cm_150DPI.pdf" : `Cricut_${PAGE_SIZES[pageSize].label}_${landscape ? "Landscape" : "Portrait"}_150DPI.pdf`);
     } finally {
       setWorking(false);
     }
@@ -4943,7 +5088,7 @@ export default function Home() {
         <div className="sub-left">
           <div className="wrap page-setup-slot">
             <button onClick={() => setPageSetupOpen((value) => !value)}>
-              <File /> Page Setup <ChevronDown />
+              <SlidersHorizontal /> Settings <ChevronDown />
             </button>
             {pageSetupOpen && (
               <div className="pop page-setup-menu setup-root">
@@ -4952,20 +5097,32 @@ export default function Home() {
                     Page Size <ChevronDown />
                   </button>
                   <div className="setup-submenu">
-                    {(["portrait", "landscape", "full"] as PageMode[]).map((mode) => (
+                    {(["a4", "letter", "a5", "full"] as PageSize[]).map((size) => (
                       <button
-                        key={mode}
-                        className={pageMode === mode ? "active" : ""}
+                        key={size}
+                        className={pageSize === size ? "active" : ""}
                         onClick={() => {
-                          setPageMode(mode);
-                          setPageSetupOpen(false);
+                          setPageSize(size);
+                          setPageMode(size === "full" ? "full" : pageMode === "landscape" ? "landscape" : "portrait");
                           setSelected([]);
                         }}
                       >
-                        <b>{mode[0].toUpperCase() + mode.slice(1)}</b>
-                        <span>{mode === "portrait" ? "21 × 29.7 cm" : mode === "landscape" ? "29.7 × 21 cm" : "100 × 100 cm"}</span>
+                        <b>{PAGE_SIZES[size].label}</b>
+                        <span>{unit === "cm" ? `${PAGE_SIZES[size].w} × ${PAGE_SIZES[size].h} cm` : `${(PAGE_SIZES[size].w / 2.54).toFixed(2)} × ${(PAGE_SIZES[size].h / 2.54).toFixed(2)} in`}</span>
                       </button>
                     ))}
+                  </div>
+                </div>
+                <div className="setup-group">
+                  <button>Orientation <ChevronDown /></button>
+                  <div className="setup-submenu">
+                    {(["portrait", "landscape"] as const).map((orientation) => <button key={orientation} disabled={pageSize === "full"} className={pageMode === orientation ? "active" : ""} onClick={() => { setPageMode(orientation); setPageSetupOpen(false); setSelected([]); }}><b>{orientation === "portrait" ? "Portrait" : "Landscape"}</b></button>)}
+                  </div>
+                </div>
+                <div className="setup-group">
+                  <button>Units <ChevronDown /></button>
+                  <div className="setup-submenu">
+                    {(["cm", "in"] as Unit[]).map((value) => <button key={value} className={unit === value ? "active" : ""} onClick={() => { setUnit(value); setPageSetupOpen(false); }}><b>{value === "cm" ? "Centimeters" : "Inches"}</b></button>)}
                   </div>
                 </div>
                 <div className="setup-group page-color-group">
@@ -5015,7 +5172,7 @@ export default function Home() {
                           setPageSetupOpen(false);
                         }}
                       >
-                        {margin} cm
+                        {unit === "cm" ? `${margin} cm` : `${(margin / 2.54).toFixed(2)} in`}
                       </button>
                     ))}
                   </div>
@@ -5079,6 +5236,12 @@ export default function Home() {
           </button>
           <button className="bake-cutout" disabled={!one || !["vector", "stroke"].includes(one.kind)} onClick={() => void makeGapsPermanent()}>
             <Sparkles /> Bake Cutout
+          </button>
+          <button disabled={picked.length < 2 && !picked.some((layer)=>layer.groupId)} onClick={picked.some((layer)=>layer.groupId) ? ungroupSelection : groupSelection}>
+            <Layers3 /> {picked.some((layer)=>layer.groupId) ? "Ungroup" : "Group"}
+          </button>
+          <button disabled={picked.length < 2 || !vectorsOnly} onClick={() => void weldSelection()}>
+            <LinkIcon /> Weld
           </button>
         </div>
         <div className="save-actions">
@@ -5292,7 +5455,7 @@ export default function Home() {
                   height: SAFE.h * scale,
                 }}
               >
-                <span>SAFE AREA · {safeMargin} CM</span>
+                <span>SAFE AREA · {unit === "cm" ? safeMargin : (safeMargin / 2.54).toFixed(2)} {unit.toUpperCase()}</span>
               </div>
               {layers
                 .filter((l) => l.visible)
@@ -5310,7 +5473,7 @@ export default function Home() {
                       transform: `rotate(${l.rotation}deg)`,
                     }}
                   >
-                    <img className={["vector", "stroke"].includes(l.kind) ? "cutout-edge-preview" : ""} src={["vector", "stroke"].includes(l.kind) ? scalableSvgPreview(l.src) : l.src} alt="" draggable={false} style={{ opacity: l.acetateOn ? 0.8 : 1 }} />
+                    <img className={["vector", "stroke"].includes(l.kind) ? "cutout-edge-preview" : l.stickerOffset?.enabled ? "sticker-offset-layer" : ""} src={["vector", "stroke"].includes(l.kind) ? scalableSvgPreview(l.src) : l.src} alt="" draggable={false} style={{ opacity: l.acetateOn ? 0.8 : 1, ...(l.stickerOffset?.enabled ? { "--offset-color": l.stickerOffset.color, "--offset-px": `${Math.max(1,(l.stickerOffset.sizeMm/10)*scale)}px` } as React.CSSProperties : {}) }} />
                   </div>
                 ))}
               {shapeImageEditing &&
@@ -5459,13 +5622,13 @@ export default function Home() {
             </div>
             <div className="size-row">
               <label>
-                W <input disabled={!picked.length} type="text" inputMode="decimal" value={widthDraft} onChange={(e) => setWidthDraft(e.target.value)} onBlur={() => commitDimension("w", widthDraft)} onKeyDown={(e) => e.key === "Enter" && commitDimension("w", widthDraft)} /> cm
+                W <input disabled={!picked.length} type="text" inputMode="decimal" value={widthDraft} onChange={(e) => setWidthDraft(e.target.value)} onBlur={() => commitDimension("w", widthDraft)} onKeyDown={(e) => e.key === "Enter" && commitDimension("w", widthDraft)} /> {unit}
               </label>
               <button className="side-chain" onClick={() => setLocked((v) => !v)}>
                 {locked ? <LinkIcon /> : <Link2Off />}
               </button>
               <label>
-                H <input disabled={!picked.length} type="text" inputMode="decimal" value={heightDraft} onChange={(e) => setHeightDraft(e.target.value)} onBlur={() => commitDimension("h", heightDraft)} onKeyDown={(e) => e.key === "Enter" && commitDimension("h", heightDraft)} /> cm
+                H <input disabled={!picked.length} type="text" inputMode="decimal" value={heightDraft} onChange={(e) => setHeightDraft(e.target.value)} onBlur={() => commitDimension("h", heightDraft)} onKeyDown={(e) => e.key === "Enter" && commitDimension("h", heightDraft)} /> {unit}
               </label>
             </div>
             {
@@ -5477,8 +5640,8 @@ export default function Home() {
                     <small>Cutout only · default 0.5 cm</small>
                   </div>
                   <div className="stroke-row">
-                    <input disabled={!one || !["vector", "stroke"].includes(one.kind)} type="number" min="0" step=".1" value={strokeDraft.toFixed(1)} onChange={(e) => setStrokeDraft(Math.max(0, +e.target.value))} />
-                    <span>cm</span>
+                    <input disabled={!one || !["vector", "stroke"].includes(one.kind)} type="number" min="0" step={unit === "cm" ? ".1" : ".05"} value={(unit === "cm" ? strokeDraft : strokeDraft / 2.54).toFixed(unit === "cm" ? 1 : 2)} onChange={(e) => setStrokeDraft(Math.max(0, +e.target.value) * (unit === "cm" ? 1 : 2.54))} />
+                    <span>{unit}</span>
                     <button disabled={!one || !["vector", "stroke"].includes(one.kind)} onClick={() => (one?.kind === "stroke" ? void updateStroke() : void addStroke())}>
                       Apply Stroke
                     </button>
@@ -5519,6 +5682,12 @@ export default function Home() {
               <button disabled={!selected.length} onClick={duplicate}>
                 <Copy />
               </button>
+              <button disabled={picked.length < 2 && !picked.some((layer)=>layer.groupId)} onClick={picked.some((layer)=>layer.groupId) ? ungroupSelection : groupSelection} title={picked.some((layer)=>layer.groupId) ? "Ungroup" : "Group"}>
+                <Layers3 />
+              </button>
+              <button disabled={picked.length < 2 || !vectorsOnly} onClick={() => void weldSelection()} title="Weld cutouts">
+                <LinkIcon />
+              </button>
               <button onClick={() => fileRef.current?.click()}>
                 <Plus />
               </button>
@@ -5553,8 +5722,9 @@ export default function Home() {
                   }
                 }}
                 onClick={(e) => {
-                  if (e.shiftKey || e.ctrlKey || e.metaKey) setSelected((v) => (v.includes(l.id) ? v.filter((x) => x !== l.id) : [...v, l.id]));
-                  else setSelected([l.id]);
+                  const ids=l.groupId?layers.filter((layer)=>layer.groupId===l.groupId).map((layer)=>layer.id):[l.id];
+                  if (e.shiftKey || e.ctrlKey || e.metaKey) setSelected((v) => ids.every((id)=>v.includes(id)) ? v.filter((id)=>!ids.includes(id)) : [...new Set([...v,...ids])]);
+                  else setSelected(ids);
                 }}
               >
                 <button
@@ -5714,12 +5884,12 @@ export default function Home() {
                     <article key={project.id} className={`project-card ${project.id === currentProjectId ? "current" : ""} ${expanded ? "expanded" : ""}`}>
                       <div className="project-row">
                         <button className="project-summary" onClick={() => setExpandedProjectId((value) => (value === project.id ? null : project.id))}>
-                          <span className="project-composite-thumb">{project.data.thumbnail ? <img src={project.data.thumbnail} alt="" /> : <FolderOpen />}</span>
+                          <span className="project-composite-thumb">{project.thumbnail || project.data?.thumbnail ? <img src={project.thumbnail || project.data?.thumbnail} alt="" /> : <FolderOpen />}</span>
                           <span className="project-summary-copy">
                             <b>{project.name}</b>
                             <small>Updated {new Date(project.updated_at).toLocaleString()}</small>
                             <em>
-                              {project.data.layers?.length || 0} layers · {formatProjectSize(project)}
+                              {project.layer_count ?? project.data?.layers?.length ?? 0} layers · {formatProjectSize(project)}
                             </em>
                           </span>
                           <ChevronDown />
@@ -5739,12 +5909,13 @@ export default function Home() {
                       {expanded && (
                         <div className="project-details">
                           <div className="project-layer-thumbs">
-                            {(project.data.layers || []).slice(0, 12).map((layer) => (
+                            {(project.data?.layers || []).slice(0, 12).map((layer) => (
                               <span key={layer.id} title={layer.name}>
-                                <img src={layer.src} alt={layer.name} />
+                                <img src={projectLayerPreview(project, layer.src)} alt={layer.name} />
                               </span>
                             ))}
-                            {(project.data.layers?.length || 0) > 12 && <b>+{project.data.layers.length - 12}</b>}
+                            {(project.data?.layers?.length || 0) > 12 && <b>+{project.data.layers.length - 12}</b>}
+                            {!project.data?.layers && <small>Layer previews load when this project is opened.</small>}
                           </div>
                           <div className="project-card-actions">
                             <button className="open-saved-project" onClick={() => requestOpenProject(project)}>
@@ -6021,6 +6192,7 @@ export default function Home() {
           </div>
         </div>
       )}
+      {autosaveStatus && <div className={`autosave-banner ${autosaveStatus}`} role="status"><i/><b>{autosaveStatus === "saving" ? "Autosaving project…" : autosaveStatus === "saved" ? "Autosaved just now" : "Autosave failed — your work remains open"}</b></div>}
       {addNewOpen && (
         <div className="preset-modal add-new-modal" role="dialog" aria-modal="true" aria-label="Add New" onPointerDown={() => setAddNewOpen(false)}>
           <div className="add-new-dialog" onPointerDown={(e) => e.stopPropagation()}>
@@ -6081,7 +6253,7 @@ export default function Home() {
                   <button className="create-soon enabled" disabled={Boolean(generationBusy)} onClick={()=>void generateArtwork("text")}><Sparkles /> {generationBusy === "text" ? "Creating…" : "Create Text Image"}</button>
                 </div>
               </div>
-              <GeneratedRail images={generatedTextImages} onOpen={setGeneratedPreview}/>
+              <GeneratedRail images={generatedTextImages} onOpen={setGeneratedPreview} busy={generationBusy === "text"}/>
               </div>
             ) : (
               <div className="create-studio image-studio">
@@ -6097,7 +6269,7 @@ export default function Home() {
                 <label className="sticker-toggle"><input type="checkbox" checked={whiteStickerOffset} onChange={(e)=>setWhiteStickerOffset(e.target.checked)}/><span/><b>White sticker offset</b><small>Add a clean white label border around the artwork</small></label>
                 <button className="create-soon enabled" disabled={Boolean(generationBusy)} onClick={()=>void generateArtwork("image")}><Sparkles /> {generationBusy === "image" ? "Creating…" : "Create Image"}</button>
               </div>
-              <GeneratedRail images={generatedArtImages} onOpen={setGeneratedPreview}/>
+              <GeneratedRail images={generatedArtImages} onOpen={setGeneratedPreview} busy={generationBusy === "image"}/>
               </div>
             )}
           </div>
@@ -6391,6 +6563,9 @@ export default function Home() {
                   <button className={imageTab === "preset" ? "active" : ""} onClick={() => setImageTab("preset")}>
                     3. Apply Preset
                   </button>
+                  <button className={imageTab === "sticker" ? "active" : ""} onClick={() => setImageTab("sticker")}>
+                    4. Create Sticker Offset
+                  </button>
                 </div>
                 {imageTab === "edit" ? (
                   <>
@@ -6544,6 +6719,19 @@ export default function Home() {
                         Save Edit
                       </button>
                     </footer>
+                  </>
+                ) : imageTab === "sticker" ? (
+                  <>
+                    <div className="sticker-offset-body">
+                      <div className="sticker-offset-preview" style={{ "--sticker-color": stickerColor, "--sticker-size": `${Math.max(2, stickerSizeMm * 2.4)}px` } as React.CSSProperties}><img src={imageEditor.source} alt="Sticker offset preview" /></div>
+                      <aside className="sticker-offset-controls">
+                        <h3>Create Sticker Offset</h3><p>Add a smooth, editable border around the image. It stays proportional in physical units and is baked into PNG exports.</p>
+                        <label>Offset width <b>{stickerSizeMm.toFixed(1)} mm</b></label><input type="range" min="0.5" max="15" step="0.5" value={stickerSizeMm} onChange={(event)=>setStickerSizeMm(+event.target.value)} />
+                        <label>Offset color</label><div className="sticker-color-row"><button className={stickerColor.toLowerCase()==="#ffffff"?"active":""} onClick={()=>setStickerColor("#ffffff")}><i style={{background:"#fff"}}/>White preset</button><input type="color" value={stickerColor} onChange={(event)=>setStickerColor(event.target.value)} /><button onClick={()=>void pickStickerColor()}><Pipette/> Pick Color</button></div>
+                        {target?.stickerOffset?.enabled && <button className="remove-sticker-style" onClick={()=>{mutate(target.id,layer=>({...layer,stickerOffset:undefined}));setNotice("Sticker offset removed")}}><Trash2/> Remove current offset</button>}
+                      </aside>
+                    </div>
+                    <footer><span className="footer-spacer"/><button className="cancel" onClick={()=>setImageTab("edit")}>Back</button><button className="confirm" onClick={applyStickerStyle}><Sparkles/> Apply Sticker Offset</button></footer>
                   </>
                 ) : imageTab === "preset" ? (
                   <>
@@ -6819,7 +7007,7 @@ export default function Home() {
                     <img className={`cut-tool-${cutEditor.tool} cutout-edge-preview`} src={cutPreview} alt="Cutout edit preview" draggable={false} onLoad={(e) => setCutImageSize(fitEditorImage(e.currentTarget, cutPreviewRef.current))} onPointerDown={startCutEdit} onPointerMove={moveCutEdit} onPointerUp={endCutEdit} onPointerCancel={endCutEdit} onPointerEnter={() => setCutCursor((v) => ({ ...v, visible: true }))} onPointerLeave={() => setCutCursor((v) => ({ ...v, visible: false }))} />
                     {cutEdgeOverlay && <img className="cut-selected-edge" src={cutEdgeOverlay} alt="" draggable={false} />}
                     <svg className="cut-edit-overlay" viewBox="0 0 100 100" preserveAspectRatio="none">
-                      <polyline ref={cutLivePathRef} points="" className="edit-brush-stroke" style={{ strokeWidth: cutEditor.brush / Math.max(1, cutEditor.zoom) }} />
+                      <polyline ref={cutLivePathRef} points="" className="edit-brush-stroke" style={{ strokeWidth: cutEditor.brush }} />
                       <rect ref={cutLiveRectRef} className="eraser-selection" style={{ display: "none" }} />
                     </svg>
                     {cutCursor.visible && cutEditor.tool && ["bridge", "erase", "smooth"].includes(cutEditor.tool) && (
@@ -6829,7 +7017,7 @@ export default function Home() {
                         style={{
                           left: "50%",
                           top: "50%",
-                          width: `${clamp(((cutEditor.brush / 100) * Math.min(cutImageSize.w, cutImageSize.h)) / Math.max(1, cutEditor.zoom), 4 / Math.max(1, cutEditor.zoom), 72 / Math.max(1, cutEditor.zoom))}px`,
+                          width: `${clamp((cutEditor.brush / 100) * Math.min(cutImageSize.w, cutImageSize.h), 2, 160)}px`,
                           aspectRatio: "1",
                         }}
                       />
@@ -7273,6 +7461,10 @@ export default function Home() {
                   <ul><li>{new Date(entry.at).toLocaleString()} · {entry.details}</li></ul>
                 </article>
               )) : <article><div><span>No actions recorded yet.</span></div></article>}
+            </div>
+            <div className={`account-stat ${storageBlocked ? "storage-over" : ""}`}>
+              <Download />
+              <span><b>{(projects.reduce((sum, project)=>sum+(project.byte_size || projectBytes(project.data || {})),0)/1048576).toFixed(1)} / 20 MB</b><small>Project storage used</small></span>
             </div>
             <footer>
               <span>{sessionLog.length} recorded actions · saved with this project</span>
