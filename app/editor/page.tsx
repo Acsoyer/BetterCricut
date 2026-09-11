@@ -777,11 +777,11 @@ async function layerOpaqueAtWorld(layer:Layer,worldX:number,worldY:number){
   const cx=layer.x+layer.w/2,cy=layer.y+layer.h/2,rad=-layer.rotation*Math.PI/180,dx=worldX-cx,dy=worldY-cy,localX=cx+dx*Math.cos(rad)-dy*Math.sin(rad),localY=cy+dx*Math.sin(rad)+dy*Math.cos(rad),u=(localX-layer.x)/layer.w,v=(localY-layer.y)/layer.h;
   if(u<0||u>1||v<0||v>1)return false;const img=await getImage(layer.src),c=document.createElement("canvas");c.width=c.height=1;const x=c.getContext("2d")!;x.drawImage(img,clamp(Math.floor(u*img.naturalWidth),0,img.naturalWidth-1),clamp(Math.floor(v*img.naturalHeight),0,img.naturalHeight-1),1,1,0,0,1,1);return x.getImageData(0,0,1,1).data[3]>=64;
 }
-async function smoothVectorCutout(src: string, color: string) {
+async function smoothVectorCutout(src: string, color: string, preserveFrame = false) {
   const img = await getImage(src),
     longest = Math.max(img.naturalWidth, img.naturalHeight),
-    supersample = clamp(1800 / Math.max(longest, 1), 1, 3),
-    pad = Math.ceil(supersample * 6),
+    supersample = clamp(2600 / Math.max(longest, 1), 1, 4),
+    pad = preserveFrame ? 0 : Math.ceil(supersample * 6),
     mask = document.createElement("canvas"),
     traced = document.createElement("canvas");
   mask.width = Math.max(1, Math.round(img.naturalWidth * supersample));
@@ -798,7 +798,7 @@ async function smoothVectorCutout(src: string, color: string) {
   tx.fillRect(0, 0, traced.width, traced.height);
   const binary = tx.createImageData(mask.width, mask.height);
   for (let i = 0; i < pixels.data.length; i += 4) {
-    const solid = pixels.data[i + 3] >= 128;
+    const solid = pixels.data[i + 3] >= 96;
     binary.data[i] = binary.data[i + 1] = binary.data[i + 2] = solid ? 0 : 255;
     binary.data[i + 3] = 255;
   }
@@ -806,9 +806,9 @@ async function smoothVectorCutout(src: string, color: string) {
   const paths = traceCanvas(traced, {
     turnpolicy: "minority",
     turdsize: Math.max(2, Math.round(supersample * supersample * 0.25)),
-    alphamax: 0.62,
+    alphamax: 0.95,
     optcurve: true,
-    opttolerance: 0.08,
+    opttolerance: 0.025,
   });
   if (!paths.length) throw new Error("The cutout contour is empty");
   const doc = new DOMParser().parseFromString(getSVG(paths, 1, "fill"), "image/svg+xml"),
@@ -1211,13 +1211,12 @@ async function renderCutoutEdit(editor: CutoutEditor, applyCrop = false) {
   out.width = sw;
   out.height = sh;
   out.getContext("2d")!.drawImage(c, sx, sy, sw, sh, 0, 0, sw, sh);
-  const trimmed = await trimTransparent(out.toDataURL());
   return {
-    src: trimmed.src,
-    left: l + (1 - l - r) * trimmed.left,
-    top: t + (1 - t - b) * trimmed.top,
-    width: (1 - l - r) * trimmed.width,
-    height: (1 - t - b) * trimmed.height,
+    src: out.toDataURL(),
+    left: l,
+    top: t,
+    width: 1 - l - r,
+    height: 1 - t - b,
   };
 }
 async function bakeRotation(layer: Layer) {
@@ -1692,6 +1691,7 @@ export default function Home() {
     [textLineCount, setTextLineCount] = useState<1 | 2 | 3 | 4>(3),
     [textLines, setTextLines] = useState(["", "", "", ""]),
     [textExtraPrompt, setTextExtraPrompt] = useState(""),
+    [connectEverything, setConnectEverything] = useState(false),
     [textDetailsOpen, setTextDetailsOpen] = useState(false),
     [optionGallery, setOptionGallery] = useState<{ kind: "font" | "style"; index: number } | null>(null),
     [imageArtStyle, setImageArtStyle] = useState<"watercolor" | "cartoon" | "baby" | "girly" | "storybook" | "paper-cut">("watercolor"),
@@ -1883,7 +1883,7 @@ export default function Home() {
       const response = await fetch("/api/generate-image", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
-        body: JSON.stringify(mode === "text" ? { mode, lines, font: textFontStyle, extraPrompt: textExtraPrompt, variation } : { mode, description: imagePrompt, style: imageArtStyle, whiteStickerOffset }),
+        body: JSON.stringify(mode === "text" ? { mode, lines, font: textFontStyle, extraPrompt: textExtraPrompt, variation, connectEverything } : { mode, description: imagePrompt, style: imageArtStyle, whiteStickerOffset }),
       });
       const result = await response.json() as { image?: string; error?: string };
       if (!response.ok || !result.image) throw new Error(result.error || "Image generation failed");
@@ -2400,7 +2400,7 @@ export default function Home() {
       y: clamp((s.top + s.height / 2 - c.top) / scale - h / 2, SAFE.y, Math.max(SAFE.y, SAFE.y + SAFE.h - h)),
     };
   };
-  const importFiles = async (files: File[]) => {
+  const importFiles = async (files: File[], convertTextToCutout = false) => {
     let imported = 0;
     for (const f of files) {
       if (!/image\/(jpeg|png|svg\+xml|webp)/.test(f.type)) continue;
@@ -2420,13 +2420,15 @@ export default function Home() {
         h = SAFE.h;
         w = h * ratio;
       }
-      const id = uid(),
+      const cutoutColor = DARK,
+        cutoutSrc = convertTextToCutout ? await smoothVectorCutout(src, cutoutColor) : src,
+        id = uid(),
         place = visibleInsertionPoint(w, h);
       setLayers((v) =>
         v.concat({
           id,
           name: clean(f.name),
-          src,
+          src: cutoutSrc,
           originalSrc: src,
           visible: true,
           x: place.x,
@@ -2435,14 +2437,14 @@ export default function Home() {
           h,
           naturalW: img.naturalWidth,
           naturalH: img.naturalHeight,
-          kind: "original",
+          kind: convertTextToCutout ? "vector" : "original",
           strokeCm: 0.5,
           fillGapsMm: 0,
           invalid: false,
           rotation: 0,
-          color: DARK,
-          steps: [],
-          activeStep: -1,
+          color: cutoutColor,
+          steps: convertTextToCutout ? [{ id: uid(), type: "cutout", label: "AI Text Cutout", locked: true, snapshot: { src: cutoutSrc, x: place.x, y: place.y, w, h, kind: "vector", color: cutoutColor, strokeCm: 0.5, fillGapsMm: 0, acetateOn: false } }] : [],
+          activeStep: convertTextToCutout ? 0 : -1,
           acetateOn: false,
         }),
       );
@@ -2461,7 +2463,7 @@ export default function Home() {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const blob = await response.blob(),
         filename = src.startsWith("data:") ? "generated-cake-topper.png" : (src.split("/").pop() || "generated-cake-topper.png").split("?")[0];
-      const imported = await importFiles([new window.File([blob], filename, { type: "image/png" })]);
+      const imported = await importFiles([new window.File([blob], filename, { type: "image/png" })], createImageMode === "text");
       if (imported !== 1) throw new Error("The generated PNG was not accepted by the canvas importer");
       setGeneratedPreview(null);
       setAddNewOpen(false);
@@ -2994,7 +2996,7 @@ export default function Home() {
     const stroke: EditStroke = {
       id,
       tool: cutEditor.tool,
-      brush: cutEditor.brush / Math.sqrt(Math.max(1, cutEditor.zoom)),
+      brush: cutEditor.brush / Math.max(1, cutEditor.zoom),
       points: [cutPoint(e)],
     };
     cutDraftStroke.current = stroke;
@@ -3080,8 +3082,9 @@ export default function Home() {
     if (!target) return;
     setWorking(true);
     try {
-      const result = await renderCutoutEdit(cutEditor, true),
-        finalSrc = await smoothVectorCutout(result.src, target.color),
+      const hasCrop = Object.values(cutEditor.crop).some((value) => Math.abs(value) > 0.001),
+        result = await renderCutoutEdit(cutEditor, hasCrop),
+        finalSrc = cutEditor.strokes.length || hasCrop ? await smoothVectorCutout(result.src, target.color, true) : target.src,
         safety = await analyzeCutSafety(finalSrc, target.w * result.width),
         next: Layer = {
           ...target,
@@ -5291,7 +5294,7 @@ export default function Home() {
                       transform: `rotate(${l.rotation}deg)`,
                     }}
                   >
-                    <img src={["vector", "stroke"].includes(l.kind) ? scalableSvgPreview(l.src) : l.src} alt="" draggable={false} style={{ opacity: l.acetateOn ? 0.8 : 1 }} />
+                    <img className={["vector", "stroke"].includes(l.kind) ? "cutout-edge-preview" : ""} src={["vector", "stroke"].includes(l.kind) ? scalableSvgPreview(l.src) : l.src} alt="" draggable={false} style={{ opacity: l.acetateOn ? 0.8 : 1 }} />
                   </div>
                 ))}
               {shapeImageEditing &&
@@ -6056,6 +6059,7 @@ export default function Home() {
                   <button className="optional-prompt-toggle" onClick={()=>setTextDetailsOpen((open)=>!open)}><span><b>Extra Prompt</b><small>Optional instructions for decorative lettering</small></span><ChevronDown className={textDetailsOpen?"open":""}/></button>
                   {textDetailsOpen&&<label>Extra Prompt<textarea value={textExtraPrompt} onChange={(e)=>setTextExtraPrompt(e.target.value)} placeholder="For example: Add a small heart above the S, or extend the tail of the final a." maxLength={240}/><small>{textExtraPrompt.length}/240 · Describe letter details only; the line text above stays unchanged.</small></label>}
                 </section>
+                <label className="sticker-toggle connect-everything-toggle"><input type="checkbox" checked={connectEverything} onChange={(event)=>setConnectEverything(event.target.checked)}/><span/><b>Connect Everything</b><small>Join every letter and word into one cuttable piece with connections at least 10 px / approximately 1 mm thick</small></label>
                 <div className="text-create-actions">
                   <button className="change-fonts" disabled={!hasGeneratedText || Boolean(generationBusy)} onClick={()=>void generateArtwork("text",true)}><Replace /> Change fonts</button>
                   <button className="create-soon enabled" disabled={Boolean(generationBusy)} onClick={()=>void generateArtwork("text")}><Sparkles /> {generationBusy === "text" ? "Creating…" : "Create Text Image"}</button>
@@ -6796,10 +6800,10 @@ export default function Home() {
                       } as React.CSSProperties
                     }
                   >
-                    <img className={`cut-tool-${cutEditor.tool}`} src={cutPreview} alt="Cutout edit preview" draggable={false} onLoad={(e) => setCutImageSize(fitEditorImage(e.currentTarget, cutPreviewRef.current))} onPointerDown={startCutEdit} onPointerMove={moveCutEdit} onPointerUp={endCutEdit} onPointerCancel={endCutEdit} onPointerEnter={() => setCutCursor((v) => ({ ...v, visible: true }))} onPointerLeave={() => setCutCursor((v) => ({ ...v, visible: false }))} />
+                    <img className={`cut-tool-${cutEditor.tool} cutout-edge-preview`} src={cutPreview} alt="Cutout edit preview" draggable={false} onLoad={(e) => setCutImageSize(fitEditorImage(e.currentTarget, cutPreviewRef.current))} onPointerDown={startCutEdit} onPointerMove={moveCutEdit} onPointerUp={endCutEdit} onPointerCancel={endCutEdit} onPointerEnter={() => setCutCursor((v) => ({ ...v, visible: true }))} onPointerLeave={() => setCutCursor((v) => ({ ...v, visible: false }))} />
                     {cutEdgeOverlay && <img className="cut-selected-edge" src={cutEdgeOverlay} alt="" draggable={false} />}
                     <svg className="cut-edit-overlay" viewBox="0 0 100 100" preserveAspectRatio="none">
-                      <polyline ref={cutLivePathRef} points="" className="edit-brush-stroke" style={{ strokeWidth: cutEditor.brush / Math.sqrt(Math.max(1, cutEditor.zoom)) / cutEditor.zoom }} />
+                      <polyline ref={cutLivePathRef} points="" className="edit-brush-stroke" style={{ strokeWidth: cutEditor.brush / Math.max(1, cutEditor.zoom) }} />
                       <rect ref={cutLiveRectRef} className="eraser-selection" style={{ display: "none" }} />
                     </svg>
                     {cutCursor.visible && cutEditor.tool && ["bridge", "erase", "smooth"].includes(cutEditor.tool) && (
@@ -6809,7 +6813,7 @@ export default function Home() {
                         style={{
                           left: "50%",
                           top: "50%",
-                          width: `${clamp(((cutEditor.brush / Math.sqrt(Math.max(1, cutEditor.zoom)) / 100) * Math.min(cutImageSize.w, cutImageSize.h)) / cutEditor.zoom, 6 / cutEditor.zoom, 72 / cutEditor.zoom)}px`,
+                          width: `${clamp(((cutEditor.brush / 100) * Math.min(cutImageSize.w, cutImageSize.h)) / Math.max(1, cutEditor.zoom), 4 / Math.max(1, cutEditor.zoom), 72 / Math.max(1, cutEditor.zoom))}px`,
                           aspectRatio: "1",
                         }}
                       />
