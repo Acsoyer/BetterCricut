@@ -5567,7 +5567,7 @@ export default function Home() {
                     onChange={(e) => mutate(l.id, (v) => ({ ...v, name: e.target.value }))}
                   />
                   <small>
-                    {l.kind === "original" ? "Original" : l.kind === "nobg" ? "Background removed" : l.kind === "stroke" ? `Stroke · ${fmt(l.strokeCm)} cm` : "Acetate"} · {fmt(l.w)} × {fmt(l.h)} cm
+                    {l.kind === "original" ? "Original" : l.kind === "nobg" ? "Background removed" : l.kind === "stroke" ? `Stroke · ${fmt(l.strokeCm)} cm` : l.kind === "vector" ? "Cutout" : "Acetate"} · {fmt(l.w)} × {fmt(l.h)} cm
                   </small>
                 </div>
                 {(l.invalid || (cutSafetyEnabled && l.cutRisk)) && (
