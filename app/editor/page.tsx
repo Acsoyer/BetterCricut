@@ -269,9 +269,23 @@ const save = (url: string, name: string) => {
   a.click();
   if (url.startsWith("blob:")) setTimeout(() => URL.revokeObjectURL(url), 1000);
 };
-// SVG layers must stay SVG in every editor. Their non-scaling stroke is what keeps
-// the visible cutting edge crisp and the same screen width at every zoom level.
-const scalableSvgPreview = (src: string) => src;
+// Add a display-only vector contour. The stored/exported SVG remains fill-only,
+// so the outline never changes the Cricut cutting geometry.
+const scalableSvgPreview = (src: string) => {
+  if (!src.startsWith("data:image/svg+xml,")) return src;
+  try {
+    const doc = new DOMParser().parseFromString(decodeURIComponent(src.slice(src.indexOf(",") + 1)), "image/svg+xml");
+    doc.querySelectorAll("path,rect,ellipse,circle,polygon").forEach((node) => {
+      node.setAttribute("stroke", "#141715");
+      node.setAttribute("stroke-width", ".8");
+      node.setAttribute("stroke-linecap", "round");
+      node.setAttribute("stroke-linejoin", "round");
+      node.setAttribute("vector-effect", "non-scaling-stroke");
+      node.setAttribute("paint-order", "stroke fill");
+    });
+    return `data:image/svg+xml,${encodeURIComponent(new XMLSerializer().serializeToString(doc.documentElement))}`;
+  } catch { return src; }
+};
 const getImage = (src: string) =>
   new Promise<HTMLImageElement>((ok, no) => {
     const i = new Image();
@@ -780,7 +794,7 @@ async function layerOpaqueAtWorld(layer:Layer,worldX:number,worldY:number){
 async function smoothVectorCutout(src: string, color: string, preserveFrame = false) {
   const img = await getImage(src),
     longest = Math.max(img.naturalWidth, img.naturalHeight),
-    supersample = clamp(2600 / Math.max(longest, 1), 1, 4),
+    supersample = clamp(2200 / Math.max(longest, 1), 1, 3.5),
     pad = preserveFrame ? 0 : Math.ceil(supersample * 6),
     mask = document.createElement("canvas"),
     traced = document.createElement("canvas");
@@ -806,9 +820,9 @@ async function smoothVectorCutout(src: string, color: string, preserveFrame = fa
   const paths = traceCanvas(traced, {
     turnpolicy: "minority",
     turdsize: Math.max(2, Math.round(supersample * supersample * 0.25)),
-    alphamax: 0.95,
+    alphamax: 1,
     optcurve: true,
-    opttolerance: 0.025,
+    opttolerance: 0.12,
   });
   if (!paths.length) throw new Error("The cutout contour is empty");
   const doc = new DOMParser().parseFromString(getSVG(paths, 1, "fill"), "image/svg+xml"),
@@ -2148,9 +2162,11 @@ export default function Home() {
     let cancelled = false;
     const timer = window.setTimeout(
       () =>
-        void renderCutoutEdit(cutEditor).then((r) => {
-          if (!cancelled) setCutPreview(r.src);
-        }),
+        void renderCutoutEdit(cutEditor)
+          .then((r) => smoothVectorCutout(r.src, cutEditor.color, true))
+          .then((src) => {
+            if (!cancelled) setCutPreview(scalableSvgPreview(src));
+          }),
       80,
     );
     return () => {
@@ -3676,7 +3692,7 @@ export default function Home() {
     try {
       const cm = cmOverride ?? strokeDraft,
         rasterStroke = await strokeImage(one.src, cm, one.w, lighten(one.color), fillGapsDraft),
-        src = await vTracerCutout(rasterStroke, lighten(one.color), one.w + cm * 2, 1.25),
+        src = await smoothVectorCutout(rasterStroke, lighten(one.color), true),
         x = one.x - cm,
         y = one.y - cm,
         w = one.w + cm * 2,
@@ -3740,7 +3756,7 @@ export default function Home() {
         y = one.y - (cm - old),
         previewColor = one.color,
         rasterStroke = await strokeImage(base.src, cm, base.w, previewColor, fillGapsDraft),
-        src = await vTracerCutout(rasterStroke, previewColor, base.w + cm * 2, 1.25),
+        src = await smoothVectorCutout(rasterStroke, previewColor, true),
         invalid = x < SAFE.x || y < SAFE.y || x + newW > SAFE.x + SAFE.w || y + newH > SAFE.y + SAFE.h;
       mutate(one.id, (l) => {
         const next = {
@@ -3781,7 +3797,7 @@ export default function Home() {
         cm = one.kind === "stroke" ? one.strokeCm : 0,
         preservedColor = one.color,
         rasterStroke = await strokeImage(base.src, cm, base.w, preservedColor, fillGapsDraft),
-        src = await vTracerCutout(rasterStroke, preservedColor, base.w + cm * 2, 1.25);
+        src = await smoothVectorCutout(rasterStroke, preservedColor, true);
       mutate(one.id, (l) => {
         const next = {
             ...l,
@@ -4754,10 +4770,10 @@ export default function Home() {
             nativeRoot.setAttribute("width", `${layer.w}cm`);
             nativeRoot.setAttribute("height", `${layer.h}cm`);
             nativeRoot.setAttribute("fill", DARK);
-            nativeRoot.setAttribute("stroke", DARK);
+            nativeRoot.setAttribute("stroke", "none");
             nativeRoot.querySelectorAll("path,rect,ellipse,circle,polygon").forEach((node) => {
               node.setAttribute("fill", DARK);
-              node.setAttribute("stroke", DARK);
+              node.setAttribute("stroke", "none");
             });
             save(
               URL.createObjectURL(
