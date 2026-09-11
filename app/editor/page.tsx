@@ -127,6 +127,19 @@ const PAGE_COLORS: Record<PageColor, { label: string; color: string }> = {
   darkgray: { label: "Dark Gray", color: "#777d7a" },
   canson: { label: "Canson Paper", color: "#f6eddd" },
 };
+const TEXT_FONT_OPTIONS = [
+  ["cursive", "Cursive Font", "/create-examples/text-black/black-happy-birthday-sophia-v2-cursive.png"],
+  ["serif", "Serif Font", "/create-examples/text-black/black-happy-birthday-sophia-v3-serif.png"],
+  ["mixed", "Mixed Font", "/create-examples/text-black/black-happy-birthday-sophia-v1-mixed.png"],
+] as const;
+const IMAGE_STYLE_OPTIONS = [
+  ["watercolor", "Watercolor", "/create-examples/image-styles/cute-giraffe-watercolor-v2.png"],
+  ["cartoon", "Cartoon", "/create-examples/image-styles/cute-giraffe-cartoon-v2.png"],
+  ["baby", "Baby", "/create-examples/image-styles/cute-giraffe-baby-v2.png"],
+  ["girly", "Girly", "/create-examples/image-styles/cute-giraffe-girly.png"],
+  ["storybook", "3D Storybook", "/create-examples/image-styles/cute-giraffe-3d-storybook.png"],
+  ["paper-cut", "Paper Cut", "/create-examples/image-styles/cute-giraffe-paper-cut.png"],
+] as const;
 function GeneratedRail({ images, onOpen }: { images: string[]; onOpen: (src: string) => void }) {
   return <aside className="generated-rail"><header><b>Versions</b><small>Newest at the bottom</small></header>{images.length ? images.map((src,i)=><button key={`${src}-${i}`} onClick={()=>onOpen(src)}><img src={src} alt={`Generated version ${i+1}`}/><span>V{i+1}</span></button>) : <p>Your generated versions will appear here.</p>}</aside>;
 }
@@ -1675,10 +1688,15 @@ export default function Home() {
     [addNewOpen, setAddNewOpen] = useState(false),
     [createImageMode, setCreateImageMode] = useState<"choose" | "text" | "image" | null>(null),
     [textFontStyle, setTextFontStyle] = useState<"mixed" | "cursive" | "serif">("mixed"),
-    [textLayout, setTextLayout] = useState<"square" | "rectangle" | "one-line">("square"),
+    [textLineCount, setTextLineCount] = useState<1 | 2 | 3 | 4>(2),
+    [textLines, setTextLines] = useState(["Happy Birthday", "Sophia", "", ""]),
+    [textExtraPrompt, setTextExtraPrompt] = useState(""),
+    [textDetailsOpen, setTextDetailsOpen] = useState(false),
+    [optionGallery, setOptionGallery] = useState<{ kind: "font" | "style"; index: number } | null>(null),
     [imageArtStyle, setImageArtStyle] = useState<"watercolor" | "cartoon" | "baby" | "girly" | "storybook" | "paper-cut">("watercolor"),
     [whiteStickerOffset, setWhiteStickerOffset] = useState(false),
     [generatedImages, setGeneratedImages] = useState<string[]>([]),
+    [hasGeneratedText, setHasGeneratedText] = useState(false),
     [generatedPreview, setGeneratedPreview] = useState<string | null>(null),
     [cutoutMenuOpen, setCutoutMenuOpen] = useState(false),
     [svgWarningOpen, setSvgWarningOpen] = useState(false),
@@ -5977,14 +5995,26 @@ export default function Home() {
                   <button className="active" onClick={() => setCreateImageMode("text")}><Type />Cake topper as text</button>
                   <button onClick={() => setCreateImageMode("image")}><ImageIcon />Cake topper as image</button>
                 </div>
-                <div className="prompt-example-row"><label>The text<input type="text" placeholder="Happy Birthday Sophia" /></label><figure><img src="/create-examples/text-black/black-happy-birthday-sophia-v1-mixed.png" alt="Happy Birthday Sophia cake topper example" /></figure></div>
-                <section><b>Fonts</b><div className="visual-option-grid three">
-                  {([['mixed','Mixed font','/create-examples/text-black/black-happy-birthday-sophia-v1-mixed.png'],['cursive','Cursive font','/create-examples/text-black/black-happy-birthday-sophia-v2-cursive.png'],['serif','Serif font','/create-examples/text-black/black-happy-birthday-sophia-v3-serif.png']] as const).map(([value,label,src]) => <button key={value} className={textFontStyle===value?'active':''} onClick={()=>setTextFontStyle(value)}><img src={src} alt={label}/><span>{label}</span></button>)}
+                <div className="text-compose-row">
+                  <div className="text-compose-fields">
+                    <label className="line-count-label">Number of lines<input type="number" min="1" max="4" step="1" value={textLineCount} onChange={(e)=>setTextLineCount(clamp(Math.round(+e.target.value),1,4) as 1|2|3|4)}/></label>
+                    <div className="text-line-inputs">
+                      {Array.from({length:textLineCount},(_,index)=><label key={index}>Line {index+1}<input value={textLines[index]} placeholder={index===0?"Happy Birthday":index===1?"Sophia":"Text"} onChange={(e)=>setTextLines((lines)=>lines.map((line,lineIndex)=>lineIndex===index?e.target.value:line))}/></label>)}
+                    </div>
+                  </div>
+                  <figure><img src="/create-examples/text-black/black-happy-birthday-sophia-v1-mixed.png" alt="Happy Birthday Sophia cake topper example" /></figure>
+                </div>
+                <section><b>Fonts</b><div className="visual-option-grid three font-option-grid">
+                  {TEXT_FONT_OPTIONS.map(([value,label,src],index) => <button key={value} className={textFontStyle===value?'active':''} onClick={()=>{setTextFontStyle(value);setOptionGallery({kind:"font",index})}}><img src={src} alt={label}/><span>{label}<Maximize2 /></span></button>)}
                 </div></section>
-                <section><b>Layout</b><div className="visual-option-grid three">
-                  {([['square','Square','/create-examples/text-black/black-happy-birthday-sophia-square.png'],['rectangle','Rectangle','/create-examples/text-black/black-happy-birthday-sophia-rectangle.png'],['one-line','One-Line','/create-examples/text-black/black-happy-birthday-sophia-one-line.png']] as const).map(([value,label,src]) => <button key={value} className={textLayout===value?'active':''} onClick={()=>setTextLayout(value)}><img src={src} alt={`${label} layout`}/><span>{label}</span></button>)}
-                </div></section>
-                <button className="create-soon enabled" onClick={()=>{const src=`/create-examples/text-black/black-happy-birthday-sophia-${textLayout}.png`;setGeneratedImages(v=>v.concat(src));setGeneratedPreview(src)}}><Sparkles /> Create image <small>Preview simulation</small></button>
+                <section className="letter-details-section">
+                  <button className="optional-prompt-toggle" onClick={()=>setTextDetailsOpen((open)=>!open)}><span><b>Letter details</b><small>Optional instructions for decorative lettering</small></span><ChevronDown className={textDetailsOpen?"open":""}/></button>
+                  {textDetailsOpen&&<label>Extra prompt<textarea value={textExtraPrompt} onChange={(e)=>setTextExtraPrompt(e.target.value)} placeholder="For example: Add a small heart above the S, or extend the tail of the final a." maxLength={240}/><small>{textExtraPrompt.length}/240 · Describe letter details only; the line text above stays unchanged.</small></label>}
+                </section>
+                <div className="text-create-actions">
+                  <button className="change-fonts" disabled={!hasGeneratedText} onClick={()=>{const current=TEXT_FONT_OPTIONS.findIndex(([value])=>value===textFontStyle),next=(current+1)%TEXT_FONT_OPTIONS.length,[value,,src]=TEXT_FONT_OPTIONS[next];setTextFontStyle(value);setGeneratedImages(v=>v.concat(src));setGeneratedPreview(src)}}><Replace /> Change fonts</button>
+                  <button className="create-soon enabled" onClick={()=>{const src=TEXT_FONT_OPTIONS.find(([value])=>value===textFontStyle)?.[2]||TEXT_FONT_OPTIONS[2][2];setHasGeneratedText(true);setGeneratedImages(v=>v.concat(src));setGeneratedPreview(src)}}><Sparkles /> Create image <small>Preview simulation</small></button>
+                </div>
               </div>
               <GeneratedRail images={generatedImages} onOpen={setGeneratedPreview}/>
               </div>
@@ -5997,7 +6027,7 @@ export default function Home() {
                 </div>
                 <div className="prompt-example-row"><label>Describe the image you want<input type="text" placeholder="Cute giraffe with birthday hat" /></label><figure><img src="/create-examples/cake-topper-animals-balloons.png" alt="Cute animals and balloons cake topper example" /></figure></div>
                 <section><b>Style</b><div className="style-choice-grid">
-                  {([['watercolor','Watercolor','/create-examples/image-styles/cute-giraffe-watercolor-v2.png'],['cartoon','Cartoon','/create-examples/image-styles/cute-giraffe-cartoon-v2.png'],['baby','Baby','/create-examples/image-styles/cute-giraffe-baby-v2.png'],['girly','Girly','/create-examples/image-styles/cute-giraffe-girly.png'],['storybook','3D Storybook','/create-examples/image-styles/cute-giraffe-3d-storybook.png'],['paper-cut','Paper Cut','/create-examples/image-styles/cute-giraffe-paper-cut.png']] as const).map(([value,label,src]) => <button key={value} className={imageArtStyle === value ? "active" : ""} onClick={() => setImageArtStyle(value)}><img src={src} alt={label}/><span>{label}</span></button>)}
+                  {IMAGE_STYLE_OPTIONS.map(([value,label,src],index) => <button key={value} className={imageArtStyle === value ? "active" : ""} onClick={() => {setImageArtStyle(value);setOptionGallery({kind:"style",index})}}><img src={src} alt={label}/><span>{label}<Maximize2 /></span></button>)}
                 </div></section>
                 <label className="sticker-toggle"><input type="checkbox" checked={whiteStickerOffset} onChange={(e)=>setWhiteStickerOffset(e.target.checked)}/><span/><b>White sticker offset</b><small>Add a clean white label border around the artwork</small></label>
                 <button className="create-soon enabled" onClick={()=>{const map={watercolor:'watercolor-v2',cartoon:'cartoon-v2',baby:'baby-v2',girly:'girly',storybook:'3d-storybook','paper-cut':'paper-cut'} as const;const src=`/create-examples/image-styles/cute-giraffe-${map[imageArtStyle]}.png`;setGeneratedImages(v=>v.concat(src));setGeneratedPreview(src)}}><Sparkles /> Create image <small>Preview simulation</small></button>
@@ -6006,6 +6036,7 @@ export default function Home() {
               </div>
             )}
           </div>
+          {optionGallery&&(()=>{const options=optionGallery.kind==="font"?TEXT_FONT_OPTIONS:IMAGE_STYLE_OPTIONS,current=options[optionGallery.index],previous=(optionGallery.index-1+options.length)%options.length,next=(optionGallery.index+1)%options.length;return <div className="option-gallery" onPointerDown={()=>setOptionGallery(null)}><div onPointerDown={(e)=>e.stopPropagation()}><button className="gallery-close" onClick={()=>setOptionGallery(null)}><X/></button><button className="gallery-arrow previous" onClick={()=>setOptionGallery({...optionGallery,index:previous})} aria-label="Previous option">←</button><figure><img src={current[2]} alt={current[1]}/><figcaption><b>{current[1]}</b><small>{optionGallery.index+1} of {options.length}</small></figcaption></figure><button className="gallery-arrow next" onClick={()=>setOptionGallery({...optionGallery,index:next})} aria-label="Next option">→</button><button className="gallery-use" onClick={()=>{if(optionGallery.kind==="font")setTextFontStyle(current[0] as "mixed"|"cursive"|"serif");else setImageArtStyle(current[0] as "watercolor"|"cartoon"|"baby"|"girly"|"storybook"|"paper-cut");setOptionGallery(null)}}>Use this {optionGallery.kind}</button></div></div>})()}
           {generatedPreview && <div className="generated-lightbox" onPointerDown={(e)=>{e.stopPropagation();setGeneratedPreview(null)}}><div onPointerDown={(e)=>e.stopPropagation()}><button className="add-new-close" onClick={()=>setGeneratedPreview(null)}><X/></button><img src={generatedPreview} alt="Generated cake topper preview"/><button className="add-generated" onClick={()=>void addGeneratedAsset(generatedPreview)}><Plus/>Add to page</button></div></div>}
         </div>
       )}
