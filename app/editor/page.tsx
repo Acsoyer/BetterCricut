@@ -5130,7 +5130,7 @@ export default function Home() {
       <div className="sub-toolbar">
         <div className="sub-left">
           <div className="wrap page-setup-slot">
-            <button onClick={() => { setPageSetupOpen((value) => !value); setSettingsSection(null); }}>
+            <button className="settings-trigger" onClick={() => { setPageSetupOpen((value) => !value); setSettingsSection(null); }}>
               <SlidersHorizontal /> Settings <ChevronDown />
             </button>
             {pageSetupOpen && (
