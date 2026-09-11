@@ -1695,10 +1695,12 @@ export default function Home() {
     [textDetailsOpen, setTextDetailsOpen] = useState(false),
     [optionGallery, setOptionGallery] = useState<{ kind: "font" | "style"; index: number } | null>(null),
     [imageArtStyle, setImageArtStyle] = useState<"watercolor" | "cartoon" | "baby" | "girly" | "storybook" | "paper-cut">("watercolor"),
+    [imagePrompt, setImagePrompt] = useState(""),
     [whiteStickerOffset, setWhiteStickerOffset] = useState(false),
     [generatedTextImages, setGeneratedTextImages] = useState<string[]>([]),
     [generatedArtImages, setGeneratedArtImages] = useState<string[]>([]),
     [hasGeneratedText, setHasGeneratedText] = useState(false),
+    [generationBusy, setGenerationBusy] = useState<"text" | "image" | null>(null),
     [generatedPreview, setGeneratedPreview] = useState<string | null>(null),
     [splashOpen, setSplashOpen] = useState(false),
     [hideSplashOnStartup, setHideSplashOnStartup] = useState(false),
@@ -1868,6 +1870,34 @@ export default function Home() {
   const currentSignature = useMemo(() => projectSignature(layers, pageMode, safeMargin, cutSafetyEnabled), [layers, pageMode, safeMargin, cutSafetyEnabled]),
     projectDirty = currentSignature !== lastSavedSignature;
   const activeTextLines = textLines.slice(0, textLineCount).map((line) => line.trim()).filter(Boolean);
+  const generateArtwork = async (mode: "text" | "image", variation = false) => {
+    if (!session || generationBusy) return;
+    const lines = activeTextLines.length ? activeTextLines : textPlaceholders(textLineCount);
+    if (mode === "image" && !imagePrompt.trim()) {
+      setNotice("Describe the image you want before generating it");
+      return;
+    }
+    setGenerationBusy(mode);
+    setNotice(mode === "text" ? "Creating your text image…" : "Creating your image…");
+    try {
+      const response = await fetch("/api/generate-image", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify(mode === "text" ? { mode, lines, font: textFontStyle, extraPrompt: textExtraPrompt, variation } : { mode, description: imagePrompt, style: imageArtStyle, whiteStickerOffset }),
+      });
+      const result = await response.json() as { image?: string; error?: string };
+      if (!response.ok || !result.image) throw new Error(result.error || "Image generation failed");
+      if (mode === "text") {
+        setHasGeneratedText(true);
+        setGeneratedTextImages((images) => images.concat(result.image!));
+      } else setGeneratedArtImages((images) => images.concat(result.image!));
+      setGeneratedPreview(result.image);
+      addSessionLog("AI image generated", `${mode === "text" ? "Text" : "Illustration"} · ${mode === "text" ? textFontStyle : imageArtStyle} · 1024 × 1024 px`);
+      setNotice("Image created successfully");
+    } catch (error) {
+      setNotice(`Could not generate the image: ${error instanceof Error ? error.message : "Unknown error"}`);
+    } finally { setGenerationBusy(null); }
+  };
   const splashStorageKey = session?.user?.id ? `cake-topper-maker-hide-welcome:${session.user.id}` : null;
   const dismissSplash = () => {
     if (hideSplashOnStartup && splashStorageKey) localStorage.setItem(splashStorageKey, "1");
@@ -2430,7 +2460,7 @@ export default function Home() {
       const response = await fetch(new URL(src, window.location.origin));
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const blob = await response.blob(),
-        filename = (src.split("/").pop() || "generated-cake-topper.png").split("?")[0];
+        filename = src.startsWith("data:") ? "generated-cake-topper.png" : (src.split("/").pop() || "generated-cake-topper.png").split("?")[0];
       const imported = await importFiles([new window.File([blob], filename, { type: "image/png" })]);
       if (imported !== 1) throw new Error("The generated PNG was not accepted by the canvas importer");
       setGeneratedPreview(null);
@@ -6027,8 +6057,8 @@ export default function Home() {
                   {textDetailsOpen&&<label>Extra Prompt<textarea value={textExtraPrompt} onChange={(e)=>setTextExtraPrompt(e.target.value)} placeholder="For example: Add a small heart above the S, or extend the tail of the final a." maxLength={240}/><small>{textExtraPrompt.length}/240 · Describe letter details only; the line text above stays unchanged.</small></label>}
                 </section>
                 <div className="text-create-actions">
-                  <button className="change-fonts" disabled={!hasGeneratedText} onClick={()=>{const current=TEXT_FONT_OPTIONS.findIndex(([value])=>value===textFontStyle),next=(current+1)%TEXT_FONT_OPTIONS.length,[value,,src]=TEXT_FONT_OPTIONS[next];setTextFontStyle(value);setGeneratedTextImages(v=>v.concat(src));setGeneratedPreview(src)}}><Replace /> Change fonts</button>
-                  <button className="create-soon enabled" onClick={()=>{const src=TEXT_FONT_OPTIONS.find(([value])=>value===textFontStyle)?.[2]||TEXT_FONT_OPTIONS[2][2];setHasGeneratedText(true);setGeneratedTextImages(v=>v.concat(src));setGeneratedPreview(src)}}><Sparkles /> Create Text Image <small>Preview simulation</small></button>
+                  <button className="change-fonts" disabled={!hasGeneratedText || Boolean(generationBusy)} onClick={()=>void generateArtwork("text",true)}><Replace /> Change fonts</button>
+                  <button className="create-soon enabled" disabled={Boolean(generationBusy)} onClick={()=>void generateArtwork("text")}><Sparkles /> {generationBusy === "text" ? "Creating…" : "Create Text Image"}</button>
                 </div>
               </div>
               <GeneratedRail images={generatedTextImages} onOpen={setGeneratedPreview}/>
@@ -6040,12 +6070,12 @@ export default function Home() {
                   <button onClick={() => setCreateImageMode("text")}><Type />Cake topper as text</button>
                   <button className="active" onClick={() => setCreateImageMode("image")}><ImageIcon />Cake topper as image</button>
                 </div>
-                <div className="prompt-example-row"><label>Describe the image you want<input type="text" placeholder="Cute giraffe with birthday hat" /></label><figure><img src="/create-examples/cake-topper-animals-balloons.png" alt="Cute animals and balloons cake topper example" /></figure></div>
+                <div className="prompt-example-row"><label>Describe the image you want<input type="text" value={imagePrompt} onChange={(event)=>setImagePrompt(event.target.value)} placeholder="Cute giraffe with birthday hat" maxLength={500}/></label><figure><img src="/create-examples/cake-topper-animals-balloons.png" alt="Cute animals and balloons cake topper example" /></figure></div>
                 <section><b>Style</b><div className={`style-choice-grid ${whiteStickerOffset ? "sticker-preview" : ""}`}>
                   {IMAGE_STYLE_OPTIONS.map(([value,label,src],index) => <button key={value} className={imageArtStyle === value ? "active" : ""} onClick={() => {setImageArtStyle(value);setOptionGallery({kind:"style",index})}}><img src={src} alt={label}/><span>{label}<Maximize2 /></span></button>)}
                 </div></section>
                 <label className="sticker-toggle"><input type="checkbox" checked={whiteStickerOffset} onChange={(e)=>setWhiteStickerOffset(e.target.checked)}/><span/><b>White sticker offset</b><small>Add a clean white label border around the artwork</small></label>
-                <button className="create-soon enabled" onClick={()=>{const map={watercolor:'watercolor-v2',cartoon:'cartoon-v2',baby:'baby-v2',girly:'girly',storybook:'3d-storybook','paper-cut':'paper-cut'} as const;const src=`/create-examples/image-styles/cute-giraffe-${map[imageArtStyle]}.png`;setGeneratedArtImages(v=>v.concat(src));setGeneratedPreview(src)}}><Sparkles /> Create Image <small>Preview simulation</small></button>
+                <button className="create-soon enabled" disabled={Boolean(generationBusy)} onClick={()=>void generateArtwork("image")}><Sparkles /> {generationBusy === "image" ? "Creating…" : "Create Image"}</button>
               </div>
               <GeneratedRail images={generatedArtImages} onOpen={setGeneratedPreview}/>
               </div>
