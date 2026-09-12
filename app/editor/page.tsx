@@ -197,11 +197,12 @@ type BgEditor = {
   pickingColor: number | null;
   base: Pick<Layer, "src" | "x" | "y" | "w" | "h" | "kind" | "color" | "strokeCm" | "fillGapsMm" | "acetateOn">;
 };
-type ImageEditTool = "crop" | "erase" | "lasso";
+type ImageEditTool = "crop" | "add" | "erase" | "lasso";
 type ImageEditStroke = {
   id: string;
   tool: Exclude<ImageEditTool, "crop">;
   brush: number;
+  color?: string;
   points: { x: number; y: number }[];
 };
 type ImageEditState = {
@@ -215,8 +216,12 @@ type ImageEditor = ImageEditState & {
   layerId: string;
   crop: { left: number; top: number; right: number; bottom: number };
   upscale: 1 | 2 | 3;
-  tool: ImageEditTool;
+  tool: ImageEditTool | null;
   brush: number;
+  smoothing: number;
+  paintColor: string;
+  colorAdvanced: boolean;
+  pickingColor: boolean;
   strokes: ImageEditStroke[];
   history: ImageEditState[];
   zoom: number;
@@ -1827,6 +1832,7 @@ export default function Home() {
     [imagePresetPreview, setImagePresetPreview] = useState("") ,
     [imagePresetResult, setImagePresetResult] = useState<Layer | null>(null),
     [imageEditorSize, setImageEditorSize] = useState({ w: 0, h: 0 }),
+    [imageCursor, setImageCursor] = useState({ x: 0, y: 0, visible: false }),
     [rulerOrigin, setRulerOrigin] = useState({ x: 0, y: 0 }),
     [session, setSession] = useState<Session | null>(null),
     [projects, setProjects] = useState<SavedProject[]>([]),
@@ -3396,6 +3402,10 @@ export default function Home() {
       upscale: 1,
       tool: "crop",
       brush: 4,
+      smoothing: 5,
+      paintColor: "#3c4144",
+      colorAdvanced: false,
+      pickingColor: false,
       strokes: [],
       history: [],
       offsetX: 0,
@@ -3448,15 +3458,27 @@ export default function Home() {
       y: clamp((e.clientY - r.top) / r.height, 0, 1),
     };
   };
-  const startImageEdit = (e: RPointer<HTMLImageElement>) => {
-    if (!imageEditor || imageEditor.tool === "crop" || e.button !== 0) return;
+  const startImageEdit = async (e: RPointer<HTMLImageElement>) => {
+    if (!imageEditor || e.button !== 0) return;
+    if (imageEditor.pickingColor) {
+      e.preventDefault();
+      const point = imageEditPoint(e), img = await getImage(imageEditor.source), sample = document.createElement("canvas");
+      sample.width = img.naturalWidth; sample.height = img.naturalHeight;
+      const context = sample.getContext("2d")!; context.drawImage(img, 0, 0);
+      const pixel = context.getImageData(Math.min(sample.width - 1, Math.floor(point.x * sample.width)), Math.min(sample.height - 1, Math.floor(point.y * sample.height)), 1, 1).data;
+      const color = `#${[pixel[0], pixel[1], pixel[2]].map((value) => value.toString(16).padStart(2, "0")).join("")}`;
+      setImageEditor({ ...imageEditor, paintColor: color, pickingColor: false });
+      return;
+    }
+    if (imageEditor.tool === "crop" || imageEditor.tool === null) return;
     e.preventDefault();
     e.currentTarget.setPointerCapture(e.pointerId);
     const id = uid(),
       stroke: ImageEditStroke = {
         id,
         tool: imageEditor.tool,
-        brush: imageEditor.brush,
+        brush: imageEditor.brush / imageEditor.zoom,
+        color: imageEditor.paintColor,
         points: [imageEditPoint(e)],
       };
     imageDrawing.current = id;
@@ -3466,14 +3488,21 @@ export default function Home() {
     });
   };
   const moveImageEdit = (e: RPointer<HTMLImageElement>) => {
+    const cursor = imageEditPoint(e);
+    setImageCursor({ ...cursor, visible: true });
     if (!imageDrawing.current || !imageEditor || e.buttons !== 1) return;
-    const p = imageEditPoint(e),
+    const p = cursor,
       id = imageDrawing.current;
     setImageEditor((v) =>
       v
         ? {
             ...v,
-            strokes: v.strokes.map((s) => (s.id !== id ? s : { ...s, points: [...s.points, p] })),
+            strokes: v.strokes.map((s) => {
+              if (s.id !== id) return s;
+              const last = s.points[s.points.length - 1];
+              if (last && Math.hypot(p.x - last.x, p.y - last.y) < Math.max(.0015, s.brush / 800)) return s;
+              return { ...s, points: [...s.points, p] };
+            }),
           }
         : v,
     );
@@ -3485,9 +3514,10 @@ export default function Home() {
     work.height = img.naturalHeight;
     const wx = work.getContext("2d")!;
     wx.drawImage(img, 0, 0);
-    wx.globalCompositeOperation = "destination-out";
     for (const stroke of editor.strokes) {
       if (!stroke.points.length) continue;
+      wx.globalCompositeOperation = stroke.tool === "add" ? "source-over" : "destination-out";
+      if (stroke.tool === "add") wx.strokeStyle = wx.fillStyle = stroke.color || editor.paintColor;
       wx.beginPath();
       if (stroke.tool === "lasso") {
         stroke.points.forEach((p, i) => (i ? wx.lineTo(p.x * work.width, p.y * work.height) : wx.moveTo(p.x * work.width, p.y * work.height)));
@@ -3497,9 +3527,10 @@ export default function Home() {
         wx.lineWidth = Math.max(2, (stroke.brush / 100) * Math.min(work.width, work.height));
         wx.lineCap = "round";
         wx.lineJoin = "round";
-        stroke.points.forEach((p, i) => (i ? wx.lineTo(p.x * work.width, p.y * work.height) : wx.moveTo(p.x * work.width, p.y * work.height)));
-        if (stroke.points.length === 1) {
-          const p = stroke.points[0];
+        const points = ["add", "erase"].includes(stroke.tool) ? smoothBrushPoints(stroke.points, editor.smoothing) : stroke.points;
+        points.forEach((p, i) => (i ? wx.lineTo(p.x * work.width, p.y * work.height) : wx.moveTo(p.x * work.width, p.y * work.height)));
+        if (points.length === 1) {
+          const p = points[0];
           wx.arc(p.x * work.width, p.y * work.height, wx.lineWidth / 2, 0, Math.PI * 2);
           wx.fill();
         } else wx.stroke();
@@ -6659,24 +6690,27 @@ export default function Home() {
                 {imageTab === "edit" ? (
                   <>
                     <div className="bg-editor-body">
-                      <div className="bg-preview image-edit-preview" onWheel={zoomImageEditor} onPointerDown={startImagePan} onPointerMove={moveImagePan} onPointerUp={endImagePan} onPointerCancel={endImagePan}>
+                      <div className={`bg-preview image-edit-preview ${bgEditor?.alphaView ? "alpha-view" : ""}`} onWheel={zoomImageEditor} onPointerDown={startImagePan} onPointerMove={moveImagePan} onPointerUp={endImagePan} onPointerCancel={endImagePan}>
                         <div
                           className="image-edit-wrap"
                           style={
                             {
                               "--fit-w": imageEditorSize.w ? `${imageEditorSize.w}px` : "auto",
                               "--fit-h": imageEditorSize.h ? `${imageEditorSize.h}px` : "auto",
+                              "--image-zoom": String(imageEditor.zoom),
                               transform: `translate(${imageEditor.panX}px,${imageEditor.panY}px) scale(${imageEditor.zoom})`,
                             } as React.CSSProperties
                           }
                         >
-                          <img className={`image-tool-${imageEditor.tool}`} src={imageEditor.source} draggable={false} alt="Image edit preview" onLoad={(e) => setImageEditorSize(fitEditorImage(e.currentTarget, e.currentTarget.closest(".bg-preview") as HTMLDivElement))} onPointerDown={startImageEdit} onPointerMove={moveImageEdit} onPointerUp={endImageEdit} onPointerCancel={endImageEdit} />
-                          <svg className="image-edit-overlay" viewBox="0 0 100 100" preserveAspectRatio="none">
+                          <img className={`image-tool-${imageEditor.tool}${imageEditor.pickingColor ? " eyedrop-active" : ""}`} src={imageEditor.source} draggable={false} alt="Image edit preview" onLoad={(e) => setImageEditorSize(fitEditorImage(e.currentTarget, e.currentTarget.closest(".bg-preview") as HTMLDivElement))} onPointerDown={(event)=>void startImageEdit(event)} onPointerMove={moveImageEdit} onPointerUp={endImageEdit} onPointerCancel={endImageEdit} onPointerEnter={()=>setImageCursor((value)=>({...value,visible:true}))} onPointerLeave={()=>setImageCursor((value)=>({...value,visible:false}))} />
+                          <svg className="image-edit-overlay" viewBox={`0 0 ${imageEditorSize.w || 100} ${imageEditorSize.h || 100}`} preserveAspectRatio="none">
                             {imageEditor.strokes.map((s) => {
-                              const pts = s.points.map((p) => `${p.x * 100},${p.y * 100}`).join(" ");
-                              return s.tool === "lasso" ? <polygon key={s.id} points={pts} className="image-lasso-mark" /> : <polyline key={s.id} points={pts} className="image-erase-mark" style={{ strokeWidth: s.brush }} />;
+                              const shown = ["add","erase"].includes(s.tool) ? smoothBrushPoints(s.points,imageEditor.smoothing) : s.points;
+                              const pts = shown.map((p) => `${p.x * (imageEditorSize.w || 100)},${p.y * (imageEditorSize.h || 100)}`).join(" ");
+                              return s.tool === "lasso" ? <polygon key={s.id} points={pts} className="image-lasso-mark" /> : <polyline key={s.id} points={pts} className={`image-brush-mark ${s.tool}`} style={{ stroke: s.tool === "add" ? s.color || imageEditor.paintColor : undefined, strokeWidth: (s.brush / 100) * Math.min(imageEditorSize.w || 100,imageEditorSize.h || 100) }} />;
                             })}
                           </svg>
+                          {imageCursor.visible && ["add","erase"].includes(imageEditor.tool || "") && <i className="image-round-cursor" style={{left:`${imageCursor.x*100}%`,top:`${imageCursor.y*100}%`,width:`${(imageEditor.brush/imageEditor.zoom/100)*Math.min(imageEditorSize.w||100,imageEditorSize.h||100)}px`,aspectRatio:"1"}}/>}
                           {imageEditor.tool === "crop" && (
                             <div
                               className="crop-guide"
@@ -6733,33 +6767,30 @@ export default function Home() {
                         <section>
                           <label>Edit Tool</label>
                           <div className="image-tool-buttons">
-                            {(["crop", "erase", "lasso"] as ImageEditTool[]).map((tool) => (
-                              <button key={tool} className={imageEditor.tool === tool ? "active" : ""} onClick={() => setImageEditor({ ...imageEditor, tool })}>
-                                {tool === "crop" ? <Maximize2 /> : tool === "erase" ? <Trash2 /> : <Scissors />}
-                                <span>{tool === "lasso" ? "Lasso Erase" : tool[0].toUpperCase() + tool.slice(1)}</span>
+                            {(["crop", "add", "erase", "lasso"] as ImageEditTool[]).map((tool) => (
+                              <button key={tool} className={imageEditor.tool === tool ? "active" : ""} onClick={() => setImageEditor({ ...imageEditor, tool: imageEditor.tool === tool ? null : tool, pickingColor:false })}>
+                                {tool === "crop" ? <Maximize2 /> : tool === "add" ? <Paintbrush /> : tool === "erase" ? <Eraser /> : <Scissors />}
+                                <span>{tool === "add" ? "Add Brush" : tool === "erase" ? "Eraser" : tool === "lasso" ? "Lasso Erase" : "Crop"}</span>
                               </button>
                             ))}
                           </div>
                           <small>Crop with the handles on the image. Drag outward to expand the canvas.</small>
                         </section>
-                        {imageEditor.tool === "erase" && (
-                          <section>
+                        {imageEditor.tool && ["add","erase"].includes(imageEditor.tool) && (
+                          <section className="image-brush-controls">
                             <label>
                               Brush Size <b>{imageEditor.brush}%</b>
                             </label>
-                            <input
-                              type="range"
-                              min=".5"
-                              max="35"
-                              step=".5"
-                              value={imageEditor.brush}
-                              onChange={(e) =>
-                                setImageEditor({
-                                  ...imageEditor,
-                                  brush: +e.target.value,
-                                })
-                              }
-                            />
+                            <div className="image-brush-size"><input type="range" min=".5" max="35" step=".5" value={imageEditor.brush} onChange={(e) => setImageEditor({ ...imageEditor, brush: +e.target.value })}/><span><i style={{width:`${Math.max(3,imageEditor.brush*1.5)}px`,height:`${Math.max(3,imageEditor.brush*1.5)}px`}}/></span></div>
+                            <label>Smoothing <b>{imageEditor.smoothing}%</b></label>
+                            <input type="range" min="5" max="40" step="1" value={imageEditor.smoothing} onChange={(e)=>setImageEditor({...imageEditor,smoothing:+e.target.value})}/>
+                            {imageEditor.tool === "add" && <div className="image-paint-colors">
+                              <label>Brush Color <b>{imageEditor.paintColor.toUpperCase()}</b></label>
+                              <div className="image-color-swatches">{COLORS.map((color)=><button key={color} className={imageEditor.paintColor.toLowerCase()===color.toLowerCase()?"active":""} style={{background:color}} onClick={()=>setImageEditor({...imageEditor,paintColor:color})} aria-label={`Use ${color}`}/>)}</div>
+                              <button className="advanced-color-toggle" onClick={()=>setImageEditor({...imageEditor,colorAdvanced:!imageEditor.colorAdvanced})}><span>Advanced</span><ChevronDown className={imageEditor.colorAdvanced?"open":""}/></button>
+                              {imageEditor.colorAdvanced && <div className="advanced-color-panel"><input type="color" value={imageEditor.paintColor} onChange={(e)=>setImageEditor({...imageEditor,paintColor:e.target.value})}/><input type="text" value={imageEditor.paintColor} maxLength={7} onChange={(e)=>/^#[0-9a-f]{0,6}$/i.test(e.target.value)&&setImageEditor({...imageEditor,paintColor:e.target.value})}/></div>}
+                              <button className={imageEditor.pickingColor?"pick-image-color active":"pick-image-color"} onClick={()=>setImageEditor({...imageEditor,pickingColor:!imageEditor.pickingColor})}><Pipette/> Pick Color from Image</button>
+                            </div>}
                           </section>
                         )}
                         <section>
