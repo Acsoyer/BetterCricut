@@ -1,0 +1,13 @@
+/* v1.00 — lossless vector operations, predictable layer ordering and precision navigation */
+.list .card{position:relative}
+.list .card.dragging{opacity:.42!important;filter:saturate(.7);transform:none!important}
+.list .card.drop-before:before,.list .card.drop-after:after{content:"";position:absolute;left:4px;right:4px;height:4px;border-radius:3px;background:#138f70;box-shadow:0 0 0 1px #fff,0 2px 7px #08765766;z-index:20;pointer-events:none}
+.list .card.drop-before:before{top:-5px}.list .card.drop-after:after{bottom:-5px}
+.page-setup-slot>.settings-trigger{font-size:10px!important;font-weight:850!important}
+.setup-root .setup-group>button{font-size:10px!important;font-weight:800!important;min-width:96px!important;color:#35423c!important}
+.setup-root .setup-group>button:hover,.setup-root .setup-group:has(.setup-submenu.open)>button{background:#def3eb!important;border-color:#54ae92!important;color:#087657!important}
+.setup-root .setup-submenu button{font-size:10px!important;color:#34413b!important}
+.setup-root .setup-submenu button:hover{background:#edf7f3!important;color:#087657!important}
+.setup-root .setup-submenu button.active{background:#d7f0e7!important;color:#076b51!important;box-shadow:inset 3px 0 #14936f}
+.image-edit-wrap{will-change:auto!important}
+.image-edit-wrap>img{image-rendering:auto!important;backface-visibility:visible!important}

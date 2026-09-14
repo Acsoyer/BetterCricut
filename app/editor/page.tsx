@@ -246,6 +246,8 @@ type SplitPart = {
 };
 type SplitPreview = {
   layerId: string;
+  source: string;
+  preserveVector: boolean;
   preview: string;
   parts: SplitPart[];
   base?: { x: number; y: number; w: number; h: number };
@@ -316,6 +318,34 @@ const scalableSvgPreview = (src: string) => {
     });
     return `data:image/svg+xml,${encodeURIComponent(new XMLSerializer().serializeToString(doc.documentElement))}`;
   } catch { return src; }
+};
+const decodeSvgData = (src: string) => {
+  const comma = src.indexOf(","), payload = src.slice(comma + 1);
+  return /;base64/i.test(src.slice(0, comma)) ? atob(payload) : decodeURIComponent(payload);
+};
+const safeSvgData = (raw: string) => {
+  const doc = new DOMParser().parseFromString(raw, "image/svg+xml"), root = doc.documentElement;
+  if (root.tagName.toLowerCase() !== "svg" || doc.querySelector("parsererror")) throw new Error("The SVG file is invalid");
+  root.querySelectorAll("script,foreignObject").forEach((node) => node.remove());
+  root.querySelectorAll("*").forEach((node) => [...node.attributes].forEach((attribute) => { if (/^on/i.test(attribute.name)) node.removeAttribute(attribute.name); }));
+  root.setAttribute("preserveAspectRatio", "none"); root.setAttribute("shape-rendering", "geometricPrecision");
+  return `data:image/svg+xml,${encodeURIComponent(new XMLSerializer().serializeToString(root))}`;
+};
+const svgViewBox = (root: Element) => {
+  const values = (root.getAttribute("viewBox") || "").trim().split(/[ ,]+/).map(Number);
+  if (values.length === 4 && values.every(Number.isFinite) && values[2] > 0 && values[3] > 0) return values as [number,number,number,number];
+  return [0,0,Number.parseFloat(root.getAttribute("width") || "100") || 100,Number.parseFloat(root.getAttribute("height") || "100") || 100] as [number,number,number,number];
+};
+const cropSvgWithoutRetracing = (src: string, part: SplitPart) => {
+  const doc = new DOMParser().parseFromString(decodeSvgData(src), "image/svg+xml"), root = doc.documentElement, [x,y,w,h] = svgViewBox(root);
+  const left=x+part.left*w, top=y+part.top*h, width=part.width*w, height=part.height*h;
+  root.setAttribute("viewBox",`${left} ${top} ${width} ${height}`); root.setAttribute("width",String(width)); root.setAttribute("height",String(height)); root.setAttribute("preserveAspectRatio","none"); root.setAttribute("overflow","hidden");
+  return `data:image/svg+xml,${encodeURIComponent(new XMLSerializer().serializeToString(root))}`;
+};
+const svgWithoutPreviewContour = (src:string) => {
+  const doc=new DOMParser().parseFromString(decodeSvgData(src),"image/svg+xml"),root=doc.documentElement;
+  root.querySelectorAll("path,rect,ellipse,circle,polygon,polyline").forEach(node=>{node.setAttribute("stroke","none");node.removeAttribute("paint-order")});
+  return `data:image/svg+xml,${encodeURIComponent(new XMLSerializer().serializeToString(root))}`;
 };
 const getImage = (src: string) =>
   new Promise<HTMLImageElement>((ok, no) => {
@@ -1624,7 +1654,7 @@ async function findOpaqueIslands(src: string) {
   return { preview: preview.toDataURL("image/png"), parts };
 }
 const projectSignature = (layers: Layer[], pageMode: PageMode, safeMargin: number, cutSafetyEnabled = false, pageSize: PageSize = "a4", unit: Unit = "cm") => JSON.stringify({ layers, pageMode, safeMargin, cutSafetyEnabled, pageSize, unit });
-const PROJECT_LIMIT = 10, STORAGE_LIMIT = 20 * 1024 * 1024;
+const PROJECT_LIMIT = 20, STORAGE_LIMIT = 40 * 1024 * 1024;
 const projectBytes = (data: unknown) => new Blob([JSON.stringify(data)]).size;
 const packLayers = (layers: Layer[]) => {
   const assets: Record<string, string> = {}, bySource = new Map<string, string>();
@@ -1795,6 +1825,7 @@ export default function Home() {
     [shapeOpen, setShapeOpen] = useState(false),
     [shapeTool, setShapeTool] = useState<string | null>(null),
     [dragLayer, setDragLayer] = useState<string | null>(null),
+    [layerDrop, setLayerDrop] = useState<{id:string;side:"before"|"after"}|null>(null),
     [editingName, setEditingName] = useState<string | null>(null),
     [marquee, setMarquee] = useState<{
       x: number;
@@ -1954,7 +1985,7 @@ export default function Home() {
     picked = layers.filter((l) => selected.includes(l.id)),
     one = picked.length === 1 ? picked[0] : null,
     box = bounds(picked),
-    displayBox = one && drag?.mode === "rotate" ? { x: one.x, y: one.y, w: one.w, h: one.h } : one && one.rotation ? rotatedBounds(one) : box,
+    displayBox = drag?.mode === "move" ? bounds(layers.filter(layer=>drag.start.some(start=>start.id===layer.id))) : one && drag?.mode === "rotate" ? { x: one.x, y: one.y, w: one.w, h: one.h } : one && one.rotation ? rotatedBounds(one) : box,
     scale = PPCM * zoom * calibration,
     vectorsOnly = picked.length > 0 && picked.every((l) => ["stroke", "vector"].includes(l.kind));
   const currentSignature = useMemo(() => projectSignature(layers, pageMode, safeMargin, cutSafetyEnabled, pageSize, unit), [layers, pageMode, safeMargin, cutSafetyEnabled, pageSize, unit]),
@@ -2087,7 +2118,7 @@ export default function Home() {
       return false;
     }
     if ((asNew || !currentProjectId) && projects.filter((project) => !project.is_autosave).length >= PROJECT_LIMIT && !autosave) {
-      setNotice("10 project limit reached. Please delete an old project first.");
+      setNotice("20 project limit reached. Please delete an old project first.");
       return false;
     }
     saveToastDismissed.current = false;
@@ -2115,7 +2146,7 @@ export default function Home() {
     const previousBytes = projects.find((project)=>project.id===updateId)?.byte_size || Number.POSITIVE_INFINITY;
     if (storageBlocked && (!updateId || byteSize >= previousBytes)) {
       setSaveStatus(null); setAutosaveStatus(autosave ? "failed" : null);
-      setNotice(`${(projects.reduce((sum, project) => sum + (project.byte_size || projectBytes(project.data || {})), 0) / 1048576).toFixed(1)}/20 MB limit exceeded. Please delete old projects before saving again.`);
+      setNotice(`${(projects.reduce((sum, project) => sum + (project.byte_size || projectBytes(project.data || {})), 0) / 1048576).toFixed(1)}/40 MB limit exceeded. Please delete old projects before saving again.`);
       return false;
     }
     let { data, error } = updateId && !asNew ? await supabase.from("projects").update({ name, data: projectData, updated_at: payload.updated_at, thumbnail, byte_size: byteSize, layer_count: layers.length, is_autosave: autosave && currentProjectAutosave }).eq("id", updateId).eq("user_id", session.user.id).select("id,name,updated_at,data,thumbnail,byte_size,layer_count,is_autosave").single() : await supabase.from("projects").insert(payload).select("id,name,updated_at,data,thumbnail,byte_size,layer_count,is_autosave").single();
@@ -2439,7 +2470,14 @@ export default function Home() {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && ["+", "=", "-", "0"].includes(e.key)) {
         e.preventDefault();
-        setZoom((z) => (e.key === "0" ? 1 : clamp(z + (e.key === "-" ? -0.1 : 0.1), 0.2, 5)));
+        setZoom((z) => (e.key === "0" ? 1 : clamp(z + (e.key === "-" ? -0.1 : 0.1), 0.2, 9)));
+        return;
+      }
+      if (["ArrowLeft","ArrowRight","ArrowUp","ArrowDown"].includes(e.key) && selected.length && !(e.target as HTMLElement).closest("input,textarea,[contenteditable='true']") && !imageEditor && !cutEditor && !bgEditor) {
+        e.preventDefault();
+        const chosen=layers.filter(layer=>selected.includes(layer.id)),screenPixels=Math.max(1,Math.round(7/zoom))*(e.shiftKey?10:1),step=screenPixels/Math.max(scale,1),dx=e.key==="ArrowLeft"?-step:e.key==="ArrowRight"?step:0,dy=e.key==="ArrowUp"?-step:e.key==="ArrowDown"?step:0;
+        const allowedDx=clamp(dx,Math.max(...chosen.map(layer=>SAFE.x-layer.x)),Math.min(...chosen.map(layer=>SAFE.x+SAFE.w-layer.w-layer.x))),allowedDy=clamp(dy,Math.max(...chosen.map(layer=>SAFE.y-layer.y)),Math.min(...chosen.map(layer=>SAFE.y+SAFE.h-layer.h-layer.y)));
+        setLayers(items=>items.map(layer=>selected.includes(layer.id)?{...layer,x:layer.x+allowedDx,y:layer.y+allowedDy}:layer));
         return;
       }
       if (e.key === "Escape" && (imageOnShapeTarget || shapeImageEditing)) {
@@ -2494,7 +2532,7 @@ export default function Home() {
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [selected, bgEditor, imageEditor, cutEditor, imageOnShapeTarget, shapeImageEditing]);
+  }, [selected, layers, zoom, scale, bgEditor, imageEditor, cutEditor, imageOnShapeTarget, shapeImageEditing]);
   useEffect(() => {
     const stopBrowserZoom = (e: WheelEvent) => {
       if (e.ctrlKey && !stageRef.current?.contains(e.target as Node)) e.preventDefault();
@@ -2533,7 +2571,7 @@ export default function Home() {
       oldScale = before.width / A4.w,
       worldX = (clientX - before.left) / oldScale,
       worldY = (clientY - before.top) / oldScale,
-      nextZoom = clamp(zoomRef.current * Math.exp(-e.deltaY * 0.0012), 0.2, 7);
+      nextZoom = clamp(zoomRef.current * Math.exp(-e.deltaY * 0.0012), 0.2, 9);
     if (Math.abs(nextZoom - zoomRef.current) < 0.0001) return;
     zoomAnchor.current = { clientX, clientY, worldX, worldY };
     zoomRef.current = nextZoom;
@@ -2594,8 +2632,9 @@ export default function Home() {
   const importFiles = async (files: File[], convertTextToCutout = false, generatedName?: string) => {
     let imported = 0;
     for (const f of files) {
-      if (!/image\/(jpeg|png|svg\+xml|webp)/.test(f.type)) continue;
-      const rawSrc = await new Promise<string>((ok, fail) => {
+      if (!/image\/(jpeg|png|svg\+xml|webp)/.test(f.type) && !/\.svg$/i.test(f.name)) continue;
+      const isSvg = f.type === "image/svg+xml" || /\.svg$/i.test(f.name),
+        rawSrc = isSvg ? safeSvgData(await f.text()) : await new Promise<string>((ok, fail) => {
           const r = new FileReader();
           r.onload = () => ok(String(r.result));
           r.onerror = () => fail(r.error || new Error("The image file could not be read"));
@@ -2628,14 +2667,14 @@ export default function Home() {
           h,
           naturalW: img.naturalWidth,
           naturalH: img.naturalHeight,
-          kind: convertTextToCutout ? "vector" : "original",
+          kind: convertTextToCutout || isSvg ? "vector" : "original",
           strokeCm: 0.5,
           fillGapsMm: 0,
           invalid: false,
           rotation: 0,
           color: cutoutColor,
-          steps: convertTextToCutout ? [{ id: uid(), type: "cutout", label: "AI Text Cutout", locked: true, snapshot: { src: cutoutSrc, x: place.x, y: place.y, w, h, kind: "vector", color: cutoutColor, strokeCm: 0.5, fillGapsMm: 0, acetateOn: false } }] : [],
-          activeStep: convertTextToCutout ? 0 : -1,
+          steps: convertTextToCutout || isSvg ? [{ id: uid(), type: "cutout", label: convertTextToCutout ? "AI Text Cutout" : "Imported SVG", locked: true, snapshot: { src: cutoutSrc, x: place.x, y: place.y, w, h, kind: "vector", color: cutoutColor, strokeCm: 0.5, fillGapsMm: 0, acetateOn: false } }] : [],
+          activeStep: convertTextToCutout || isSvg ? 0 : -1,
           acetateOn: false,
         }),
       );
@@ -3762,7 +3801,7 @@ export default function Home() {
     imageCropDrag.current = null;
     void commitImageStage();
   };
-  const openSeparateLayers = async (source: string, layerId: string, base?: { x: number; y: number; w: number; h: number }) => {
+  const openSeparateLayers = async (source: string, layerId: string, base?: { x: number; y: number; w: number; h: number }, preserveVector = false) => {
     setWorking(true);
     try {
       const result = await findOpaqueIslands(source);
@@ -3772,6 +3811,8 @@ export default function Home() {
       }
       setSplitPreview({
         layerId,
+        source,
+        preserveVector,
         preview: result.preview,
         parts: result.parts,
         base,
@@ -3809,8 +3850,7 @@ export default function Home() {
         created: Layer[] = [];
       for (let index = 0; index < splitPreview.parts.length; index++) {
         const part = splitPreview.parts[index],
-          solid = vector ? await silhouette(part.src, target.color, 255) : part.src,
-          src = vector ? await vTracerCutout(solid, target.color) : solid,
+          src = vector && splitPreview.preserveVector && splitPreview.source.startsWith("data:image/svg+xml") ? cropSvgWithoutRetracing(splitPreview.source,part) : vector ? await vTracerCutout(part.src,target.color) : part.src,
           safety = await analyzeCutSafety(src, base.w * part.width);
         created.push({
           ...target,
@@ -3823,8 +3863,8 @@ export default function Home() {
           y: base.y + base.h * part.top,
           w: base.w * part.width,
           h: base.h * part.height,
-          naturalW: part.naturalW,
-          naturalH: part.naturalH,
+          naturalW: vector ? Math.max(1,Math.round((target.naturalW||part.naturalW)*part.width)) : part.naturalW,
+          naturalH: vector ? Math.max(1,Math.round((target.naturalH||part.naturalH)*part.height)) : part.naturalH,
           kind: vector ? "vector" : target.kind,
           parentId: undefined,
           innerSrc: undefined,
@@ -4932,18 +4972,28 @@ export default function Home() {
     addSessionLog("Layers ungrouped", picked.map((layer) => layer.name).join(", "));
     setNotice("Group removed");
   };
+  const dropLayerAt = (targetId:string,side:"before"|"after") => {
+    if(!dragLayer||dragLayer===targetId)return;
+    setLayers(items=>{const next=items.filter(item=>item.id!==dragLayer),moving=items.find(item=>item.id===dragLayer),targetIndex=next.findIndex(item=>item.id===targetId);if(!moving||targetIndex<0)return items;const internalIndex=side==="before"?targetIndex+1:targetIndex;next.splice(internalIndex,0,moving);return next});
+    setDragLayer(null);setLayerDrop(null);
+  };
   const weldSelection = async () => {
     if (picked.length < 2 || !picked.every((layer) => ["vector", "stroke"].includes(layer.kind))) return;
     setWorking(true);
     try {
-      const area = bounds(picked), pxPerCm = 180, pad = 8, canvas = document.createElement("canvas");
-      canvas.width = Math.max(1, Math.ceil(area.w * pxPerCm) + pad * 2); canvas.height = Math.max(1, Math.ceil(area.h * pxPerCm) + pad * 2);
-      const context = canvas.getContext("2d")!;
-      for (const layer of picked) {
-        const image = await getImage(layer.src), w = layer.w * pxPerCm, h = layer.h * pxPerCm;
-        context.save(); context.translate(pad + (layer.x - area.x) * pxPerCm + w / 2, pad + (layer.y - area.y) * pxPerCm + h / 2); context.rotate(layer.rotation * Math.PI / 180); context.drawImage(image, -w / 2, -h / 2, w, h); context.restore();
+      const area = bounds(picked), top = [...picked].sort((a,b)=>layers.indexOf(b)-layers.indexOf(a))[0], boxes=picked.map(rotatedBounds), visited=new Set<number>(), clusters:number[][]=[];
+      const overlaps=(a:{x:number;y:number;w:number;h:number},b:{x:number;y:number;w:number;h:number})=>a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y;
+      for(let seed=0;seed<picked.length;seed++){if(visited.has(seed))continue;const cluster:number[]=[],queue=[seed];visited.add(seed);while(queue.length){const current=queue.shift()!;cluster.push(current);for(let next=0;next<picked.length;next++)if(!visited.has(next)&&overlaps(boxes[current],boxes[next])){visited.add(next);queue.push(next)}}clusters.push(cluster)}
+      const components:{layer:Layer;src:string;box:{x:number;y:number;w:number;h:number}}[]=[];
+      for(const cluster of clusters){
+        if(cluster.length===1){const layer=picked[cluster[0]];components.push({layer,src:layer.src,box:{x:layer.x,y:layer.y,w:layer.w,h:layer.h}});continue}
+        const members=cluster.map(index=>picked[index]), clusterBox=bounds(members), pxPerCm=240, pad=6, canvas=document.createElement("canvas");canvas.width=Math.max(1,Math.ceil(clusterBox.w*pxPerCm)+pad*2);canvas.height=Math.max(1,Math.ceil(clusterBox.h*pxPerCm)+pad*2);const context=canvas.getContext("2d")!;
+        for(const layer of members){const image=await getImage(layer.src),w=layer.w*pxPerCm,h=layer.h*pxPerCm;context.save();context.translate(pad+(layer.x-clusterBox.x)*pxPerCm+w/2,pad+(layer.y-clusterBox.y)*pxPerCm+h/2);context.rotate(layer.rotation*Math.PI/180);context.drawImage(image,-w/2,-h/2,w,h);context.restore()}
+        const traced=await vTracerCutout(canvas.toDataURL("image/png"),top.color,clusterBox.w+pad*2/pxPerCm,1.15);components.push({layer:{...members[0],rotation:0},src:traced,box:{x:clusterBox.x-pad/pxPerCm,y:clusterBox.y-pad/pxPerCm,w:clusterBox.w+pad*2/pxPerCm,h:clusterBox.h+pad*2/pxPerCm}})
       }
-      const top = [...picked].sort((a,b)=>layers.indexOf(b)-layers.indexOf(a))[0], src = await vTracerCutout(canvas.toDataURL("image/png"), top.color, area.w + pad * 2 / pxPerCm, 1.55), welded: Layer = { ...top, id: uid(), name: `${top.name} Weld`, src, originalSrc: src, x: area.x - pad / pxPerCm, y: area.y - pad / pxPerCm, w: area.w + pad * 2 / pxPerCm, h: area.h + pad * 2 / pxPerCm, rotation: 0, groupId: undefined, strokeCm: 0, fillGapsMm: 0, steps: [], activeStep: 0 };
+      const output=document.implementation.createDocument("http://www.w3.org/2000/svg","svg",null),root=output.documentElement;root.setAttribute("xmlns","http://www.w3.org/2000/svg");root.setAttribute("viewBox",`0 0 ${area.w*100} ${area.h*100}`);root.setAttribute("width",String(area.w*100));root.setAttribute("height",String(area.h*100));root.setAttribute("preserveAspectRatio","none");root.setAttribute("shape-rendering","geometricPrecision");
+      for(const component of components){const sourceDoc=new DOMParser().parseFromString(decodeSvgData(component.src),"image/svg+xml"),sourceRoot=sourceDoc.documentElement,[vx,vy,vw,vh]=svgViewBox(sourceRoot),group=output.createElementNS("http://www.w3.org/2000/svg","g"),layer=component.layer,box=component.box,cx=(layer.x+layer.w/2-area.x)*100,cy=(layer.y+layer.h/2-area.y)*100;group.setAttribute("transform",`translate(${(box.x-area.x)*100} ${(box.y-area.y)*100})${layer.rotation?` rotate(${layer.rotation} ${cx-(box.x-area.x)*100} ${cy-(box.y-area.y)*100})`:""} scale(${box.w*100/vw} ${box.h*100/vh}) translate(${-vx} ${-vy})`);[...sourceRoot.childNodes].forEach(node=>group.appendChild(output.importNode(node,true)));group.querySelectorAll("path,rect,circle,ellipse,polygon,polyline").forEach(node=>{if(node.getAttribute("fill")!=="none")node.setAttribute("fill",top.color);node.setAttribute("stroke","none")});root.appendChild(group)}
+      const src=`data:image/svg+xml,${encodeURIComponent(new XMLSerializer().serializeToString(root))}`, safety=await analyzeCutSafety(src,area.w), welded: Layer = { ...top,...safety, id: uid(), name: `${top.name} Weld`, src, originalSrc: src, x: area.x, y: area.y, w: area.w, h: area.h, rotation: 0, groupId: undefined, strokeCm: 0, fillGapsMm: 0, steps: [], activeStep: 0 };
       setLayers((items) => [...items.filter((layer) => !selected.includes(layer.id)), welded]); setSelected([welded.id]);
       addSessionLog("Cutouts welded", `${picked.length} cutouts became one SVG using ${top.name}'s colour.`); setNotice("Cutouts welded into one SVG layer");
     } catch (error) { setNotice(`Weld failed: ${error instanceof Error ? error.message : "Unknown error"}`); } finally { setWorking(false); }
@@ -5455,7 +5505,7 @@ export default function Home() {
           </div>
           <div className="zoom">
             <div className="zoom-row">
-              <button onClick={() => setZoom((v) => clamp(v - 0.1, 0.2, 7))}>
+              <button onClick={() => setZoom((v) => clamp(v - 0.1, 0.2, 9))}>
                 <ZoomOut />
               </button>
               {zoomEditing ? (
@@ -5474,7 +5524,7 @@ export default function Home() {
                     }
                   }}
                   onBlur={() => {
-                    const value = clamp((+zoomDraft || 20) / 100, 0.2, 7);
+                    const value = clamp((+zoomDraft || 20) / 100, 0.2, 9);
                     setZoom(value);
                     setZoomDraft(String(Math.round(value * 100)));
                     setZoomEditing(false);
@@ -5491,7 +5541,7 @@ export default function Home() {
                   {Math.round(zoom * 100)}%
                 </button>
               )}
-              <button onClick={() => setZoom((v) => clamp(v + 0.1, 0.2, 7))}>
+              <button onClick={() => setZoom((v) => clamp(v + 0.1, 0.2, 9))}>
                 <ZoomIn />
               </button>
             </div>
@@ -5799,22 +5849,11 @@ export default function Home() {
               <div
                 key={l.id}
                 draggable={editingName !== l.id}
-                className={`card ${selected.includes(l.id) ? "active" : ""} ${cutSafetyEnabled && l.cutRisk ? "cut-risk" : ""} ${!l.visible ? "hidden" : ""} ${dragLayer === l.id ? "dragging" : ""}`}
-                onDragStart={() => setDragLayer(l.id)}
-                onDragOver={(e) => e.preventDefault()}
-                onDragEnter={() => {
-                  if (!dragLayer || dragLayer === l.id) return;
-                  setLayers((v) => {
-                    const from = v.findIndex((x) => x.id === dragLayer),
-                      to = v.findIndex((x) => x.id === l.id),
-                      next = [...v],
-                      [item] = next.splice(from, 1);
-                    next.splice(to, 0, item);
-                    return next;
-                  });
-                }}
-                onDragEnd={() => setDragLayer(null)}
-                onDrop={() => setDragLayer(null)}
+                className={`card ${selected.includes(l.id) ? "active" : ""} ${cutSafetyEnabled && l.cutRisk ? "cut-risk" : ""} ${!l.visible ? "hidden" : ""} ${dragLayer === l.id ? "dragging" : ""} ${layerDrop?.id===l.id?`drop-${layerDrop.side}`:""}`}
+                onDragStart={(event) => {setDragLayer(l.id);setLayerDrop(null);event.dataTransfer.effectAllowed="move";}}
+                onDragOver={(e) => {e.preventDefault();if(!dragLayer||dragLayer===l.id)return;const rect=e.currentTarget.getBoundingClientRect();setLayerDrop({id:l.id,side:e.clientY<rect.top+rect.height/2?"before":"after"});}}
+                onDragEnd={() => {setDragLayer(null);setLayerDrop(null)}}
+                onDrop={(event) => {event.preventDefault();if(layerDrop?.id===l.id)dropLayerAt(l.id,layerDrop.side)}}
                 onClickCapture={(e) => {
                   if (imageOnShapeTargetRef.current || imageOnShapeTarget) {
                     e.preventDefault();
@@ -6190,7 +6229,7 @@ export default function Home() {
                 <b>{projects.length}</b>
                 <small>Saved projects</small>
               </span>
-              <span className="account-storage"><b>{(projectsStorageBytes/1048576).toFixed(1)} / 20 MB</b><small>Storage used</small></span>
+              <span className="account-storage"><b>{(projectsStorageBytes/1048576).toFixed(1)} / 40 MB</b><small>Storage used</small></span>
             </div>
             <button className="sign-out" onClick={() => void supabase.auth.signOut()}>
               <LogOut /> Sign Out
@@ -7267,7 +7306,7 @@ export default function Home() {
                 <Sparkles /> Smooth
               </button>
               <span className="footer-spacer" />
-              <button className="footer-separate" onClick={() => void openSeparateLayers(cutPreview, cutEditor.layerId)}>
+              <button className="footer-separate" onClick={() => void openSeparateLayers(cutEditor.strokes.length ? svgWithoutPreviewContour(cutPreview) : cutEditor.source, cutEditor.layerId,undefined,true)}>
                 <Layers3 /> Separate as Layers
               </button>
               <button className="cancel" onClick={() => setCutEditor(null)}>
