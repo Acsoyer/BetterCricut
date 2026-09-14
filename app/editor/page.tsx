@@ -1155,10 +1155,15 @@ async function analyzeCutSafety(src: string, widthCm: number) {
 async function renderCutoutEdit(editor: CutoutEditor, applyCrop = false) {
   const img = await getImage(editor.source),
     c = document.createElement("canvas");
-  c.width = img.naturalWidth;
-  c.height = img.naturalHeight;
+  // Keep vector edits independent from the browser's arbitrary SVG preview size.
+  const vectorSource = editor.source.startsWith("data:image/svg+xml"),
+    workingScale = vectorSource ? Math.max(1, 3200 / Math.max(img.naturalWidth, img.naturalHeight, 1)) : 1;
+  c.width = Math.max(1, Math.round(img.naturalWidth * workingScale));
+  c.height = Math.max(1, Math.round(img.naturalHeight * workingScale));
   const x = c.getContext("2d")!;
-  x.drawImage(img, 0, 0);
+  x.imageSmoothingEnabled = true;
+  x.imageSmoothingQuality = "high";
+  x.drawImage(img, 0, 0, c.width, c.height);
   for (const stroke of editor.strokes) {
     if (!stroke.points.length) continue;
     if (stroke.tool === "smooth") continue;
@@ -4994,7 +4999,20 @@ export default function Home() {
       }
       const area = bounds(picked), top = [...picked].sort((a,b)=>layers.indexOf(b)-layers.indexOf(a))[0], boxes=picked.map(rotatedBounds), visited=new Set<number>(), clusters:number[][]=[];
       const overlaps=(a:{x:number;y:number;w:number;h:number},b:{x:number;y:number;w:number;h:number})=>a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y;
-      for(let seed=0;seed<picked.length;seed++){if(visited.has(seed))continue;const cluster:number[]=[],queue=[seed];visited.add(seed);while(queue.length){const current=queue.shift()!;cluster.push(current);for(let next=0;next<picked.length;next++)if(!visited.has(next)&&overlaps(boxes[current],boxes[next])){visited.add(next);queue.push(next)}}clusters.push(cluster)}
+      const imageCache=new Map<string,HTMLImageElement>(),loadWeldImage=async(layer:Layer)=>{let image=imageCache.get(layer.id);if(!image){image=await getImage(layer.src);imageCache.set(layer.id,image)}return image};
+      const visiblyOverlaps=async(a:Layer,b:Layer)=>{
+        const ab=rotatedBounds(a),bb=rotatedBounds(b),left=Math.max(ab.x,bb.x),topEdge=Math.max(ab.y,bb.y),right=Math.min(ab.x+ab.w,bb.x+bb.w),bottom=Math.min(ab.y+ab.h,bb.y+bb.h);
+        if(right<=left||bottom<=topEdge)return false;
+        const width=right-left,height=bottom-topEdge,density=clamp(900/Math.max(width,height,.01),120,360),canvas=document.createElement("canvas");
+        canvas.width=Math.max(2,Math.ceil(width*density));canvas.height=Math.max(2,Math.ceil(height*density));
+        const context=canvas.getContext("2d",{willReadFrequently:true})!;context.imageSmoothingEnabled=true;context.imageSmoothingQuality="high";
+        const draw=async(layer:Layer)=>{const image=await loadWeldImage(layer),w=layer.w*density,h=layer.h*density;context.save();context.translate((layer.x-left)*density+w/2,(layer.y-topEdge)*density+h/2);context.rotate(layer.rotation*Math.PI/180);context.drawImage(image,-w/2,-h/2,w,h);context.restore()};
+        await draw(a);const first=context.getImageData(0,0,canvas.width,canvas.height).data;context.clearRect(0,0,canvas.width,canvas.height);await draw(b);const second=context.getImageData(0,0,canvas.width,canvas.height).data;
+        let shared=0;for(let pixel=3;pixel<first.length;pixel+=4)if(first[pixel]>=96&&second[pixel]>=96&&++shared>=2)return true;return false;
+      };
+      const adjacency=Array.from({length:picked.length},()=>new Set<number>());
+      for(let first=0;first<picked.length;first++)for(let second=first+1;second<picked.length;second++)if(overlaps(boxes[first],boxes[second])&&await visiblyOverlaps(picked[first],picked[second])){adjacency[first].add(second);adjacency[second].add(first)}
+      for(let seed=0;seed<picked.length;seed++){if(visited.has(seed))continue;const cluster:number[]=[],queue=[seed];visited.add(seed);while(queue.length){const current=queue.shift()!;cluster.push(current);for(const next of adjacency[current])if(!visited.has(next)){visited.add(next);queue.push(next)}}clusters.push(cluster)}
       const components:{layer:Layer;src:string;box:{x:number;y:number;w:number;h:number}}[]=[];
       for(const cluster of clusters){
         if(cluster.length===1){const layer=picked[cluster[0]];components.push({layer,src:layer.src,box:{x:layer.x,y:layer.y,w:layer.w,h:layer.h}});continue}
