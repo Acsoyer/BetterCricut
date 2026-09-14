@@ -1,6 +1,6 @@
 "use client";
 /* eslint-disable react-hooks/set-state-in-effect, react-hooks/refs, react-hooks/purity */
-import { ChangeEvent, PointerEvent as RPointer, WheelEvent as RWheel, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, Fragment, PointerEvent as RPointer, WheelEvent as RWheel, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AlignVerticalJustifyCenter, AlignEndHorizontal, AlignEndVertical, AlignHorizontalJustifyCenter, AlignStartHorizontal, AlignStartVertical, AlertTriangle, BringToFront, ChevronDown, Check, Copy, Crosshair, Download, Eye, EyeOff, FileImage, File, ImagePlus, Paintbrush, Eraser, GripVertical, Grid3X3, Link as LinkIcon, Link2Off, Layers3, Maximize2, Palette, Pipette, Plus, RotateCw, Replace, Ruler, Scissors, ShieldCheck, SlidersHorizontal, SendToBack, Sparkles, Star, Trash2, Type, Undo2, ZoomIn, ZoomOut, User, FolderOpen, Image as ImageIcon, LogOut, X } from "lucide-react";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
@@ -339,6 +339,10 @@ const svgViewBox = (root: Element) => {
 const cropSvgWithoutRetracing = (src: string, part: SplitPart) => {
   const doc = new DOMParser().parseFromString(decodeSvgData(src), "image/svg+xml"), root = doc.documentElement, [x,y,w,h] = svgViewBox(root);
   const left=x+part.left*w, top=y+part.top*h, width=part.width*w, height=part.height*h;
+  const ns="http://www.w3.org/2000/svg",defs=doc.createElementNS(ns,"defs"),mask=doc.createElementNS(ns,"mask"),maskImage=doc.createElementNS(ns,"image"),group=doc.createElementNS(ns,"g"),maskId=`island-${uid()}`;
+  mask.setAttribute("id",maskId);mask.setAttribute("maskUnits","userSpaceOnUse");mask.setAttribute("x",String(left));mask.setAttribute("y",String(top));mask.setAttribute("width",String(width));mask.setAttribute("height",String(height));mask.setAttribute("style","mask-type:alpha");
+  maskImage.setAttribute("href",part.src);maskImage.setAttribute("x",String(left));maskImage.setAttribute("y",String(top));maskImage.setAttribute("width",String(width));maskImage.setAttribute("height",String(height));maskImage.setAttribute("preserveAspectRatio","none");mask.appendChild(maskImage);defs.appendChild(mask);
+  [...root.childNodes].forEach(node=>group.appendChild(node));group.setAttribute("mask",`url(#${maskId})`);root.appendChild(defs);root.appendChild(group);
   root.setAttribute("viewBox",`${left} ${top} ${width} ${height}`); root.setAttribute("width",String(width)); root.setAttribute("height",String(height)); root.setAttribute("preserveAspectRatio","none"); root.setAttribute("overflow","hidden");
   return `data:image/svg+xml,${encodeURIComponent(new XMLSerializer().serializeToString(root))}`;
 };
@@ -4509,8 +4513,8 @@ export default function Home() {
     if (l.isShape) {
       const rect=canvasRef.current?.getBoundingClientRect();if(!rect||!await layerOpaqueAtWorld(l,(e.clientX-rect.left)/scale,(e.clientY-rect.top)/scale))return;
     }
-    const groupIds = l.groupId ? layers.filter((item) => item.groupId === l.groupId).map((item) => item.id) : [l.id];
-    if (e.shiftKey || e.ctrlKey || e.metaKey) setSelected((v) => groupIds.every((id) => v.includes(id)) ? v.filter((id) => !groupIds.includes(id)) : [...new Set([...v, ...groupIds])]);
+    const groupIds = l.groupId && !(e.shiftKey || e.ctrlKey || e.metaKey) ? layers.filter((item) => item.groupId === l.groupId).map((item) => item.id) : [l.id];
+    if (e.shiftKey || e.ctrlKey || e.metaKey) setSelected((v) => v.includes(l.id) ? v.filter((id) => id!==l.id) : [...new Set([...v,l.id])]);
     else if (!selected.includes(l.id)) setSelected(groupIds);
   };
   const startDrag = (e: RPointer, mode: string) => {
@@ -4921,7 +4925,7 @@ export default function Home() {
   const groupSelection = () => {
     if (picked.length < 2) return;
     const existing = picked.map((layer) => layer.groupId).find(Boolean), groupId = existing || uid();
-    setLayers((items) => items.map((layer) => selected.includes(layer.id) ? { ...layer, groupId } : layer));
+    setLayers((items) => {const at=Math.min(...items.map((layer,index)=>selected.includes(layer.id)?index:Infinity)),members=items.filter(layer=>selected.includes(layer.id)).map(layer=>({...layer,groupId})),rest=items.filter(layer=>!selected.includes(layer.id));rest.splice(Math.min(at,rest.length),0,...members);return rest});
     addSessionLog("Layers grouped", `${picked.map((layer) => layer.name).join(", ")} now move and resize together.`);
     setNotice("Layers grouped");
   };
@@ -4974,13 +4978,20 @@ export default function Home() {
   };
   const dropLayerAt = (targetId:string,side:"before"|"after") => {
     if(!dragLayer||dragLayer===targetId)return;
-    setLayers(items=>{const next=items.filter(item=>item.id!==dragLayer),moving=items.find(item=>item.id===dragLayer),targetIndex=next.findIndex(item=>item.id===targetId);if(!moving||targetIndex<0)return items;const internalIndex=side==="before"?targetIndex+1:targetIndex;next.splice(internalIndex,0,moving);return next});
+    setLayers(items=>{const next=items.filter(item=>item.id!==dragLayer),moving=items.find(item=>item.id===dragLayer),target=items.find(item=>item.id===targetId),targetIndex=next.findIndex(item=>item.id===targetId);if(!moving||!target||targetIndex<0)return items;const internalIndex=side==="before"?targetIndex+1:targetIndex;next.splice(internalIndex,0,{...moving,groupId:target.groupId});return next});
     setDragLayer(null);setLayerDrop(null);
   };
+  const moveDraggedLayerToGroup=(groupId:string|undefined)=>{if(!dragLayer)return;setLayers(items=>items.map(layer=>layer.id===dragLayer?{...layer,groupId}:layer));setDragLayer(null);setLayerDrop(null)};
   const weldSelection = async () => {
-    if (picked.length < 2 || !picked.every((layer) => ["vector", "stroke"].includes(layer.kind))) return;
+    if (picked.length < 2) return;
     setWorking(true);
     try {
+      if(!picked.every(layer=>["vector","stroke"].includes(layer.kind))){
+        const area=bounds(picked),nativeDensity=Math.max(...picked.map(layer=>(layer.naturalW||600)/Math.max(layer.w,.01))),pxPerCm=clamp(nativeDensity,80,Math.min(600,6000/Math.max(area.w,area.h))),canvas=document.createElement("canvas");canvas.width=Math.max(1,Math.round(area.w*pxPerCm));canvas.height=Math.max(1,Math.round(area.h*pxPerCm));const context=canvas.getContext("2d")!;context.imageSmoothingEnabled=true;context.imageSmoothingQuality="high";
+        for(const layer of picked){const image=await getImage(layer.stickerOffset?.previewSrc||layer.src),w=layer.w*pxPerCm,h=layer.h*pxPerCm;context.save();context.translate((layer.x-area.x)*pxPerCm+w/2,(layer.y-area.y)*pxPerCm+h/2);context.rotate(layer.rotation*Math.PI/180);context.drawImage(image,-w/2,-h/2,w,h);context.restore()}
+        const src=canvas.toDataURL("image/png"),raster:Layer={...picked[picked.length-1],id:uid(),name:`${picked[picked.length-1].name} Weld`,src,originalSrc:src,x:area.x,y:area.y,w:area.w,h:area.h,naturalW:canvas.width,naturalH:canvas.height,kind:"original",rotation:0,groupId:undefined,parentId:undefined,innerSrc:undefined,shapeImage:undefined,stickerOffset:undefined,steps:[],activeStep:-1,strokeCm:0,fillGapsMm:0,acetateOn:false};
+        setLayers(items=>[...items.filter(layer=>!selected.includes(layer.id)),raster]);setSelected([raster.id]);addSessionLog("Raster layers welded",`${picked.length} layers became one full-resolution transparent PNG.`);setNotice("Selected layers welded into one PNG layer");return;
+      }
       const area = bounds(picked), top = [...picked].sort((a,b)=>layers.indexOf(b)-layers.indexOf(a))[0], boxes=picked.map(rotatedBounds), visited=new Set<number>(), clusters:number[][]=[];
       const overlaps=(a:{x:number;y:number;w:number;h:number},b:{x:number;y:number;w:number;h:number})=>a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y;
       for(let seed=0;seed<picked.length;seed++){if(visited.has(seed))continue;const cluster:number[]=[],queue=[seed];visited.add(seed);while(queue.length){const current=queue.shift()!;cluster.push(current);for(let next=0;next<picked.length;next++)if(!visited.has(next)&&overlaps(boxes[current],boxes[next])){visited.add(next);queue.push(next)}}clusters.push(cluster)}
@@ -5386,7 +5397,7 @@ export default function Home() {
           <button disabled={picked.length < 2 && !picked.some((layer)=>layer.groupId)} onClick={picked.some((layer)=>layer.groupId) ? ungroupSelection : groupSelection}>
             <Layers3 /> {picked.some((layer)=>layer.groupId) ? "Ungroup" : "Group"}
           </button>
-          <button disabled={picked.length < 2 || !vectorsOnly} onClick={() => void weldSelection()}>
+          <button disabled={picked.length < 2} onClick={() => void weldSelection()}>
             <LinkIcon /> Weld
           </button>
         </div>
@@ -5396,10 +5407,11 @@ export default function Home() {
             <Plus /> New Project
           </button>
           <button className="save-project" onClick={() => void saveProject(false, undefined, projectName, false)} title="Save current project">
-            <Download /> Save
+            <Download /> {currentProjectId ? "Save - Update" : "Save"}
           </button>
           <button
             className="save-as-project"
+            disabled={!currentProjectId}
             onClick={() => {
               setSaveAsMode(true);
               setProjectName(currentProjectId ? `${projectName} Copy` : projectName);
@@ -5836,7 +5848,7 @@ export default function Home() {
               <button disabled={picked.length < 2 && !picked.some((layer)=>layer.groupId)} onClick={picked.some((layer)=>layer.groupId) ? ungroupSelection : groupSelection} title={picked.some((layer)=>layer.groupId) ? "Ungroup" : "Group"}>
                 <Layers3 />
               </button>
-              <button disabled={picked.length < 2 || !vectorsOnly} onClick={() => void weldSelection()} title="Weld cutouts">
+              <button disabled={picked.length < 2} onClick={() => void weldSelection()} title="Weld selected layers">
                 <LinkIcon />
               </button>
               <button onClick={() => fileRef.current?.click()}>
@@ -5845,11 +5857,12 @@ export default function Home() {
             </div>
           </div>
           <div className="list">
-            {[...layers].reverse().map((l) => (
+            {[...layers].reverse().map((l,index,displayed) => (
+              <Fragment key={l.id}>
+              {l.groupId&&displayed.findIndex(item=>item.groupId===l.groupId)===index&&<div className="layer-group-header" onClick={()=>setSelected(layers.filter(layer=>layer.groupId===l.groupId).map(layer=>layer.id))} onDragOver={(event)=>event.preventDefault()} onDrop={(event)=>{event.preventDefault();moveDraggedLayerToGroup(l.groupId)}}><FolderOpen/><span>Group</span><small>{layers.filter(layer=>layer.groupId===l.groupId).length} layers</small></div>}
               <div
-                key={l.id}
                 draggable={editingName !== l.id}
-                className={`card ${selected.includes(l.id) ? "active" : ""} ${cutSafetyEnabled && l.cutRisk ? "cut-risk" : ""} ${!l.visible ? "hidden" : ""} ${dragLayer === l.id ? "dragging" : ""} ${layerDrop?.id===l.id?`drop-${layerDrop.side}`:""}`}
+                className={`card ${l.groupId?"group-child":""} ${selected.includes(l.id) ? "active" : ""} ${cutSafetyEnabled && l.cutRisk ? "cut-risk" : ""} ${!l.visible ? "hidden" : ""} ${dragLayer === l.id ? "dragging" : ""} ${layerDrop?.id===l.id?`drop-${layerDrop.side}`:""}`}
                 onDragStart={(event) => {setDragLayer(l.id);setLayerDrop(null);event.dataTransfer.effectAllowed="move";}}
                 onDragOver={(e) => {e.preventDefault();if(!dragLayer||dragLayer===l.id)return;const rect=e.currentTarget.getBoundingClientRect();setLayerDrop({id:l.id,side:e.clientY<rect.top+rect.height/2?"before":"after"});}}
                 onDragEnd={() => {setDragLayer(null);setLayerDrop(null)}}
@@ -5862,8 +5875,8 @@ export default function Home() {
                   }
                 }}
                 onClick={(e) => {
-                  const ids=l.groupId?layers.filter((layer)=>layer.groupId===l.groupId).map((layer)=>layer.id):[l.id];
-                  if (e.shiftKey || e.ctrlKey || e.metaKey) setSelected((v) => ids.every((id)=>v.includes(id)) ? v.filter((id)=>!ids.includes(id)) : [...new Set([...v,...ids])]);
+                  const ids=l.groupId&&!(e.shiftKey||e.ctrlKey||e.metaKey)?layers.filter((layer)=>layer.groupId===l.groupId).map((layer)=>layer.id):[l.id];
+                  if (e.shiftKey || e.ctrlKey || e.metaKey) setSelected((v) => v.includes(l.id)?v.filter(id=>id!==l.id):[...new Set([...v,l.id])]);
                   else setSelected(ids);
                 }}
               >
@@ -5958,7 +5971,9 @@ export default function Home() {
                   </div>
                 )}
               </div>
+              </Fragment>
             ))}
+            {dragLayer&&layers.find(layer=>layer.id===dragLayer)?.groupId&&<div className="leave-group-drop" onDragOver={(event)=>event.preventDefault()} onDrop={(event)=>{event.preventDefault();moveDraggedLayerToGroup(undefined)}}>Drop here to remove from Group</div>}
             {!layers.length && <div className="no-layers">Your uploaded designs will appear here.</div>}
           </div>
           <button className="validate-layers" disabled={!layers.some((layer) => ["vector", "stroke"].includes(layer.kind))} onClick={() => setValidationIntroOpen(true)}>
