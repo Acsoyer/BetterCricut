@@ -283,6 +283,12 @@ const uid = () => Math.random().toString(36).slice(2, 10),
       maximumFractionDigits: 1,
     }),
   clamp = (n: number, a: number, b: number) => Math.max(a, Math.min(b, n));
+
+const stepZoom = (value: number, direction: -1 | 1) => {
+  if (direction > 0 && value >= 0.91 && value < 1) return 1;
+  if (direction < 0 && value > 1 && value <= 1.09) return 1;
+  return clamp(value + direction * 0.1, 0.2, 9);
+};
 const smoothBrushPoints = (points: EditStroke["points"], amount: number) => {
   if (points.length < 3 || amount <= 0) return points.map((point)=>({...point}));
   const radius = Math.max(1, Math.round(amount / 10)), passes = Math.max(1, Math.round(amount / 15));
@@ -1798,6 +1804,7 @@ export default function Home() {
     [safeMargin, setSafeMargin] = useState(1),
     [safeOpen, setSafeOpen] = useState(false),
     [gridVisible, setGridVisible] = useState(true),
+    [settingsHydrated, setSettingsHydrated] = useState(false),
     [bgMenuOpen, setBgMenuOpen] = useState(false),
     [addNewOpen, setAddNewOpen] = useState(false),
     [createImageMode, setCreateImageMode] = useState<"choose" | "text" | "image" | null>(null),
@@ -2046,6 +2053,25 @@ export default function Home() {
     setSplashOpen(localStorage.getItem(splashStorageKey) !== "1");
   }, [splashStorageKey]);
   useEffect(() => {
+    try {
+      const raw = localStorage.getItem("cake-topper-editor-settings:v1");
+      if (raw) {
+        const saved = JSON.parse(raw) as Partial<{ pageMode: PageMode; pageSize: PageSize; unit: Unit; pageColor: PageColor; safeMargin: number; gridVisible: boolean }>;
+        if (["portrait", "landscape", "full"].includes(saved.pageMode || "")) setPageMode(saved.pageMode!);
+        if (["a4", "letter", "a5", "full"].includes(saved.pageSize || "")) setPageSize(saved.pageSize!);
+        if (["cm", "in"].includes(saved.unit || "")) setUnit(saved.unit!);
+        if (saved.pageColor && Object.hasOwn(PAGE_COLORS, saved.pageColor)) setPageColor(saved.pageColor);
+        if (typeof saved.safeMargin === "number") setSafeMargin(saved.safeMargin);
+        if (typeof saved.gridVisible === "boolean") setGridVisible(saved.gridVisible);
+      }
+    } catch {}
+    setSettingsHydrated(true);
+  }, []);
+  useEffect(() => {
+    if (!settingsHydrated) return;
+    localStorage.setItem("cake-topper-editor-settings:v1", JSON.stringify({ pageMode, pageSize, unit, pageColor, safeMargin, gridVisible }));
+  }, [settingsHydrated, pageMode, pageSize, unit, pageColor, safeMargin, gridVisible]);
+  useEffect(() => {
     if (suppressLayerLog.current) {
       suppressLayerLog.current = false;
       loggedLayers.current = layers;
@@ -2205,16 +2231,13 @@ export default function Home() {
     suppressLayerLog.current = true;
     setLayers(restoredLayers);
     setSessionLog([...(full.data.sessionLog || []), { id: uid(), at: new Date().toISOString(), action: "Project opened", details: `${full.name} was opened.` }]);
-    setPageMode(full.data.pageMode || (full.data.landscape ? "landscape" : "portrait"));
-    setPageSize(full.data.pageSize || (full.data.pageMode === "full" ? "full" : "a4"));
-    setUnit(full.data.unit || "cm");
-    setSafeMargin(full.data.safeMargin ?? 1);
+
     setCutSafetyEnabled(Boolean(full.data.cutSafetyEnabled));
     setSelected([]);
     setCurrentProjectId(full.id);
     setCurrentProjectAutosave(Boolean(full.is_autosave));
     setProjectName(full.name);
-    setLastSavedSignature(projectSignature(restoredLayers, full.data.pageMode || (full.data.landscape ? "landscape" : "portrait"), full.data.safeMargin ?? 1, Boolean(full.data.cutSafetyEnabled), full.data.pageSize || "a4", full.data.unit || "cm"));
+    setLastSavedSignature(projectSignature(restoredLayers, pageMode, safeMargin, Boolean(full.data.cutSafetyEnabled), pageSize, unit));
     history.current = [];
     setProjectsOpen(false);
     setNotice(`${full.name} opened`);
@@ -2249,12 +2272,9 @@ export default function Home() {
     setCurrentProjectId(null);
     setCurrentProjectAutosave(false);
     setProjectName("Untitled Project");
-    setPageMode("portrait");
-    setPageSize("a4");
-    setUnit("cm");
-    setSafeMargin(1);
+
     setCutSafetyEnabled(false);
-    setLastSavedSignature(projectSignature([], "portrait", 1));
+    setLastSavedSignature(projectSignature([], pageMode, safeMargin, false, pageSize, unit));
     history.current = [];
     redoHistory.current = [];
     setProjectsOpen(false);
@@ -2479,7 +2499,7 @@ export default function Home() {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && ["+", "=", "-", "0"].includes(e.key)) {
         e.preventDefault();
-        setZoom((z) => (e.key === "0" ? 1 : clamp(z + (e.key === "-" ? -0.1 : 0.1), 0.2, 9)));
+        setZoom((z) => (e.key === "0" ? 1 : stepZoom(z, e.key === "-" ? -1 : 1)));
         return;
       }
       if (["ArrowLeft","ArrowRight","ArrowUp","ArrowDown"].includes(e.key) && selected.length && !(e.target as HTMLElement).closest("input,textarea,[contenteditable='true']") && !imageEditor && !cutEditor && !bgEditor) {
@@ -2568,9 +2588,11 @@ export default function Home() {
     const stage = stageRef.current,
       canvas = canvasRef.current;
     if (!stage || !canvas) return;
-    if (e.ctrlKey) {
-      stage.scrollTop += e.deltaY;
-      stage.scrollLeft += e.deltaX;
+    // Trackpads send ordinary wheel events for two-finger scrolling and
+    // ctrl+wheel for a real pinch gesture. Keep those interactions distinct.
+    if (!e.ctrlKey) {
+      stage.scrollLeft += e.deltaX || (e.shiftKey ? e.deltaY : 0);
+      stage.scrollTop += e.shiftKey ? 0 : e.deltaY;
       updateRulers();
       return;
     }
@@ -5544,7 +5566,7 @@ export default function Home() {
           </div>
           <div className="zoom">
             <div className="zoom-row">
-              <button onClick={() => setZoom((v) => clamp(v - 0.1, 0.2, 9))}>
+              <button onClick={() => setZoom((v) => stepZoom(v, -1))}>
                 <ZoomOut />
               </button>
               {zoomEditing ? (
@@ -5580,7 +5602,7 @@ export default function Home() {
                   {Math.round(zoom * 100)}%
                 </button>
               )}
-              <button onClick={() => setZoom((v) => clamp(v + 0.1, 0.2, 9))}>
+              <button onClick={() => setZoom((v) => stepZoom(v, 1))}>
                 <ZoomIn />
               </button>
             </div>
