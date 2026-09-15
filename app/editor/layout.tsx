@@ -50,6 +50,7 @@ import "./v99.css";
 import "./v100.css";
 import "./v101.css";
 import "./v105.css";
+import "./v106.css";
 
 export default function EditorLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();

@@ -1,7 +1,7 @@
 "use client";
 /* eslint-disable react-hooks/set-state-in-effect, react-hooks/refs, react-hooks/purity */
 import { ChangeEvent, Fragment, PointerEvent as RPointer, WheelEvent as RWheel, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { AlignVerticalJustifyCenter, AlignEndHorizontal, AlignEndVertical, AlignHorizontalJustifyCenter, AlignStartHorizontal, AlignStartVertical, AlertTriangle, BringToFront, ChevronDown, Check, Copy, Crosshair, Download, Eye, EyeOff, FileImage, File, ImagePlus, Paintbrush, Eraser, GripVertical, Grid3X3, Link as LinkIcon, Link2Off, Layers3, Maximize2, Palette, Pipette, Plus, RotateCw, Replace, Ruler, Scissors, ShieldCheck, SlidersHorizontal, SendToBack, Sparkles, Star, Trash2, Type, Undo2, ZoomIn, ZoomOut, User, FolderOpen, Image as ImageIcon, LogOut, X } from "lucide-react";
+import { AlignVerticalJustifyCenter, AlignEndHorizontal, AlignEndVertical, AlignHorizontalJustifyCenter, AlignStartHorizontal, AlignStartVertical, AlertTriangle, BringToFront, ChevronDown, Check, Copy, Crosshair, Download, Eye, EyeOff, FileImage, File, ImagePlus, Laptop, Paintbrush, Eraser, GripVertical, Grid3X3, Link as LinkIcon, Link2Off, Layers3, Maximize2, Palette, Pipette, Plus, Redo2, RotateCw, Replace, Ruler, Scissors, ShieldCheck, SlidersHorizontal, SendToBack, Sparkles, Star, Trash2, Type, Undo2, ZoomIn, ZoomOut, User, FolderOpen, Image as ImageIcon, LogOut, X } from "lucide-react";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
 import { EDITOR_VERSION, editorDevLog } from "../editor-dev-log";
@@ -1798,6 +1798,9 @@ export default function Home() {
     [cycle, setCycle] = useState({ key: "", index: 0, x: -9999, y: -9999 }),
     [strokeDraft, setStrokeDraft] = useState(0.5),
     [fillGapsDraft, setFillGapsDraft] = useState(0),
+    [fillAllGapsDraft, setFillAllGapsDraft] = useState(false),
+    [stickerBackgroundPromptId, setStickerBackgroundPromptId] = useState<string | null>(null),
+    [stickerAdvancedColor, setStickerAdvancedColor] = useState(false),
     [widthDraft, setWidthDraft] = useState("0.0"),
     [heightDraft, setHeightDraft] = useState("0.0"),
     [pageMode, setPageMode] = useState<PageMode>("portrait"),
@@ -5084,6 +5087,11 @@ export default function Home() {
     if (!EyeDropperCtor) return setNotice("Color picker is not supported by this browser");
     try { const { sRGBHex } = await new EyeDropperCtor().open(); setStickerColor(sRGBHex); } catch {}
   };
+  const openStickerBorder = async (target: Layer | null = one) => {
+    if (!target || ["vector", "stroke", "acetate"].includes(target.kind)) return;
+    if (!(await hasTransparentCanvas(target.src))) { setStickerBackgroundPromptId(target.id); return; }
+    openImageEditor(target); window.setTimeout(() => setImageTab("sticker"), 0);
+  };
   const removeStickerStyle = (target: Layer) => {
     const style = target.stickerOffset;
     if (!style) return;
@@ -5124,7 +5132,7 @@ export default function Home() {
       if(!picked.every(layer=>["vector","stroke"].includes(layer.kind))){
         const area=bounds(picked),nativeDensity=Math.max(...picked.map(layer=>(layer.naturalW||600)/Math.max(layer.w,.01))),pxPerCm=clamp(nativeDensity,80,Math.min(600,6000/Math.max(area.w,area.h))),canvas=document.createElement("canvas");canvas.width=Math.max(1,Math.round(area.w*pxPerCm));canvas.height=Math.max(1,Math.round(area.h*pxPerCm));const context=canvas.getContext("2d")!;context.imageSmoothingEnabled=true;context.imageSmoothingQuality="high";
         for(const layer of picked){const image=await getImage(layer.stickerOffset?.previewSrc||layer.src),w=layer.w*pxPerCm,h=layer.h*pxPerCm;context.save();context.translate((layer.x-area.x)*pxPerCm+w/2,(layer.y-area.y)*pxPerCm+h/2);context.rotate(layer.rotation*Math.PI/180);context.drawImage(image,-w/2,-h/2,w,h);context.restore()}
-        const src=canvas.toDataURL("image/png"),raster:Layer={...picked[picked.length-1],id:uid(),name:`${picked[picked.length-1].name} Weld`,src,originalSrc:src,x:area.x,y:area.y,w:area.w,h:area.h,naturalW:canvas.width,naturalH:canvas.height,kind:"original",rotation:0,groupId:undefined,parentId:undefined,innerSrc:undefined,shapeImage:undefined,stickerOffset:undefined,steps:[],activeStep:-1,strokeCm:0,fillGapsMm:0,acetateOn:false};
+        const src=canvas.toDataURL("image/png"),raster:Layer={...picked[picked.length-1],id:uid(),name:`${picked[picked.length-1].name} Weld`,src,originalSrc:src,x:area.x,y:area.y,w:area.w,h:area.h,naturalW:canvas.width,naturalH:canvas.height,kind:"original",rotation:0,groupId:undefined,parentId:undefined,innerSrc:undefined,shapeImage:undefined,stickerOffset:undefined,steps:[],activeStep:-1,strokeCm:0,fillGapsMm:0,acetateOn:false,weldedSources:picked.map(layer=>({...layer}))};
         setLayers(items=>[...items.filter(layer=>!selected.includes(layer.id)),raster]);setSelected([raster.id]);addSessionLog("Raster layers welded",`${picked.length} layers became one full-resolution transparent PNG.`);setNotice("Selected layers welded into one PNG layer");return;
       }
       const area = bounds(picked), top = [...picked].sort((a,b)=>layers.indexOf(b)-layers.indexOf(a))[0], boxes=picked.map(rotatedBounds), visited=new Set<number>(), clusters:number[][]=[];
@@ -5161,7 +5169,7 @@ export default function Home() {
         group.querySelectorAll("path,rect,circle,ellipse,polygon,polyline").forEach(node=>{if(insideDefinition(node))return;if(node.getAttribute("fill")!=="none")node.setAttribute("fill",top.color);if(node.hasAttribute("stroke")&&node.getAttribute("stroke")!=="none")node.setAttribute("stroke",top.color)});
         root.appendChild(group)
       }
-      const src=`data:image/svg+xml,${encodeURIComponent(new XMLSerializer().serializeToString(root))}`, safety=await analyzeCutSafety(src,area.w), welded: Layer = { ...top,...safety, id: uid(), name: `${top.name} Weld`, src, originalSrc: src, x: area.x, y: area.y, w: area.w, h: area.h, rotation: 0, groupId: undefined, strokeCm: 0, fillGapsMm: 0, steps: [], activeStep: 0 };
+      const src=`data:image/svg+xml,${encodeURIComponent(new XMLSerializer().serializeToString(root))}`, safety=await analyzeCutSafety(src,area.w), welded: Layer = { ...top,...safety, id: uid(), name: `${top.name} Weld`, src, originalSrc: src, x: area.x, y: area.y, w: area.w, h: area.h, rotation: 0, groupId: undefined, strokeCm: 0, fillGapsMm: 0, steps: [], activeStep: 0, weldedSources:picked.map(layer=>({...layer})) };
       setLayers((items) => [...items.filter((layer) => !selected.includes(layer.id)), welded]); setSelected([welded.id]);
       addSessionLog("Cutouts welded", `${picked.length} cutouts became one SVG using ${top.name}'s colour.`); setNotice("Cutouts welded into one SVG layer");
     } catch (error) { setNotice(`Weld failed: ${error instanceof Error ? error.message : "Unknown error"}`); } finally { setWorking(false); }
@@ -5183,6 +5191,12 @@ export default function Home() {
       x.fillRect(0, 0, w, h);
     }
     return c;
+  };
+  const unweldSelection = () => {
+    if (!one?.weldedSources?.length) return;
+    const restored=one.weldedSources.map(layer=>({...layer}));
+    setLayers(items=>{const index=items.findIndex(layer=>layer.id===one.id),next=items.filter(layer=>layer.id!==one.id);next.splice(Math.max(0,index),0,...restored);return next});
+    setSelected(restored.map(layer=>layer.id)); addSessionLog("Layers unwelded",`${one.name} restored to ${restored.length} editable source layers.`); setNotice("Weld restored to its original editable layers");
   };
   const validateLayers = async () => {
     const candidates = layers.filter((layer) => ["vector", "stroke"].includes(layer.kind));
@@ -5354,6 +5368,7 @@ export default function Home() {
         <button className="brand-undo" onClick={undo} title="Undo (Ctrl+Z)">
           <Undo2 /> Undo
         </button>
+        <button className="brand-redo" disabled={!redoHistory.current.length} onClick={redo} title="Redo (Ctrl+Shift+Z)"><Redo2 /> Redo</button>
         <input hidden ref={fileRef} type="file" multiple accept=".jpg,.jpeg,.png,.svg,.webp" onChange={add} />
         <input hidden ref={clipFileRef} type="file" accept="image/png,image/jpeg,image/webp" onChange={chooseClipImage} />
         <span className="toolbar-divider" />
@@ -5361,6 +5376,8 @@ export default function Home() {
           {one && !["vector", "stroke", "acetate"].includes(one.kind) && <>
             <button type="button" className="remove-bg-main" onClick={() => setBgMenuOpen(true)}><Sparkles /> Remove Background</button>
             <button type="button" onClick={() => setCutoutMenuOpen(true)}><Scissors /> Create Cut Shape</button>
+            <button type="button" onClick={() => void openStickerBorder(one)}><Sparkles /> Add Sticker Border to Image</button>
+            <button type="button" className="primary" onClick={() => void addOutlineToPrintable()}><Scissors /> Add Outline as Cut Shape</button>
           </>}
           {one && ["vector", "stroke"].includes(one.kind) && <button type="button" className="primary" onClick={() => openCutoutEditor()}><Scissors /> Edit Cut Shape</button>}
           {!one && <span className="selection-guidance">Select artwork to see its next steps</span>}
@@ -5482,7 +5499,7 @@ export default function Home() {
           </div>
         </div>
         <div className={`sub-center ${pageSetupOpen ? "settings-hidden" : ""}`}>
-          <div className="wrap color-slot">
+          {vectorsOnly && <div className="wrap color-slot">
             <button disabled={!vectorsOnly} className="color-current" style={{ "--swatch": one?.color || DARK } as React.CSSProperties} onClick={() => setColorOpen((v) => !v)}>
               <Palette /> Color <ChevronDown className="tiny-chevron" />
             </button>
@@ -5499,7 +5516,7 @@ export default function Home() {
                 ))}
               </div>
             )}
-          </div>
+          </div>}
           <div className="wrap">
             <button disabled={picked.length < 2} onClick={() => setAlignOpen((v) => !v)}>
               <AlignHorizontalJustifyCenter /> Align
@@ -5572,7 +5589,7 @@ export default function Home() {
         <div className="left-tools">
           <button className="left-add" onClick={() => { setCreateImageMode(null); setAddNewOpen(true); }}>
             <ImagePlus />
-            <span>Add New</span>
+            <span>Add New Image</span>
           </button>
           <div className="left-separator" />
           {["circle", "rectangle", "triangle"].map((shape) => (
@@ -5726,17 +5743,17 @@ export default function Home() {
             </div>
           </div>
           {one && ["vector", "stroke"].includes(one.kind) && (
-            <section className="cut-properties-floating" aria-label="Cut Shape properties">
+            <section className="cut-properties-floating" aria-label="Cut Shape properties" onPointerDown={(event)=>event.stopPropagation()}>
               <header><span><Scissors/><b>Cut Shape</b></span><small>{one.kind === "stroke" ? "Editable outline" : "Cutting geometry"}</small></header>
               {one.kind === "stroke" && <div className="floating-property-block">
                 <label>Outline <b>{(unit === "cm" ? strokeDraft : strokeDraft / 2.54).toFixed(unit === "cm" ? 1 : 2)} {unit}</b></label>
                 <input type="range" min="0" max="3" step=".05" value={strokeDraft} onChange={(event)=>setStrokeDraft(+event.target.value)}/>
-                <div className="floating-property-actions"><input type="number" min="0" step={unit === "cm" ? ".1" : ".05"} value={(unit === "cm" ? strokeDraft : strokeDraft / 2.54).toFixed(unit === "cm" ? 1 : 2)} onChange={(event)=>setStrokeDraft(Math.max(0,+event.target.value)*(unit === "cm" ? 1 : 2.54))}/><button onClick={()=>void updateStroke()}>Update</button><button className="danger" onClick={()=>{const index=one.steps.findIndex(step=>step.type==="stroke");if(index>=0)removeStep(one,index)}}>Remove</button></div>
+                <div className="floating-property-actions"><input type="number" min="0" step={unit === "cm" ? ".1" : ".05"} value={(unit === "cm" ? strokeDraft : strokeDraft / 2.54).toFixed(unit === "cm" ? 1 : 2)} onChange={(event)=>setStrokeDraft(Math.max(0,+event.target.value)*(unit === "cm" ? 1 : 2.54))}/><button className="primary-property" onClick={()=>void updateStroke()}>Apply Outline</button><button className="danger compact" onClick={()=>{setStrokeDraft(0);const index=one.steps.findIndex(step=>step.type==="stroke");if(index>=0)removeStep(one,index)}}>Remove</button></div>
               </div>}
               <div className="floating-property-block">
                 <label>Fill Gaps <b>{fillGapsDraft.toFixed(fillGapsDraft < 5 ? 1 : 0)} mm²</b></label>
                 <input type="range" min="0" max="30" step={fillGapsDraft < 5 ? ".5" : "1"} value={fillGapsDraft} onChange={(event)=>setFillGapsDraft(+event.target.value)}/>
-                <div className="floating-property-actions"><button onClick={()=>void applyGapPreview()}>Apply value</button><button className="fill-all" onClick={()=>void fillEveryGap()}>Fill all the gaps</button></div>
+                <div className="floating-property-actions gap-actions"><label className="fill-all-check"><input type="checkbox" checked={fillAllGapsDraft} onChange={(event)=>setFillAllGapsDraft(event.target.checked)}/> Fill all the gaps</label><button className="primary-property" onClick={()=>fillAllGapsDraft?void fillEveryGap():void applyGapPreview()}>Apply Fill</button></div>
                 <small>Only enclosed openings are filled; the outside edge is preserved.</small>
               </div>
             </section>
@@ -5974,6 +5991,7 @@ export default function Home() {
               </>
             }
           </div>
+          <div className={`layer-properties-panel ${one?"enabled":"disabled-panel"}`}><div className="side-tool-title"><b>Layer Properties</b><small>Selected artwork</small></div>{one?<dl><div><dt>Type</dt><dd>{["vector","stroke"].includes(one.kind)?"Cut Shape":"Printable Image"}</dd></div><div><dt>Format</dt><dd>{one.sourceFormat||(one.kind==="vector"||one.kind==="stroke"?"SVG":"PNG")}</dd></div><div><dt>Status</dt><dd>{one.kind==="stroke"?"Outline":one.kind==="vector"?"Cut geometry":one.rasterStatus==="background"?"Background detected":one.rasterStatus==="cleanup"?"Edge cleanup recommended":"Ready"}</dd></div>{one.stickerOffset?.enabled&&<div><dt>Style</dt><dd>Sticker Border</dd></div>}{one.weldedSources?.length&&<div><dt>Weld</dt><dd>Editable · {one.weldedSources.length} sources</dd></div>}</dl>:<p>Select a layer to view its properties.</p>}</div>
           {
             <div className={`finalize-tool legacy-gap-panel ${!one || !["vector", "stroke"].includes(one.kind) ? "cut-option-disabled" : ""}`}>
               <div className="side-tool-title">
@@ -6487,6 +6505,7 @@ export default function Home() {
             </div>
           );
         })()}
+      {stickerBackgroundPromptId && <div className="project-transition-modal sticker-background-modal" role="dialog" aria-modal="true" onPointerDown={()=>setStickerBackgroundPromptId(null)}><div onPointerDown={event=>event.stopPropagation()}><header><span><Sparkles/></span><div><h3>Remove background first?</h3><p>This image has no transparent pixels. A Sticker Border needs a transparent edge around the artwork.</p></div></header><div className="sticker-background-actions"><button className="cancel" onClick={()=>setStickerBackgroundPromptId(null)}>Cancel</button><button className="confirm" onClick={()=>{const target=layers.find(layer=>layer.id===stickerBackgroundPromptId);setStickerBackgroundPromptId(null);if(target){setSelected([target.id]);setBgMenuOpen(true)}}}>Remove Background</button></div></div></div>}
       {edgeGuidanceLayerId && (() => {
         const guided = layers.find((layer) => layer.id === edgeGuidanceLayerId);
         if (!guided) return null;
@@ -6540,7 +6559,7 @@ export default function Home() {
               <div>
                 {createImageMode && <button className="add-new-back" onClick={() => setCreateImageMode(createImageMode === "choose" ? null : "choose")} aria-label="Back">←</button>}
                 <span>
-                  <b>{createImageMode === "text" ? "Cake topper as text" : createImageMode === "image" ? "Cake topper as image" : createImageMode === "choose" ? "Create your own image" : "Add New"}</b>
+                  <b>{createImageMode === "text" ? "Cake topper as text" : createImageMode === "image" ? "Cake topper as image" : createImageMode === "choose" ? "Create your own Text / Image" : "Add New Image"}</b>
                   <small>{createImageMode === "text" || createImageMode === "image" ? "Design the artwork you want to create." : createImageMode === "choose" ? "Choose the kind of cake topper you want to make." : "Choose how you want to add artwork to your project."}</small>
                 </span>
               </div>
@@ -6548,12 +6567,7 @@ export default function Home() {
             </header>
             {!createImageMode ? (
               <div className="add-new-source-grid">
-                <button onClick={() => setCreateImageMode("choose")}>
-                  <i><Sparkles /></i><b>Create your own image</b><small>Start with AI-ready cake topper options</small>
-                </button>
-                <button onClick={() => { setAddNewOpen(false); fileRef.current?.click(); }}>
-                  <i><ImagePlus /></i><b>Upload from your computer</b><small>JPG, PNG, SVG or WebP</small>
-                </button>
+                <button onClick={() => { setAddNewOpen(false); fileRef.current?.click(); }}><i className="upload-combined-icon"><ImagePlus/><Laptop/></i><b>Upload From Your Computer</b><small>JPG, PNG, SVG or WebP</small></button>`r`n                <button onClick={() => setCreateImageMode("choose")}><i className="ai-combined-icon"><Sparkles/><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/><path d="M12 3v18M4.5 8h15M4.5 16h15"/></svg></i><b>Create your own Text / Image</b><small>Start with AI-ready cake topper options</small></button>
               </div>
             ) : createImageMode === "choose" ? (
               <div className="add-new-source-grid create-kind-grid">
@@ -6831,7 +6845,7 @@ export default function Home() {
               <div className="bg-dialog">
                 <header>
                   <div className="image-editor-title">
-                    <b>Edit Image</b>
+                    <b>{imageTab === "sticker" ? "Add Sticker Border to Image" : "Edit Image"}</b>
                     <small>Crop, erase or refine the image background.</small>
                   </div>
                   {bgEditor && (
@@ -6867,7 +6881,7 @@ export default function Home() {
                           }
                         />
                         <Eye />
-                        <span>Alpha</span>
+                        <span>Show Alpha Channel</span>
                       </label>
                       <button
                         title="Optimize alpha"
@@ -7066,13 +7080,13 @@ export default function Home() {
                     <div className="sticker-offset-body">
                       <div className="sticker-offset-preview"><img src={stickerPreviewSrc || imageEditor.source} alt="Sticker offset preview" /></div>
                       <aside className="sticker-offset-controls">
-                        <h3>Create Sticker Offset</h3><p>Add a smooth, editable border around the image. It stays proportional in physical units and is baked into PNG exports.</p>
+                        <h3>Add Sticker Border to Image</h3><p>Add a smooth, editable border around the image. It stays proportional in physical units and is baked into PNG exports.</p>
                         <label>Offset width <b>{stickerSizeMm.toFixed(1)} mm</b></label><input type="range" min="0.5" max="15" step="0.5" value={stickerSizeMm} onChange={(event)=>setStickerSizeMm(+event.target.value)} />
-                        <label>Offset color</label><div className="sticker-color-palette">{COLORS.slice(-8).map((color)=><button key={color} className={stickerColor.toLowerCase()===color.toLowerCase()?"active":""} style={{background:color}} onClick={()=>setStickerColor(color)} aria-label={`Use ${color}`}/>)}</div><div className="sticker-color-row"><input type="color" value={stickerColor} onChange={(event)=>setStickerColor(event.target.value)} aria-label="Custom offset color"/><button className="pick-color-button" onClick={()=>void pickStickerColor()}><Pipette/> Pick Color</button></div>
+                        <label>Offset color</label><div className="sticker-color-palette">{COLORS.map((color)=><button key={color} className={stickerColor.toLowerCase()===color.toLowerCase()?"active":""} style={{background:color}} onClick={()=>setStickerColor(color)} aria-label={`Use ${color}`}/>)}</div><button className="pick-color-button large" onClick={()=>void pickStickerColor()}><Pipette/> Pick color from image</button><button className="advanced-color-toggle" onClick={()=>setStickerAdvancedColor(value=>!value)}>Advanced color <ChevronDown className={stickerAdvancedColor?"open":""}/></button>{stickerAdvancedColor&&<div className="advanced-color-panel"><input type="color" value={stickerColor} onChange={(event)=>setStickerColor(event.target.value)}/><span style={{background:stickerColor}}/><input value={stickerColor} onChange={(event)=>setStickerColor(event.target.value)}/></div>}
                         {target?.stickerOffset?.enabled && <button className="remove-sticker-style" onClick={()=>removeStickerStyle(target)}><Trash2/> Remove current offset</button>}
                       </aside>
                     </div>
-                    <footer><span className="footer-spacer"/><button className="cancel" onClick={()=>setImageTab("edit")}>Back</button><button className="confirm" onClick={()=>void applyStickerStyle()}><Sparkles/> Apply Sticker Offset</button></footer>
+                    <footer><span className="footer-spacer"/><button className="cancel" onClick={()=>setImageTab("edit")}>Back</button><button className="confirm" onClick={()=>void applyStickerStyle()}><Sparkles/> Apply Sticker Border to Image</button></footer>
                   </>
                 ) : imageTab === "preset" ? (
                   <>
