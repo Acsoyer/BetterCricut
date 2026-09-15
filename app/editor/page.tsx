@@ -1,7 +1,7 @@
 "use client";
 /* eslint-disable react-hooks/set-state-in-effect, react-hooks/refs, react-hooks/purity */
 import { ChangeEvent, Fragment, PointerEvent as RPointer, WheelEvent as RWheel, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { AlignVerticalJustifyCenter, AlignEndHorizontal, AlignEndVertical, AlignHorizontalJustifyCenter, AlignStartHorizontal, AlignStartVertical, AlertTriangle, BringToFront, ChevronDown, Check, Copy, Crosshair, Download, Eye, EyeOff, FileImage, File, ImagePlus, Laptop, Paintbrush, Eraser, GripVertical, Grid3X3, Link as LinkIcon, Link2Off, Layers3, Maximize2, Palette, Pipette, Plus, Redo2, RotateCw, Replace, Ruler, Scissors, ShieldCheck, SlidersHorizontal, SendToBack, Sparkles, Star, Trash2, Type, Undo2, ZoomIn, ZoomOut, User, FolderOpen, Image as ImageIcon, LogOut, X } from "lucide-react";
+import { AlignVerticalJustifyCenter, AlignEndHorizontal, AlignEndVertical, AlignHorizontalJustifyCenter, AlignStartHorizontal, AlignStartVertical, AlertTriangle, BringToFront, ChevronDown, Check, Copy, Crosshair, Download, Eye, EyeOff, FileImage, File, ImagePlus, Laptop, Paintbrush, Eraser, GripVertical, Grid3X3, Link as LinkIcon, Link2Off, Layers3, Maximize2, Minimize2, Palette, Pipette, Plus, Redo2, RotateCw, Replace, Ruler, Scissors, ShieldCheck, SlidersHorizontal, SendToBack, Sparkles, Star, Trash2, Type, Undo2, ZoomIn, ZoomOut, User, FolderOpen, Image as ImageIcon, LogOut, X } from "lucide-react";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
 import { EDITOR_VERSION, editorDevLog } from "../editor-dev-log";
@@ -5995,7 +5995,7 @@ export default function Home() {
               </>
             }
           </div>
-          <div className={`layer-properties-panel ${one?"enabled":"disabled-panel"}`}><div className="side-tool-title"><b>Layer Properties</b><small>Selected artwork</small></div>{one?<dl><div className="property-type-row"><dt>{["vector","stroke"].includes(one.kind)?<Scissors/>:<ImageIcon/>}</dt><dd><b>{["vector","stroke"].includes(one.kind)?"Cut Shape":"Printable Image"}</b><small>{one.sourceFormat||(one.kind==="vector"||one.kind==="stroke"?"SVG":"PNG")}</small></dd></div>{one.weldedSources?.length&&<div><dt>Weld</dt><dd>Editable · {one.weldedSources.length} sources</dd></div>}</dl>:<p>Select a layer to view its properties.</p>}</div>
+          <div className={`layer-properties-panel ${one?"enabled":"disabled-panel"}`}><div className="side-tool-title"><b>Layer Properties</b><small>Selected artwork</small></div>{one?<><dl><div className="property-type-row"><dt>{["vector","stroke"].includes(one.kind)?<Scissors/>:<ImageIcon/>}</dt><dd><b>{["vector","stroke"].includes(one.kind)?"Cut Shape":"Printable Image"}</b><small>{one.sourceFormat||(one.kind==="vector"||one.kind==="stroke"?"SVG":"PNG")}</small></dd></div>{one.weldedSources?.length&&<div><dt>Weld</dt><dd>Editable · {one.weldedSources.length} sources</dd></div>}</dl><div className="property-edit-list">{one.stickerOffset?.enabled&&<div className="sticker-layer-style" onDoubleClick={()=>{openImageEditor(one);setImageTab("sticker")}}><span className="sticker-style-swatch" style={{background:one.stickerOffset.color}}/><button className="sticker-style-name" onClick={()=>{openImageEditor(one);window.setTimeout(()=>setImageTab("sticker"),0)}}><b>Sticker Offset</b><small>{one.stickerOffset.sizeMm.toFixed(1)} mm</small></button><button className="sticker-style-remove" onClick={()=>removeStickerStyle(one)}>×</button></div>}{one.steps.map((step,index)=><div key={step.id} className={`style-step ${index>one.activeStep?"step-off":""}`}><button className="step-eye" onClick={()=>showStep(one,index)}>{index<=one.activeStep?<Eye/>:<EyeOff/>}</button><span onClick={()=>showStep(one,index)}>{step.label}</span>{!step.locked&&<button className="step-remove" onClick={()=>removeStep(one,index)}>×</button>}</div>)}{!one.steps.length&&!one.stickerOffset?.enabled&&<span className="property-no-edits">No layer edits yet</span>}</div></>:<p>Select a layer to view its properties.</p>}</div>
           {
             <div className={`finalize-tool legacy-gap-panel ${!one || !["vector", "stroke"].includes(one.kind) ? "cut-option-disabled" : ""}`}>
               <div className="side-tool-title">
@@ -6130,7 +6130,7 @@ export default function Home() {
                     </button>
                   </div>
                 )}
-                {(l.steps.length > 0 || l.stickerOffset?.enabled) && <div className="layer-edit-history" onClick={(event)=>event.stopPropagation()}><small className="layer-edit-heading">Layer Edits</small>{l.stickerOffset?.enabled&&<div className="sticker-layer-style" onDoubleClick={()=>{setSelected([l.id]);openImageEditor(l);setImageTab("sticker")}}><span className="sticker-style-swatch" style={{background:l.stickerOffset.color}}/><button className="sticker-style-name" onClick={()=>{setSelected([l.id]);openImageEditor(l);window.setTimeout(()=>setImageTab("sticker"),0)}}><b>Sticker Offset</b><small>{l.stickerOffset.sizeMm.toFixed(1)} mm</small></button><button className="sticker-style-remove" title="Remove Sticker Offset" onClick={()=>removeStickerStyle(l)}>×</button></div>}{l.steps.map((step,index)=><div key={step.id} className={`style-step ${index>l.activeStep?"step-off":""}`}><button className="step-eye" onClick={()=>showStep(l,index)}>{index<=l.activeStep?<Eye/>:<EyeOff/>}</button><span onClick={()=>showStep(l,index)}>{step.label}</span>{!step.locked&&<button className="step-remove" onClick={()=>removeStep(l,index)}>×</button>}</div>)}</div>}
+                {(l.steps.length > 0 || l.stickerOffset?.enabled) && <details className="layer-edit-history" onClick={(event)=>event.stopPropagation()}><summary aria-label="Show layer edits"><ChevronDown/></summary><div className="layer-edit-rows">{l.stickerOffset?.enabled&&<div className="sticker-layer-style" onDoubleClick={()=>{setSelected([l.id]);openImageEditor(l);setImageTab("sticker")}}><span className="sticker-style-swatch" style={{background:l.stickerOffset.color}}/><button className="sticker-style-name" onClick={()=>{setSelected([l.id]);openImageEditor(l);window.setTimeout(()=>setImageTab("sticker"),0)}}><b>Sticker Offset</b><small>{l.stickerOffset.sizeMm.toFixed(1)} mm</small></button><button className="sticker-style-remove" onClick={()=>removeStickerStyle(l)}>×</button></div>}{l.steps.map((step,index)=><div key={step.id} className={`style-step ${index>l.activeStep?"step-off":""}`}><button className="step-eye" onClick={()=>showStep(l,index)}>{index<=l.activeStep?<Eye/>:<EyeOff/>}</button><span onClick={()=>showStep(l,index)}>{step.label}</span>{!step.locked&&<button className="step-remove" onClick={()=>removeStep(l,index)}>×</button>}</div>)}</div></details>}
               </div>
               </Fragment>
             ))}
@@ -6880,7 +6880,7 @@ export default function Home() {
                       </button>
                     </div>
                   )}
-                  <button className="editor-fullscreen-toggle" onClick={()=>setImageEditorFullscreen(value=>!value)}><Maximize2/><span>{imageEditorFullscreen?"Restore":"Full Screen"}</span></button>
+                  <button className="editor-fullscreen-toggle" onClick={()=>setImageEditorFullscreen(value=>!value)}>{imageEditorFullscreen?<Minimize2/>:<Maximize2/>}</button>
                   <button
                     className="image-editor-close"
                     onClick={() => {
@@ -7319,7 +7319,7 @@ export default function Home() {
                 <small>Crop, remove pieces, erase details or create bridges.</small>
               </div>
               <div className="cut-header-history"><button disabled={!cutEditor.strokes.length} onClick={()=>setCutEditor(value=>value?{...value,strokes:value.strokes.slice(0,-1)}:value)}><Undo2/> Undo</button><button disabled={!cutEditor.strokes.length} onClick={()=>setCutEditor(value=>value?{...value,strokes:[],redoStrokes:[]}:value)}><RotateCw/> Reset</button></div>
-              <button className="editor-fullscreen-toggle" onClick={()=>setCutEditorFullscreen(value=>!value)}><Maximize2/><span>{cutEditorFullscreen?"Restore":"Full Screen"}</span></button>
+              <button className="editor-fullscreen-toggle" onClick={()=>setCutEditorFullscreen(value=>!value)}>{cutEditorFullscreen?<Minimize2/>:<Maximize2/>}</button>
               <button className="cut-editor-close" onClick={() => setCutEditor(null)}><X/></button>
             </header>
             <div className="cutout-tabs">
