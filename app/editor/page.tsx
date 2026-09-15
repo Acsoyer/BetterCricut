@@ -1801,6 +1801,7 @@ export default function Home() {
     [fillAllGapsDraft, setFillAllGapsDraft] = useState(false),
     [stickerBackgroundPromptId, setStickerBackgroundPromptId] = useState<string | null>(null),
     [stickerAdvancedColor, setStickerAdvancedColor] = useState(false),
+    [cutPropertiesCollapsed, setCutPropertiesCollapsed] = useState(false),
     [widthDraft, setWidthDraft] = useState("0.0"),
     [heightDraft, setHeightDraft] = useState("0.0"),
     [pageMode, setPageMode] = useState<PageMode>("portrait"),
@@ -5379,8 +5380,8 @@ export default function Home() {
             <button type="button" onClick={() => void openStickerBorder(one)}><Sparkles /> Add Sticker Border to Image</button>
             <button type="button" className="primary" onClick={() => void addOutlineToPrintable()}><Scissors /> Add Outline as Cut Shape</button>
           </>}
-          {one && ["vector", "stroke"].includes(one.kind) && <button type="button" className="primary" onClick={() => openCutoutEditor()}><Scissors /> Edit Cut Shape</button>}
-          {!one && <span className="selection-guidance">Select artwork to see its next steps</span>}
+          {one && ["vector", "stroke"].includes(one.kind) && <><button type="button" className="primary" onClick={() => openCutoutEditor()}><Scissors /> Edit Cut Shape</button><button type="button" onClick={() => void addStroke()}><Scissors /> Add Outline as Cut Shape</button></>}
+          {!one && <><button disabled><Sparkles/> Remove Background</button><button disabled><Scissors/> Create Cut Shape</button><button disabled><Sparkles/> Add Sticker Border to Image</button><button disabled><Scissors/> Add Outline as Cut Shape</button></>}
         </nav>
         <div className="export-actions" aria-label="Export options">
           {picked.length > 1 && canSVG && (
@@ -5543,18 +5544,9 @@ export default function Home() {
             )}
           </div>
           {one && ["vector", "stroke"].includes(one.kind) && <button onClick={() => openCutoutEditor()}><Scissors /> Edit Cut Shape</button>}
-          {one && !["vector", "stroke", "acetate"].includes(one.kind) && <>
-            <button onClick={() => openImageEditor()}><ImageIcon /> Edit Image</button>
-            <button onClick={() => { openImageEditor(one); window.setTimeout(() => setImageTab("sticker"), 0); }}><Sparkles /> Add Sticker Border</button>
-            <button className="primary" onClick={() => void addOutlineToPrintable()}><Scissors /> Add Outline</button>
-          </>}
-          {one?.kind === "vector" && <button className="primary" onClick={() => void addStroke()}><Scissors /> Add Outline</button>}
-          <button className={imageOnShapeTarget || shapeImageEditing ? "active-action" : ""} disabled={!one?.isShape} onClick={startImageOnShape}>
-            <ImagePlus /> Image on Shape
-          </button>
-          <button className="bake-cutout" disabled={!one || !["vector", "stroke"].includes(one.kind)} onClick={() => void makeGapsPermanent()}>
-            <Sparkles /> Bake Cutout
-          </button>
+          {one && !["vector", "stroke", "acetate"].includes(one.kind) && <button onClick={() => openImageEditor()}><ImageIcon /> Edit Image</button>}
+          {one?.isShape && <button className={imageOnShapeTarget || shapeImageEditing ? "active-action" : ""} onClick={startImageOnShape}><ImagePlus /> Image on Shape</button>}
+          {one && ["vector", "stroke"].includes(one.kind) && <button className="bake-cutout" onClick={() => void makeGapsPermanent()}><Sparkles /> Bake Cutout</button>}
           {one?.stickerOffset?.enabled && <button className="bake-image" onClick={() => void bakeStickerImage()}><Sparkles /> Bake Image</button>}
           <button disabled={picked.length < 2 && !picked.some((layer)=>layer.groupId)} onClick={picked.some((layer)=>layer.groupId) ? ungroupSelection : groupSelection}>
             <Layers3 /> {picked.some((layer)=>layer.groupId) ? "Ungroup" : "Group"}
@@ -5743,8 +5735,8 @@ export default function Home() {
             </div>
           </div>
           {one && ["vector", "stroke"].includes(one.kind) && (
-            <section className="cut-properties-floating" aria-label="Cut Shape properties" onPointerDown={(event)=>event.stopPropagation()}>
-              <header><span><Scissors/><b>Cut Shape</b></span><small>{one.kind === "stroke" ? "Editable outline" : "Cutting geometry"}</small></header>
+            <section className={`cut-properties-floating ${cutPropertiesCollapsed?"collapsed":""}`} aria-label="Cut Shape properties" onPointerDown={(event)=>event.stopPropagation()}>
+              <header><span><Scissors/><b>Cut Shape</b></span><small>{one.kind === "stroke" ? "Editable outline" : "Cutting geometry"}</small><button className="collapse-cut-properties" onClick={()=>setCutPropertiesCollapsed(value=>!value)} aria-label={cutPropertiesCollapsed?"Expand Cut Shape properties":"Collapse Cut Shape properties"}><ChevronDown/></button></header><div className="cut-properties-content">
               {one.kind === "stroke" && <div className="floating-property-block">
                 <label>Outline <b>{(unit === "cm" ? strokeDraft : strokeDraft / 2.54).toFixed(unit === "cm" ? 1 : 2)} {unit}</b></label>
                 <input type="range" min="0" max="3" step=".05" value={strokeDraft} onChange={(event)=>setStrokeDraft(+event.target.value)}/>
@@ -5755,7 +5747,7 @@ export default function Home() {
                 <input type="range" min="0" max="30" step={fillGapsDraft < 5 ? ".5" : "1"} value={fillGapsDraft} onChange={(event)=>setFillGapsDraft(+event.target.value)}/>
                 <div className="floating-property-actions gap-actions"><label className="fill-all-check"><input type="checkbox" checked={fillAllGapsDraft} onChange={(event)=>setFillAllGapsDraft(event.target.checked)}/> Fill all the gaps</label><button className="primary-property" onClick={()=>fillAllGapsDraft?void fillEveryGap():void applyGapPreview()}>Apply Fill</button></div>
                 <small>Only enclosed openings are filled; the outside edge is preserved.</small>
-              </div>
+              </div></div>
             </section>
           )}
           <div className="board" style={{ width: A4.w * scale + 42, height: A4.h * scale + 42 }}>
@@ -7067,7 +7059,7 @@ export default function Home() {
                       >
                         Cancel
                       </button>
-                      <button className="secondary-create" onClick={() => void applyImageEdit(true)}>
+                      <button className="secondary-create" disabled={!imageEditor.history.length} onClick={() => void applyImageEdit(true)}>
                         Create Layer
                       </button>
                       <button className="confirm" onClick={() => void applyImageEdit(false)}>
