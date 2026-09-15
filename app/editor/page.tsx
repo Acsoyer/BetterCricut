@@ -1802,6 +1802,7 @@ export default function Home() {
     [stickerBackgroundPromptId, setStickerBackgroundPromptId] = useState<string | null>(null),
     [stickerAdvancedColor, setStickerAdvancedColor] = useState(false),
     [cutPropertiesCollapsed, setCutPropertiesCollapsed] = useState(false),
+    [layerPropertiesExpanded, setLayerPropertiesExpanded] = useState(false),
     [widthDraft, setWidthDraft] = useState("0.0"),
     [heightDraft, setHeightDraft] = useState("0.0"),
     [pageMode, setPageMode] = useState<PageMode>("portrait"),
@@ -1998,6 +1999,7 @@ export default function Home() {
     logTimer = useRef<number | null>(null),
     suppressLayerLog = useRef(false);
   const saveToastDismissed = useRef(false);
+  const layerHistoryRef = useRef<HTMLDivElement>(null);
   const autosaveRunner = useRef<() => void>(()=>{});
   const landscape = pageMode === "landscape",
     selectedPaper = PAGE_SIZES[pageMode === "full" ? "full" : pageSize],
@@ -2502,10 +2504,20 @@ export default function Home() {
   }, []);
   useEffect(() => {
     if (one && ["stroke", "vector"].includes(one.kind)) {
-      if (one.kind === "stroke") setStrokeDraft(one.strokeCm);
+      setStrokeDraft(one.kind === "stroke" ? one.strokeCm : 0);
       setFillGapsDraft(one.fillGapsMm || 0);
     }
   }, [one?.id, one?.strokeCm]);
+  useEffect(() => {
+    setLayerPropertiesExpanded(false);
+  }, [one?.id]);
+  useEffect(() => {
+    if (!layerPropertiesExpanded) return;
+    const frame = window.requestAnimationFrame(() => {
+      if (layerHistoryRef.current) layerHistoryRef.current.scrollTop = layerHistoryRef.current.scrollHeight;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [layerPropertiesExpanded, one?.id, one?.steps.length, one?.activeStep, one?.stickerOffset?.enabled]);
   useEffect(() => {
     setWidthDraft((unit === "cm" ? box.w : box.w / 2.54).toFixed(unit === "cm" ? 1 : 2));
     setHeightDraft((unit === "cm" ? box.h : box.h / 2.54).toFixed(unit === "cm" ? 1 : 2));
@@ -5556,7 +5568,7 @@ export default function Home() {
           </button>
         </div>
         <div className="save-actions">
-          <input className="top-project-name" value={projectName} maxLength={80} onChange={(event)=>setProjectName(event.target.value)} aria-label="Project name" />
+          <div className={`project-name-wrap ${projectDirty || (currentProjectId ? projects.find((project)=>project.id===currentProjectId)?.name !== projectName : projectName !== "Untitled Project") ? "dirty" : ""}`}><input className="top-project-name" value={projectName} maxLength={80} onChange={(event)=>setProjectName(event.target.value)} aria-label="Project name" /></div>
           <button className="new-project" onClick={newProject} title="Start a new project">
             <Plus /> New Project
           </button>
@@ -5626,7 +5638,7 @@ export default function Home() {
           <div className="left-future">
             <button className="left-ai-library" onClick={()=>{setAiLibraryOpen(true);setProjectsOpen(false);setAccountOpen(false)}}>
               <Sparkles />
-              <small>My Archive</small>
+              <small>AI Archive</small>
             </button>
             <button
               className="left-projects"
@@ -5737,10 +5749,10 @@ export default function Home() {
           {one && ["vector", "stroke"].includes(one.kind) && (
             <section className={`cut-properties-floating ${cutPropertiesCollapsed?"collapsed":""}`} aria-label="Cut Shape properties" onPointerDown={(event)=>event.stopPropagation()}>
               <header><span><Scissors/><b>Cut Shape</b></span><small>{one.kind === "stroke" ? "Editable outline" : "Cutting geometry"}</small><button className="collapse-cut-properties" onClick={()=>setCutPropertiesCollapsed(value=>!value)} aria-label={cutPropertiesCollapsed?"Expand Cut Shape properties":"Collapse Cut Shape properties"}><ChevronDown/></button></header><div className="cut-properties-content">
-              {one.kind === "stroke" && <div className="floating-property-block">
+              {<div className="floating-property-block">
                 <label>Outline <b>{(unit === "cm" ? strokeDraft : strokeDraft / 2.54).toFixed(unit === "cm" ? 1 : 2)} {unit}</b></label>
                 <input type="range" min="0" max="3" step=".05" value={strokeDraft} onChange={(event)=>setStrokeDraft(+event.target.value)}/>
-                <div className="floating-property-actions"><input type="number" min="0" step={unit === "cm" ? ".1" : ".05"} value={(unit === "cm" ? strokeDraft : strokeDraft / 2.54).toFixed(unit === "cm" ? 1 : 2)} onChange={(event)=>setStrokeDraft(Math.max(0,+event.target.value)*(unit === "cm" ? 1 : 2.54))}/><button className="primary-property" onClick={()=>void updateStroke()}>Apply Outline</button><button className="danger compact" onClick={()=>{setStrokeDraft(0);const index=one.steps.findIndex(step=>step.type==="stroke");if(index>=0)removeStep(one,index)}}>Remove</button></div>
+                <div className="floating-property-actions outline-actions"><span className="outline-value"><input type="number" min="0" step={unit === "cm" ? ".1" : ".05"} value={(unit === "cm" ? strokeDraft : strokeDraft / 2.54).toFixed(unit === "cm" ? 1 : 2)} onChange={(event)=>setStrokeDraft(Math.max(0,+event.target.value)*(unit === "cm" ? 1 : 2.54))}/><em>{unit}</em></span><button className="danger compact" disabled={one.kind !== "stroke" || strokeDraft <= 0} onClick={()=>{setStrokeDraft(0);const index=one.steps.findIndex(step=>step.type==="stroke");if(index>=0)removeStep(one,index)}}>Remove</button><button className="primary-property" onClick={()=>one.kind === "stroke" ? void updateStroke() : void addStroke()}>Apply Outline</button></div>
               </div>}
               <div className="floating-property-block">
                 <label>Fill Gaps <b>{fillGapsDraft.toFixed(fillGapsDraft < 5 ? 1 : 0)} mm²</b></label>
@@ -5983,7 +5995,7 @@ export default function Home() {
               </>
             }
           </div>
-          <div className={`layer-properties-panel ${one?"enabled":"disabled-panel"}`}><div className="side-tool-title"><b>Layer Properties</b><small>Selected artwork</small></div>{one?<dl><div><dt>Type</dt><dd>{["vector","stroke"].includes(one.kind)?"Cut Shape":"Printable Image"}</dd></div><div><dt>Format</dt><dd>{one.sourceFormat||(one.kind==="vector"||one.kind==="stroke"?"SVG":"PNG")}</dd></div><div><dt>Status</dt><dd>{one.kind==="stroke"?"Outline":one.kind==="vector"?"Cut geometry":one.rasterStatus==="background"?"Background detected":one.rasterStatus==="cleanup"?"Edge cleanup recommended":"Ready"}</dd></div>{one.stickerOffset?.enabled&&<div><dt>Style</dt><dd>Sticker Border</dd></div>}{one.weldedSources?.length&&<div><dt>Weld</dt><dd>Editable · {one.weldedSources.length} sources</dd></div>}</dl>:<p>Select a layer to view its properties.</p>}</div>
+          <div className={`layer-properties-panel ${one?"enabled":"disabled-panel"}`}><div className="side-tool-title"><b>Layer Properties</b><small>Selected artwork</small></div>{one?<><dl><div className="property-type-row"><dt>{["vector","stroke"].includes(one.kind)?<Scissors/>:<ImageIcon/>}</dt><dd><b>{["vector","stroke"].includes(one.kind)?"Cut Shape":"Printable Image"}</b><small>{one.sourceFormat||(one.kind==="vector"||one.kind==="stroke"?"SVG":"PNG")}</small></dd></div>{one.weldedSources?.length&&<div><dt>Weld</dt><dd>Editable · {one.weldedSources.length} sources</dd></div>}</dl><button className={`layer-history-toggle ${layerPropertiesExpanded?"expanded":""}`} onClick={()=>setLayerPropertiesExpanded(value=>!value)}><span><b>Layer edits</b><small>{one.steps.length+(one.stickerOffset?.enabled?1:0)} changes</small></span><ChevronDown/></button>{layerPropertiesExpanded&&<div className="property-layer-history" ref={layerHistoryRef}>{one.stickerOffset?.enabled&&<div className="sticker-layer-style" onDoubleClick={()=>{openImageEditor(one);setImageTab("sticker")}}><span className="sticker-style-swatch" style={{background:one.stickerOffset.color}}/><button className="sticker-style-name" onClick={()=>{openImageEditor(one);window.setTimeout(()=>setImageTab("sticker"),0)}}><b>Sticker Offset</b><small>{one.stickerOffset.sizeMm.toFixed(1)} mm</small></button><button className="sticker-style-remove" title="Remove Sticker Offset" onClick={()=>removeStickerStyle(one)}>×</button></div>}{one.steps.map((step,index)=><div key={step.id} className={`style-step ${index>one.activeStep?"step-off":""}`}><button className="step-eye" onClick={()=>showStep(one,index)} title={`Show through ${step.label}`}>{index<=one.activeStep?<Eye/>:<EyeOff/>}</button><span onClick={()=>showStep(one,index)}>{step.label}</span>{!step.locked&&<button className="step-remove" onClick={()=>removeStep(one,index)} title={`Remove ${step.label}`}>×</button>}</div>)}{!one.steps.length&&!one.stickerOffset?.enabled&&<p className="empty-layer-history">No edits yet.</p>}</div>}</>:<p>Select a layer to view its properties.</p>}</div>
           {
             <div className={`finalize-tool legacy-gap-panel ${!one || !["vector", "stroke"].includes(one.kind) ? "cut-option-disabled" : ""}`}>
               <div className="side-tool-title">
@@ -6118,30 +6130,6 @@ export default function Home() {
                     </button>
                   </div>
                 )}
-                {l.stickerOffset?.enabled && (
-                  <div className="sticker-layer-style" onClick={(event)=>event.stopPropagation()} onDoubleClick={()=>{setSelected([l.id]);openImageEditor(l);setImageTab("sticker")}}>
-                    <span className="sticker-style-swatch" style={{background:l.stickerOffset.color}} />
-                    <button className="sticker-style-name" onClick={()=>{setSelected([l.id]);openImageEditor(l);window.setTimeout(()=>setImageTab("sticker"),0)}}><b>Sticker Offset</b><small>{l.stickerOffset.sizeMm.toFixed(1)} mm</small></button>
-                    <button className="sticker-style-remove" title="Remove Sticker Offset" onClick={()=>removeStickerStyle(l)}>×</button>
-                  </div>
-                )}
-                {l.steps.length > 0 && (
-                  <div className="layer-styles" onClick={(e) => e.stopPropagation()}>
-                    {l.steps.map((step, index) => (
-                      <div key={step.id} className={`style-step ${index > l.activeStep ? "step-off" : ""}`}>
-                        <button className="step-eye" onClick={() => showStep(l, index)} title={`Show through ${step.label}`}>
-                          {index <= l.activeStep ? <Eye /> : <EyeOff />}
-                        </button>
-                        <span onClick={() => showStep(l, index)}>{step.label}</span>
-                        {!step.locked && (
-                          <button className="step-remove" onClick={() => removeStep(l, index)} title={`Remove ${step.label}`}>
-                            ×
-                          </button>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
               </div>
               </Fragment>
             ))}
@@ -6177,7 +6165,7 @@ export default function Home() {
             <header><div><b>My Creations Archive</b><small>Your generated artwork stays available here.</small></div><button type="button" onClick={(event)=>{event.stopPropagation();setAiLibraryIndex(null);setAiLibraryOpen(false)}} aria-label="Close archive"><X/></button></header>
             <nav><button className={aiLibraryTab==="text"?"active":""} onClick={()=>{setAiLibraryTab("text");setAiLibraryIndex(null)}}>Text</button><button className={aiLibraryTab==="image"?"active":""} onClick={()=>{setAiLibraryTab("image");setAiLibraryIndex(null)}}>Images</button></nav>
             <div className="ai-library-grid">{visible.length?visible.map((item,index)=><article key={item.id}><button className="ai-library-preview" onClick={()=>setAiLibraryIndex(index)}><img src={item.src} alt={item.name}/></button><div><b>{item.name}</b><small>{new Date(item.created_at).toLocaleString()}</small></div><button className="ai-library-delete" title="Delete" onClick={()=>void deleteAIGeneration(item.id)}><Trash2/></button></article>):<div className="ai-library-empty"><Sparkles/><b>No {aiLibraryTab} generations yet</b><span>New AI artwork will be saved here automatically.</span></div>}</div>
-            <footer><button onClick={()=>{setAiLibraryOpen(false);setAiLibraryIndex(null);setCreateImageMode("choose");setAddNewOpen(true)}}><Sparkles/> Create New</button></footer>
+            <footer><button className="archive-close-action" onClick={()=>{setAiLibraryIndex(null);setAiLibraryOpen(false)}}>Close</button><button className="archive-create-action" onClick={()=>{setAiLibraryOpen(false);setAiLibraryIndex(null);setCreateImageMode("choose");setAddNewOpen(true)}}><Sparkles/> Create your own Text / Image</button></footer>
             {active&&<div className="ai-library-lightbox" onPointerDown={()=>setAiLibraryIndex(null)}><div onPointerDown={(event)=>event.stopPropagation()}><button className="gallery-close" onClick={()=>setAiLibraryIndex(null)}><X/></button><button className="gallery-arrow previous" onClick={()=>move(-1)}>←</button><figure><img src={active.src} alt={active.name}/><figcaption><b>{active.name}</b><small>{new Date(active.created_at).toLocaleString()}</small></figcaption></figure><button className="gallery-arrow next" onClick={()=>move(1)}>→</button><button className="add-generated" onClick={()=>void addGeneratedAsset(active.src,active.name,active.mode)}><Plus/> Add to Page</button></div></div>}
           </div>
         </div>);})()}
@@ -6559,7 +6547,8 @@ export default function Home() {
             </header>
             {!createImageMode ? (
               <div className="add-new-source-grid">
-                <button onClick={() => { setAddNewOpen(false); fileRef.current?.click(); }}><i className="upload-combined-icon"><ImagePlus/><Laptop/></i><b>Upload From Your Computer</b><small>JPG, PNG, SVG or WebP</small></button>`r`n                <button onClick={() => setCreateImageMode("choose")}><i className="ai-combined-icon"><Sparkles/><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/><path d="M12 3v18M4.5 8h15M4.5 16h15"/></svg></i><b>Create your own Text / Image</b><small>Start with AI-ready cake topper options</small></button>
+                <button onClick={() => { setAddNewOpen(false); fileRef.current?.click(); }}><i className="upload-combined-icon"><ImagePlus/><Laptop/></i><b>Upload From Your Computer</b><small>JPG, PNG, SVG or WebP</small></button>
+                <button onClick={() => setCreateImageMode("choose")}><i className="ai-combined-icon"><Sparkles/><img src="/openai-logo.svg" alt="OpenAI" /></i><b>Create your own Text / Image</b><small>Start with AI-ready cake topper options</small></button>
               </div>
             ) : createImageMode === "choose" ? (
               <div className="add-new-source-grid create-kind-grid">
