@@ -1802,7 +1802,6 @@ export default function Home() {
     [stickerBackgroundPromptId, setStickerBackgroundPromptId] = useState<string | null>(null),
     [stickerAdvancedColor, setStickerAdvancedColor] = useState(false),
     [cutPropertiesCollapsed, setCutPropertiesCollapsed] = useState(false),
-    [layerPropertiesExpanded, setLayerPropertiesExpanded] = useState(false),
     [widthDraft, setWidthDraft] = useState("0.0"),
     [heightDraft, setHeightDraft] = useState("0.0"),
     [pageMode, setPageMode] = useState<PageMode>("portrait"),
@@ -1810,7 +1809,8 @@ export default function Home() {
     [unit, setUnit] = useState<Unit>("cm"),
     [pageColor,setPageColor]=useState<PageColor>("white"),
     [pageSetupOpen, setPageSetupOpen] = useState(false),
-    [settingsSection, setSettingsSection] = useState<"size" | "orientation" | "units" | "color" | "grid" | "safe" | null>(null),
+    [settingsSection, setSettingsSection] = useState<"size" | "orientation" | "units" | "color" | "grid" | "safe" | "control" | null>(null),
+    [controlMode, setControlMode] = useState<"touchpad" | "mouse">("touchpad"),
     [safeMargin, setSafeMargin] = useState(1),
     [safeOpen, setSafeOpen] = useState(false),
     [gridVisible, setGridVisible] = useState(true),
@@ -1883,6 +1883,8 @@ export default function Home() {
       visible: boolean;
     }>({ visible: false }),
     [imageEditor, setImageEditor] = useState<ImageEditor | null>(null),
+    [imageEditorFullscreen, setImageEditorFullscreen] = useState(false),
+    [cutEditorFullscreen, setCutEditorFullscreen] = useState(false),
     [imageTab, setImageTab] = useState<"edit" | "background" | "preset" | "sticker">("edit"),
     [stickerSizeMm, setStickerSizeMm] = useState(2),
     [stickerColor, setStickerColor] = useState("#ffffff"),
@@ -1999,7 +2001,6 @@ export default function Home() {
     logTimer = useRef<number | null>(null),
     suppressLayerLog = useRef(false);
   const saveToastDismissed = useRef(false);
-  const layerHistoryRef = useRef<HTMLDivElement>(null);
   const autosaveRunner = useRef<() => void>(()=>{});
   const landscape = pageMode === "landscape",
     selectedPaper = PAGE_SIZES[pageMode === "full" ? "full" : pageSize],
@@ -2068,21 +2069,22 @@ export default function Home() {
     try {
       const raw = localStorage.getItem("cake-topper-editor-settings:v1");
       if (raw) {
-        const saved = JSON.parse(raw) as Partial<{ pageMode: PageMode; pageSize: PageSize; unit: Unit; pageColor: PageColor; safeMargin: number; gridVisible: boolean }>;
+        const saved = JSON.parse(raw) as Partial<{ pageMode: PageMode; pageSize: PageSize; unit: Unit; pageColor: PageColor; safeMargin: number; gridVisible: boolean; controlMode: "touchpad" | "mouse" }>;
         if (["portrait", "landscape", "full"].includes(saved.pageMode || "")) setPageMode(saved.pageMode!);
         if (["a4", "letter", "a5", "full"].includes(saved.pageSize || "")) setPageSize(saved.pageSize!);
         if (["cm", "in"].includes(saved.unit || "")) setUnit(saved.unit!);
         if (saved.pageColor && Object.hasOwn(PAGE_COLORS, saved.pageColor)) setPageColor(saved.pageColor);
         if (typeof saved.safeMargin === "number") setSafeMargin(saved.safeMargin);
         if (typeof saved.gridVisible === "boolean") setGridVisible(saved.gridVisible);
+        if (["touchpad", "mouse"].includes(saved.controlMode || "")) setControlMode(saved.controlMode!);
       }
     } catch {}
     setSettingsHydrated(true);
   }, []);
   useEffect(() => {
     if (!settingsHydrated) return;
-    localStorage.setItem("cake-topper-editor-settings:v1", JSON.stringify({ pageMode, pageSize, unit, pageColor, safeMargin, gridVisible }));
-  }, [settingsHydrated, pageMode, pageSize, unit, pageColor, safeMargin, gridVisible]);
+    localStorage.setItem("cake-topper-editor-settings:v1", JSON.stringify({ pageMode, pageSize, unit, pageColor, safeMargin, gridVisible, controlMode }));
+  }, [settingsHydrated, pageMode, pageSize, unit, pageColor, safeMargin, gridVisible, controlMode]);
   useEffect(() => {
     if (suppressLayerLog.current) {
       suppressLayerLog.current = false;
@@ -2509,16 +2511,6 @@ export default function Home() {
     }
   }, [one?.id, one?.strokeCm]);
   useEffect(() => {
-    setLayerPropertiesExpanded(false);
-  }, [one?.id]);
-  useEffect(() => {
-    if (!layerPropertiesExpanded) return;
-    const frame = window.requestAnimationFrame(() => {
-      if (layerHistoryRef.current) layerHistoryRef.current.scrollTop = layerHistoryRef.current.scrollHeight;
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [layerPropertiesExpanded, one?.id, one?.steps.length, one?.activeStep, one?.stickerOffset?.enabled]);
-  useEffect(() => {
     setWidthDraft((unit === "cm" ? box.w : box.w / 2.54).toFixed(unit === "cm" ? 1 : 2));
     setHeightDraft((unit === "cm" ? box.h : box.h / 2.54).toFixed(unit === "cm" ? 1 : 2));
   }, [selected.join(":"), box.w, box.h, unit]);
@@ -2615,9 +2607,10 @@ export default function Home() {
     const stage = stageRef.current,
       canvas = canvasRef.current;
     if (!stage || !canvas) return;
-    // Trackpads send ordinary wheel events for two-finger scrolling and
-    // ctrl+wheel for a real pinch gesture. Keep those interactions distinct.
-    if (!e.ctrlKey) {
+    // Touchpad: two-finger gestures pan and pinch (ctrl+wheel) zooms.
+    // Mouse: the wheel zooms directly; holding Ctrl temporarily scrolls/pans.
+    const shouldPan = controlMode === "touchpad" ? !e.ctrlKey : e.ctrlKey;
+    if (shouldPan) {
       stage.scrollLeft += e.deltaX || (e.shiftKey ? e.deltaY : 0);
       stage.scrollTop += e.shiftKey ? 0 : e.deltaY;
       updateRulers();
@@ -2641,7 +2634,7 @@ export default function Home() {
     const wheel = (event: WheelEvent) => editorWheel(event);
     stage.addEventListener("wheel", wheel, { passive: false });
     return () => stage.removeEventListener("wheel", wheel);
-  }, [A4.w, A4.h]);
+  }, [A4.w, A4.h, controlMode]);
   useLayoutEffect(() => {
     zoomRef.current = zoom;
     const anchor = zoomAnchor.current,
@@ -5488,6 +5481,13 @@ export default function Home() {
                     </button>
                   </div>
                 </div>
+                <div className="setup-group control-group">
+                  <button onClick={()=>setSettingsSection(settingsSection === "control" ? null : "control")}>Control <ChevronDown /></button>
+                  <div className={`setup-submenu ${settingsSection === "control" ? "open" : ""}`}>
+                    <button className={controlMode === "touchpad" ? "active" : ""} onClick={()=>{setControlMode("touchpad");setPageSetupOpen(false);setSettingsSection(null)}}><b>Touchpad</b><span>Two-finger pan · pinch zoom</span></button>
+                    <button className={controlMode === "mouse" ? "active" : ""} onClick={()=>{setControlMode("mouse");setPageSetupOpen(false);setSettingsSection(null)}}><b>Mouse</b><span>Wheel zoom · Ctrl+wheel scroll</span></button>
+                  </div>
+                </div>
                 <div className="setup-group">
                   <button onClick={()=>setSettingsSection(settingsSection === "safe" ? null : "safe")}>
                     Safe Area <ChevronDown />
@@ -5995,7 +5995,7 @@ export default function Home() {
               </>
             }
           </div>
-          <div className={`layer-properties-panel ${one?"enabled":"disabled-panel"}`}><div className="side-tool-title"><b>Layer Properties</b><small>Selected artwork</small></div>{one?<><dl><div className="property-type-row"><dt>{["vector","stroke"].includes(one.kind)?<Scissors/>:<ImageIcon/>}</dt><dd><b>{["vector","stroke"].includes(one.kind)?"Cut Shape":"Printable Image"}</b><small>{one.sourceFormat||(one.kind==="vector"||one.kind==="stroke"?"SVG":"PNG")}</small></dd></div>{one.weldedSources?.length&&<div><dt>Weld</dt><dd>Editable · {one.weldedSources.length} sources</dd></div>}</dl><button className={`layer-history-toggle ${layerPropertiesExpanded?"expanded":""}`} onClick={()=>setLayerPropertiesExpanded(value=>!value)}><span><b>Layer edits</b><small>{one.steps.length+(one.stickerOffset?.enabled?1:0)} changes</small></span><ChevronDown/></button>{layerPropertiesExpanded&&<div className="property-layer-history" ref={layerHistoryRef}>{one.stickerOffset?.enabled&&<div className="sticker-layer-style" onDoubleClick={()=>{openImageEditor(one);setImageTab("sticker")}}><span className="sticker-style-swatch" style={{background:one.stickerOffset.color}}/><button className="sticker-style-name" onClick={()=>{openImageEditor(one);window.setTimeout(()=>setImageTab("sticker"),0)}}><b>Sticker Offset</b><small>{one.stickerOffset.sizeMm.toFixed(1)} mm</small></button><button className="sticker-style-remove" title="Remove Sticker Offset" onClick={()=>removeStickerStyle(one)}>×</button></div>}{one.steps.map((step,index)=><div key={step.id} className={`style-step ${index>one.activeStep?"step-off":""}`}><button className="step-eye" onClick={()=>showStep(one,index)} title={`Show through ${step.label}`}>{index<=one.activeStep?<Eye/>:<EyeOff/>}</button><span onClick={()=>showStep(one,index)}>{step.label}</span>{!step.locked&&<button className="step-remove" onClick={()=>removeStep(one,index)} title={`Remove ${step.label}`}>×</button>}</div>)}{!one.steps.length&&!one.stickerOffset?.enabled&&<p className="empty-layer-history">No edits yet.</p>}</div>}</>:<p>Select a layer to view its properties.</p>}</div>
+          <div className={`layer-properties-panel ${one?"enabled":"disabled-panel"}`}><div className="side-tool-title"><b>Layer Properties</b><small>Selected artwork</small></div>{one?<dl><div className="property-type-row"><dt>{["vector","stroke"].includes(one.kind)?<Scissors/>:<ImageIcon/>}</dt><dd><b>{["vector","stroke"].includes(one.kind)?"Cut Shape":"Printable Image"}</b><small>{one.sourceFormat||(one.kind==="vector"||one.kind==="stroke"?"SVG":"PNG")}</small></dd></div>{one.weldedSources?.length&&<div><dt>Weld</dt><dd>Editable · {one.weldedSources.length} sources</dd></div>}</dl>:<p>Select a layer to view its properties.</p>}</div>
           {
             <div className={`finalize-tool legacy-gap-panel ${!one || !["vector", "stroke"].includes(one.kind) ? "cut-option-disabled" : ""}`}>
               <div className="side-tool-title">
@@ -6130,6 +6130,7 @@ export default function Home() {
                     </button>
                   </div>
                 )}
+                {(l.steps.length > 0 || l.stickerOffset?.enabled) && <div className="layer-edit-history" onClick={(event)=>event.stopPropagation()}><small className="layer-edit-heading">Layer Edits</small>{l.stickerOffset?.enabled&&<div className="sticker-layer-style" onDoubleClick={()=>{setSelected([l.id]);openImageEditor(l);setImageTab("sticker")}}><span className="sticker-style-swatch" style={{background:l.stickerOffset.color}}/><button className="sticker-style-name" onClick={()=>{setSelected([l.id]);openImageEditor(l);window.setTimeout(()=>setImageTab("sticker"),0)}}><b>Sticker Offset</b><small>{l.stickerOffset.sizeMm.toFixed(1)} mm</small></button><button className="sticker-style-remove" title="Remove Sticker Offset" onClick={()=>removeStickerStyle(l)}>×</button></div>}{l.steps.map((step,index)=><div key={step.id} className={`style-step ${index>l.activeStep?"step-off":""}`}><button className="step-eye" onClick={()=>showStep(l,index)}>{index<=l.activeStep?<Eye/>:<EyeOff/>}</button><span onClick={()=>showStep(l,index)}>{step.label}</span>{!step.locked&&<button className="step-remove" onClick={()=>removeStep(l,index)}>×</button>}</div>)}</div>}
               </div>
               </Fragment>
             ))}
@@ -6822,7 +6823,7 @@ export default function Home() {
         (() => {
           const target = layers.find((l) => l.id === imageEditor.layerId);
           return (
-            <div className="bg-modal image-edit-modal" role="dialog" aria-modal="true" aria-label="Image editor">
+            <div className={`bg-modal image-edit-modal ${imageEditorFullscreen ? "editor-fullscreen" : ""}`} role="dialog" aria-modal="true" aria-label="Image editor">
               <div className="bg-dialog">
                 <header>
                   <div className="image-editor-title">
@@ -6879,6 +6880,7 @@ export default function Home() {
                       </button>
                     </div>
                   )}
+                  <button className="editor-fullscreen-toggle" onClick={()=>setImageEditorFullscreen(value=>!value)}><Maximize2/><span>{imageEditorFullscreen?"Restore":"Full Screen"}</span></button>
                   <button
                     className="image-editor-close"
                     onClick={() => {
@@ -7309,14 +7311,16 @@ export default function Home() {
           );
         })()}
       {cutEditor && (
-        <div className="bg-modal cutout-modal" role="dialog" aria-modal="true" aria-label="Cut Shape editor">
+        <div className={`bg-modal cutout-modal ${cutEditorFullscreen ? "editor-fullscreen" : ""}`} role="dialog" aria-modal="true" aria-label="Cut Shape editor">
           <div className="bg-dialog" onPointerDown={(e) => e.stopPropagation()}>
             <header>
               <div>
                 <b>Edit Cut Shape</b>
                 <small>Crop, remove pieces, erase details or create bridges.</small>
               </div>
-              <button onClick={() => setCutEditor(null)}>×</button>
+              <div className="cut-header-history"><button disabled={!cutEditor.strokes.length} onClick={()=>setCutEditor(value=>value?{...value,strokes:value.strokes.slice(0,-1)}:value)}><Undo2/> Undo</button><button disabled={!cutEditor.strokes.length} onClick={()=>setCutEditor(value=>value?{...value,strokes:[],redoStrokes:[]}:value)}><RotateCw/> Reset</button></div>
+              <button className="editor-fullscreen-toggle" onClick={()=>setCutEditorFullscreen(value=>!value)}><Maximize2/><span>{cutEditorFullscreen?"Restore":"Full Screen"}</span></button>
+              <button className="cut-editor-close" onClick={() => setCutEditor(null)}><X/></button>
             </header>
             <div className="cutout-tabs">
               <button className={cutoutTab === "edit" ? "active" : ""} onClick={() => setCutoutTab("edit")}>
@@ -7479,13 +7483,11 @@ export default function Home() {
               </aside>
             </div>
             <footer>
-              <button className="footer-smooth" onClick={() => void smoothCutoutNow()}>
-                <Sparkles /> Smooth
-              </button>
-              <span className="footer-spacer" />
               <button className="footer-separate" onClick={() => void openSeparateLayers(cutEditor.strokes.length ? svgWithoutPreviewContour(cutPreview) : cutEditor.source, cutEditor.layerId,undefined,true)}>
                 <Layers3 /> Separate as Layers
               </button>
+              <button className="footer-smooth" onClick={() => void smoothCutoutNow()}><Sparkles /> Smooth</button>
+              <span className="footer-spacer" />
               <button className="cancel" onClick={() => setCutEditor(null)}>
                 Cancel
               </button>
