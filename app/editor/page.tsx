@@ -79,6 +79,7 @@ type Layer = {
   kind: Kind;
   strokeCm: number;
   fillGapsMm: number;
+  fillAllGaps?: boolean;
   invalid: boolean;
   rotation: number;
   color: string;
@@ -102,6 +103,10 @@ type Layer = {
   cutRiskReason?: string;
   cutRiskOverlay?: string;
   groupId?: string;
+  groupCollapsed?: boolean;
+  groupHidden?: boolean;
+  sourceFormat?: "JPG" | "PNG" | "WEBP" | "SVG" | "AI";
+  rasterStatus?: "background" | "cleanup" | "ready";
   stickerOffset?: { enabled: boolean; sizeMm: number; color: string; smoothness: number; baseSrc: string; baseX: number; baseY: number; baseW: number; baseH: number; previewSrc: string };
 };
 type AIGeneration = { id: string; mode: "text" | "image"; name: string; src: string; created_at: string };
@@ -1329,7 +1334,7 @@ async function bakeRotation(layer: Layer) {
     rotation: 0,
   };
 }
-async function strokeImage(src: string, strokeCm: number, wCm: number, color: string, fillGapsMm = 0) {
+async function strokeImage(src: string, strokeCm: number, wCm: number, color: string, fillGapsMm: number | "all" = 0) {
   const cleaned = await removeBg(src),
     img = await getImage(cleaned),
     s = Math.min(1, 900 / Math.max(img.naturalWidth, img.naturalHeight)),
@@ -1363,10 +1368,10 @@ async function strokeImage(src: string, strokeCm: number, wCm: number, color: st
   x.globalCompositeOperation = "source-in";
   x.fillStyle = outer;
   x.fillRect(0, 0, c.width, c.height);
-  if (fillGapsMm > 0) {
+  if (fillGapsMm === "all" || fillGapsMm > 0) {
     const data = x.getImageData(0, 0, c.width, c.height),
       seen = new Uint8Array(c.width * c.height),
-      limit = Math.max(1, Math.round((fillGapsMm / 10 / Math.max(wCm + strokeCm * 2, 0.1)) * c.width)),
+      limit = fillGapsMm === "all" ? Number.POSITIVE_INFINITY : Math.max(1, Math.round((fillGapsMm / 10 / Math.max(wCm + strokeCm * 2, 0.1)) * c.width)),
       maxGapArea = limit * limit;
     for (let seed = 0; seed < seen.length; seed++) {
       if (seen[seed] || data.data[seed * 4 + 3] >= 245) continue;
@@ -1692,7 +1697,7 @@ const formatProjectSize = (project: SavedProject) => {
   return bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
 };
 async function createProjectThumbnail(layers: Layer[]) {
-  const visible = layers.filter((layer) => layer.visible);
+  const visible = layers.filter((layer) => layer.visible && !layer.groupHidden);
   if (!visible.length) return "";
   const b = bounds(visible),
     canvas = document.createElement("canvas");
@@ -1831,6 +1836,7 @@ export default function Home() {
     [splashOpen, setSplashOpen] = useState(false),
     [hideSplashOnStartup, setHideSplashOnStartup] = useState(false),
     [cutoutMenuOpen, setCutoutMenuOpen] = useState(false),
+    [edgeGuidanceLayerId, setEdgeGuidanceLayerId] = useState<string | null>(null),
     [svgWarningOpen, setSvgWarningOpen] = useState(false),
     [validationIntroOpen, setValidationIntroOpen] = useState(false),
     [cutSafetyEnabled, setCutSafetyEnabled] = useState(false),
@@ -2227,7 +2233,12 @@ export default function Home() {
       if (error || !data) { setNotice("Project could not be opened. Please retry."); return; }
       full = { ...project, ...(data as SavedProject), loaded: true };
     }
-    const restoredLayers = unpackLayers(full.data);
+    const restoredLayers = await Promise.all(unpackLayers(full.data).map(async (layer) => {
+      if (["vector", "stroke", "acetate"].includes(layer.kind) || (layer.sourceFormat && layer.rasterStatus)) return layer;
+      const sourceFormat: Layer["sourceFormat"] = /^data:image\/jpe?g/i.test(layer.src) ? "JPG" : /^data:image\/png/i.test(layer.src) ? "PNG" : /^data:image\/webp/i.test(layer.src) ? "WEBP" : "PNG";
+      const transparent = await hasTransparentCanvas(layer.src);
+      return { ...layer, sourceFormat, rasterStatus: transparent ? (Math.min(layer.naturalW || 0, layer.naturalH || 0) < 600 ? "cleanup" as const : "ready" as const) : "background" as const };
+    }));
     suppressLayerLog.current = true;
     setLayers(restoredLayers);
     setSessionLog([...(full.data.sessionLog || []), { id: uid(), at: new Date().toISOString(), action: "Project opened", details: `${full.name} was opened.` }]);
@@ -2649,6 +2660,20 @@ export default function Home() {
     const timer = window.setTimeout(() => (pageMode === "full" ? stageRef.current?.scrollTo({ left: 0, top: 0 }) : centerDocument()), 40);
     return () => window.clearTimeout(timer);
   }, [pageMode]);
+  const focusLayerAtActualSize = (layer: Layer) => {
+    setSelected([layer.id]);
+    zoomAnchor.current = null;
+    zoomRef.current = 1;
+    setZoom(1);
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+      const stage = stageRef.current, canvas = canvasRef.current;
+      if (!stage || !canvas) return;
+      const stageRect = stage.getBoundingClientRect(), canvasRect = canvas.getBoundingClientRect(), actualScale = canvasRect.width / A4.w;
+      stage.scrollLeft += canvasRect.left + (layer.x + layer.w / 2) * actualScale - (stageRect.left + stageRect.width / 2);
+      stage.scrollTop += canvasRect.top + (layer.y + layer.h / 2) * actualScale - (stageRect.top + stageRect.height / 2);
+      updateRulers();
+    }));
+  };
   const visibleInsertionPoint = (w: number, h: number) => {
     const stage = stageRef.current,
       canvas = canvasRef.current;
@@ -2674,7 +2699,10 @@ export default function Home() {
         prepared = f.type === "image/png" ? await trimUniformBorder(rawSrc) : { src: rawSrc, left: 0, top: 0, width: 1, height: 1 },
         src = prepared.src,
         img = await getImage(src),
-        ratio = img.naturalWidth / img.naturalHeight;
+        ratio = img.naturalWidth / img.naturalHeight,
+        sourceFormat = isSvg ? "SVG" : generatedName ? "AI" : /jpe?g/i.test(f.type) || /\.jpe?g$/i.test(f.name) ? "JPG" : /png/i.test(f.type) || /\.png$/i.test(f.name) ? "PNG" : "WEBP",
+        transparent = !isSvg && await hasTransparentCanvas(src),
+        rasterStatus = transparent ? (Math.min(img.naturalWidth, img.naturalHeight) < 600 ? "cleanup" : "ready") : "background";
       let w = Math.min(10, SAFE.w),
         h = w / ratio;
       if (h > SAFE.h) {
@@ -2699,6 +2727,8 @@ export default function Home() {
           naturalW: img.naturalWidth,
           naturalH: img.naturalHeight,
           kind: convertTextToCutout || isSvg ? "vector" : "original",
+          sourceFormat: convertTextToCutout ? "AI" : sourceFormat,
+          rasterStatus: convertTextToCutout || isSvg ? undefined : rasterStatus,
           strokeCm: 0.5,
           fillGapsMm: 0,
           invalid: false,
@@ -2819,6 +2849,8 @@ export default function Home() {
               w: nextWidth,
               h: target.h * t.height,
               kind: "nobg" as Kind,
+          sourceFormat: "PNG",
+          rasterStatus: "ready",
             };
           const step: LayerStep = {
             id: uid(),
@@ -2917,6 +2949,8 @@ export default function Home() {
         naturalW: finalImage.naturalWidth,
         naturalH: finalImage.naturalHeight,
         kind: "nobg" as Kind,
+        sourceFormat: "PNG",
+        rasterStatus: "ready",
       },
       label = type === "image" ? "Image Remove Background" : type === "rim" ? "Image Background + Rim" : "Text Background Removal",
       removalSettings = {
@@ -3027,6 +3061,8 @@ export default function Home() {
           naturalW: finalImage.naturalWidth,
           naturalH: finalImage.naturalHeight,
           kind: "nobg" as Kind,
+          sourceFormat: "PNG",
+          rasterStatus: "ready",
         };
       const selectedBackground = bgEditor.eraseColors.find((entry) => entry.color)?.color || [...target.steps].reverse().find((item) => item.type === "remove-bg")?.backgroundColor || "#ffffff";
       const step: LayerStep = {
@@ -3919,9 +3955,59 @@ export default function Home() {
       setWorking(false);
     }
   };
+  const addOutlineToPrintable = async (continueWithCurrentEdges = false) => {
+    if (!one || ["vector", "stroke", "acetate"].includes(one.kind)) return;
+    if (one.rasterStatus === "cleanup" && !continueWithCurrentEdges) {
+      setEdgeGuidanceLayerId(one.id);
+      return;
+    }
+    if (!(await hasTransparentCanvas(one.src))) {
+      setBgMenuOpen(true);
+      setNotice("This image still has a background. Remove it before creating an accurate Cut Shape outline.");
+      return;
+    }
+    setWorking(true);
+    try {
+      const cutSrc = await smoothVectorCutout(one.src, DARK, true),
+        cm = strokeDraft,
+        outlineColor = lighten(DARK),
+        rasterStroke = await strokeImage(cutSrc, cm, one.w, outlineColor, fillGapsDraft),
+        src = await smoothVectorCutout(rasterStroke, outlineColor, true),
+        id = uid(),
+        outline: Layer = {
+          ...one,
+          id,
+          name: `${one.name} Outline`,
+          src,
+          originalSrc: cutSrc,
+          innerSrc: cutSrc,
+          kind: "stroke",
+          sourceFormat: "SVG",
+          rasterStatus: undefined,
+          parentId: one.id,
+          strokeCm: cm,
+          fillGapsMm: fillGapsDraft,
+          x: one.x - cm,
+          y: one.y - cm,
+          w: one.w + cm * 2,
+          h: one.h + cm * 2,
+          color: outlineColor,
+          steps: [],
+          activeStep: 1,
+          acetateOn: false,
+        };
+      outline.steps = [
+        { id: uid(), type: "cutout", label: "Cut Shape", locked: true, snapshot: snapshot({ ...outline, src: cutSrc, x: one.x, y: one.y, w: one.w, h: one.h, kind: "vector", strokeCm: 0 }) },
+        { id: uid(), type: "stroke", label: `Outline · ${cm.toFixed(1)} cm`, snapshot: snapshot(outline) },
+      ];
+      setLayers((items) => { const index = items.findIndex((item) => item.id === one.id), next = [...items]; next.splice(Math.max(0, index), 0, outline); return next; });
+      setSelected([id]);
+      setNotice("The printable image was preserved. An editable Cut Shape outline was added underneath it.");
+    } finally { setWorking(false); }
+  };
   const addStroke = async (cmOverride?: number) => {
     if (!one || one.kind !== "vector") {
-      setNotice("Stroke can only be applied to a Cutout layer");
+      setNotice("Outline can only be added to a Cut Shape");
       return;
     }
     setWorking(true);
@@ -3961,7 +4047,7 @@ export default function Home() {
         {
           id: uid(),
           type: "stroke",
-          label: `Stroke · ${cm.toFixed(1)} cm`,
+          label: `Outline · ${cm.toFixed(1)} cm`,
           snapshot: snapshot(strokeLayer),
         },
       ];
@@ -3973,7 +4059,7 @@ export default function Home() {
         return next;
       });
       setSelected([id]);
-      setNotice(invalid ? "Stroke extends outside the safe area" : "Stroke applied as a new layer below the Cutout");
+      setNotice(invalid ? "Outline extends outside the safe area" : "Outline added as a new Cut Shape below the artwork");
     } finally {
       setWorking(false);
     }
@@ -4012,14 +4098,14 @@ export default function Home() {
         const step: LayerStep = {
           id: steps[index]?.id || uid(),
           type: "stroke",
-          label: `Stroke · ${cm.toFixed(1)} cm`,
+          label: `Outline · ${cm.toFixed(1)} cm`,
           snapshot: snapshot(next),
         };
         if (index >= 0) steps[index] = step;
         else steps.push(step);
         return { ...next, steps, activeStep: steps.length - 1 };
       });
-      setNotice(invalid ? "Stroke extends outside the safe area" : "Stroke updated");
+      setNotice(invalid ? "Outline extends outside the safe area" : "Outline updated");
     } finally {
       setWorking(false);
     }
@@ -4039,6 +4125,7 @@ export default function Home() {
             ...l,
             src,
             fillGapsMm: fillGapsDraft,
+            fillAllGaps: false,
             color: preservedColor,
           },
           steps = l.steps.filter((s) => s.type !== "fill-gaps");
@@ -4055,6 +4142,25 @@ export default function Home() {
     } finally {
       setWorking(false);
     }
+  };
+  const fillEveryGap = async () => {
+    if (!one || !["stroke", "vector"].includes(one.kind)) return;
+    setWorking(true);
+    try {
+      const parent = one.kind === "stroke" ? layers.find((layer) => layer.id === one.parentId) : undefined,
+        base = parent || one,
+        cm = one.kind === "stroke" ? one.strokeCm : 0,
+        raster = await strokeImage(base.src, cm, base.w, one.color, "all"),
+        src = await smoothVectorCutout(raster, one.color, true);
+      mutate(one.id, (layer) => {
+        const next = { ...layer, src, fillGapsMm: 0, fillAllGaps: true },
+          steps = layer.steps.filter((step) => step.type !== "fill-gaps");
+        steps.push({ id: uid(), type: "fill-gaps", label: "Fill Gaps · All", snapshot: snapshot(next) });
+        return { ...next, steps, activeStep: steps.length - 1 };
+      });
+      setFillGapsDraft(0);
+      setNotice("All enclosed gaps were filled. Outer contours were left unchanged.");
+    } finally { setWorking(false); }
   };
   const makeGapsPermanent = async () => {
     if (!one || !["stroke", "vector"].includes(one.kind)) return;
@@ -4171,6 +4277,8 @@ export default function Home() {
             w: target.w * trimmed.width,
             h: target.h * trimmed.height,
             kind: "nobg",
+            sourceFormat: "PNG",
+            rasterStatus: "ready",
           },
           finalLayer: Layer = {
             ...noBgLayer,
@@ -4699,7 +4807,7 @@ export default function Home() {
     const r = e.currentTarget.getBoundingClientRect(),
       x = (e.clientX - r.left) / scale,
       y = (e.clientY - r.top) / scale,
-      candidates = [...layers].reverse().filter(l=>{const b=rotatedBounds(l);return l.visible&&x>=b.x&&x<=b.x+b.w&&y>=b.y&&y<=b.y+b.h}),
+      candidates = [...layers].reverse().filter(l=>{const b=rotatedBounds(l);return l.visible&&!l.groupHidden&&x>=b.x&&x<=b.x+b.w&&y>=b.y&&y<=b.y+b.h}),
       opaque=await Promise.all(candidates.map(async l=>!l.isShape||await layerOpaqueAtWorld(l,x,y))),h=candidates.filter((_,index)=>opaque[index]);
     if (shapeTool && e.button === 0) {
       e.preventDefault();
@@ -5186,7 +5294,7 @@ export default function Home() {
       const x = c.getContext("2d")!;
       x.fillStyle = "white";
       x.fillRect(0, 0, c.width, c.height);
-      for (const l of layers.filter((v) => v.visible)) {
+      for (const l of layers.filter((v) => v.visible && !v.groupHidden)) {
         const img = await getImage(l.src),
           cx = ((l.x + l.w / 2) / A4.w) * c.width,
           cy = ((l.y + l.h / 2) / A4.h) * c.height;
@@ -5249,26 +5357,13 @@ export default function Home() {
         <input hidden ref={fileRef} type="file" multiple accept=".jpg,.jpeg,.png,.svg,.webp" onChange={add} />
         <input hidden ref={clipFileRef} type="file" accept="image/png,image/jpeg,image/webp" onChange={chooseClipImage} />
         <span className="toolbar-divider" />
-        <nav className="main-actions">
-          <button
-            type="button"
-            className="remove-bg-main"
-            onClick={() => {
-              if (!one) return setNotice("Select one image first");
-              setBgMenuOpen(true);
-            }}
-          >
-            <Sparkles />
-            Remove Background
-          </button>
-          <button disabled={!picked.some((layer) => !["vector", "stroke", "acetate"].includes(layer.kind))} onClick={() => setCutoutMenuOpen(true)}>
-            <Scissors />
-            Make Cutout
-          </button>
-          <button disabled={!one || !["vector", "stroke"].includes(one.kind)} onClick={acetate}>
-            <FileImage />
-            Make It Acetate
-          </button>
+        <nav className="main-actions" aria-label="Recommended next actions">
+          {one && !["vector", "stroke", "acetate"].includes(one.kind) && <>
+            <button type="button" className="remove-bg-main" onClick={() => setBgMenuOpen(true)}><Sparkles /> Remove Background</button>
+            <button type="button" onClick={() => setCutoutMenuOpen(true)}><Scissors /> Create Cut Shape</button>
+          </>}
+          {one && ["vector", "stroke"].includes(one.kind) && <button type="button" className="primary" onClick={() => openCutoutEditor()}><Scissors /> Edit Cut Shape</button>}
+          {!one && <span className="selection-guidance">Select artwork to see its next steps</span>}
         </nav>
         <div className="export-actions" aria-label="Export options">
           {picked.length > 1 && canSVG && (
@@ -5430,12 +5525,13 @@ export default function Home() {
               </div>
             )}
           </div>
-          <button disabled={!one || !["vector", "stroke"].includes(one.kind)} onClick={() => openCutoutEditor()}>
-            <Scissors /> Edit Cutout
-          </button>
-          <button disabled={!one || ["vector", "stroke", "acetate"].includes(one.kind)} onClick={() => openImageEditor()}>
-            <ImageIcon /> Edit Image
-          </button>
+          {one && ["vector", "stroke"].includes(one.kind) && <button onClick={() => openCutoutEditor()}><Scissors /> Edit Cut Shape</button>}
+          {one && !["vector", "stroke", "acetate"].includes(one.kind) && <>
+            <button onClick={() => openImageEditor()}><ImageIcon /> Edit Image</button>
+            <button onClick={() => { openImageEditor(one); window.setTimeout(() => setImageTab("sticker"), 0); }}><Sparkles /> Add Sticker Border</button>
+            <button className="primary" onClick={() => void addOutlineToPrintable()}><Scissors /> Add Outline</button>
+          </>}
+          {one?.kind === "vector" && <button className="primary" onClick={() => void addStroke()}><Scissors /> Add Outline</button>}
           <button className={imageOnShapeTarget || shapeImageEditing ? "active-action" : ""} disabled={!one?.isShape} onClick={startImageOnShape}>
             <ImagePlus /> Image on Shape
           </button>
@@ -5629,6 +5725,22 @@ export default function Home() {
               </button>
             </div>
           </div>
+          {one && ["vector", "stroke"].includes(one.kind) && (
+            <section className="cut-properties-floating" aria-label="Cut Shape properties">
+              <header><span><Scissors/><b>Cut Shape</b></span><small>{one.kind === "stroke" ? "Editable outline" : "Cutting geometry"}</small></header>
+              {one.kind === "stroke" && <div className="floating-property-block">
+                <label>Outline <b>{(unit === "cm" ? strokeDraft : strokeDraft / 2.54).toFixed(unit === "cm" ? 1 : 2)} {unit}</b></label>
+                <input type="range" min="0" max="3" step=".05" value={strokeDraft} onChange={(event)=>setStrokeDraft(+event.target.value)}/>
+                <div className="floating-property-actions"><input type="number" min="0" step={unit === "cm" ? ".1" : ".05"} value={(unit === "cm" ? strokeDraft : strokeDraft / 2.54).toFixed(unit === "cm" ? 1 : 2)} onChange={(event)=>setStrokeDraft(Math.max(0,+event.target.value)*(unit === "cm" ? 1 : 2.54))}/><button onClick={()=>void updateStroke()}>Update</button><button className="danger" onClick={()=>{const index=one.steps.findIndex(step=>step.type==="stroke");if(index>=0)removeStep(one,index)}}>Remove</button></div>
+              </div>}
+              <div className="floating-property-block">
+                <label>Fill Gaps <b>{fillGapsDraft.toFixed(fillGapsDraft < 5 ? 1 : 0)} mm²</b></label>
+                <input type="range" min="0" max="30" step={fillGapsDraft < 5 ? ".5" : "1"} value={fillGapsDraft} onChange={(event)=>setFillGapsDraft(+event.target.value)}/>
+                <div className="floating-property-actions"><button onClick={()=>void applyGapPreview()}>Apply value</button><button className="fill-all" onClick={()=>void fillEveryGap()}>Fill all the gaps</button></div>
+                <small>Only enclosed openings are filled; the outside edge is preserved.</small>
+              </div>
+            </section>
+          )}
           <div className="board" style={{ width: A4.w * scale + 42, height: A4.h * scale + 42 }}>
             <div className="ruler rx" style={{ left: 42, width: A4.w * scale }}>
               {rulers.x.map((n) => (
@@ -5670,7 +5782,7 @@ export default function Home() {
                 <span>SAFE AREA · {unit === "cm" ? safeMargin : (safeMargin / 2.54).toFixed(2)} {unit.toUpperCase()}</span>
               </div>
               {layers
-                .filter((l) => l.visible)
+                .filter((l) => l.visible && !l.groupHidden)
                 .map((l) => (
                   <div
                     key={l.id}
@@ -5846,7 +5958,7 @@ export default function Home() {
             {
               <>
                 <div className="tool-separator" />
-                <div className={!one || !["vector", "stroke"].includes(one.kind) ? "cut-option-disabled" : ""}>
+                <div className={`legacy-outline-panel ${!one || !["vector", "stroke"].includes(one.kind) ? "cut-option-disabled" : ""}`}>
                   <div className="side-tool-title">
                     <b>Stroke</b>
                     <small>Cutout only · default 0.5 cm</small>
@@ -5863,7 +5975,7 @@ export default function Home() {
             }
           </div>
           {
-            <div className={`finalize-tool ${!one || !["vector", "stroke"].includes(one.kind) ? "cut-option-disabled" : ""}`}>
+            <div className={`finalize-tool legacy-gap-panel ${!one || !["vector", "stroke"].includes(one.kind) ? "cut-option-disabled" : ""}`}>
               <div className="side-tool-title">
                 <b>Fill Gaps</b>
                 <small>Cutout geometry cleanup</small>
@@ -5908,14 +6020,15 @@ export default function Home() {
           <div className="list">
             {[...layers].reverse().map((l,index,displayed) => (
               <Fragment key={l.id}>
-              {l.groupId&&displayed.findIndex(item=>item.groupId===l.groupId)===index&&<div className="layer-group-header" onClick={()=>setSelected(layers.filter(layer=>layer.groupId===l.groupId).map(layer=>layer.id))} onDragOver={(event)=>event.preventDefault()} onDrop={(event)=>{event.preventDefault();moveDraggedLayerToGroup(l.groupId)}}><FolderOpen/><span>Group</span><small>{layers.filter(layer=>layer.groupId===l.groupId).length} layers</small></div>}
+              {l.groupId&&displayed.findIndex(item=>item.groupId===l.groupId)===index&&<div className={`layer-group-header ${l.groupHidden?"hidden":""}`} onClick={()=>setSelected(layers.filter(layer=>layer.groupId===l.groupId).map(layer=>layer.id))} onDragOver={(event)=>event.preventDefault()} onDrop={(event)=>{event.preventDefault();moveDraggedLayerToGroup(l.groupId)}}><button className={`group-collapse ${l.groupCollapsed?"collapsed":""}`} title={l.groupCollapsed?"Expand Group":"Collapse Group"} onClick={(event)=>{event.stopPropagation();setLayers(items=>items.map(layer=>layer.groupId===l.groupId?{...layer,groupCollapsed:!l.groupCollapsed}:layer))}}><ChevronDown/></button><FolderOpen/><span>Group</span><small>{layers.filter(layer=>layer.groupId===l.groupId).length} layers</small><button className="group-eye" title={l.groupHidden?"Show Group":"Hide Group"} onClick={(event)=>{event.stopPropagation();setLayers(items=>items.map(layer=>layer.groupId===l.groupId?{...layer,groupHidden:!l.groupHidden}:layer))}}>{l.groupHidden?<EyeOff/>:<Eye/>}</button></div>}
               <div
                 draggable={editingName !== l.id}
-                className={`card ${l.groupId?"group-child":""} ${selected.includes(l.id) ? "active" : ""} ${cutSafetyEnabled && l.cutRisk ? "cut-risk" : ""} ${!l.visible ? "hidden" : ""} ${dragLayer === l.id ? "dragging" : ""} ${layerDrop?.id===l.id?`drop-${layerDrop.side}`:""}`}
+                className={`card ${l.groupId?"group-child":""} ${l.groupCollapsed?"group-collapsed":""} ${selected.includes(l.id) ? "active" : ""} ${cutSafetyEnabled && l.cutRisk ? "cut-risk" : ""} ${!l.visible ? "hidden" : ""} ${dragLayer === l.id ? "dragging" : ""} ${layerDrop?.id===l.id?`drop-${layerDrop.side}`:""}`}
                 onDragStart={(event) => {setDragLayer(l.id);setLayerDrop(null);event.dataTransfer.effectAllowed="move";}}
                 onDragOver={(e) => {e.preventDefault();if(!dragLayer||dragLayer===l.id)return;const rect=e.currentTarget.getBoundingClientRect();setLayerDrop({id:l.id,side:e.clientY<rect.top+rect.height/2?"before":"after"});}}
                 onDragEnd={() => {setDragLayer(null);setLayerDrop(null)}}
                 onDrop={(event) => {event.preventDefault();if(layerDrop?.id===l.id)dropLayerAt(l.id,layerDrop.side)}}
+                onDoubleClick={(event) => { if (!(event.target as HTMLElement).closest("input,button")) { event.preventDefault(); focusLayerAtActualSize(l); } }}
                 onClickCapture={(e) => {
                   if (imageOnShapeTargetRef.current || imageOnShapeTarget) {
                     e.preventDefault();
@@ -5955,7 +6068,7 @@ export default function Home() {
                     onChange={(e) => mutate(l.id, (v) => ({ ...v, name: e.target.value }))}
                   />
                   <small>
-                    {l.kind === "original" ? "Original" : l.kind === "nobg" ? "Background removed" : l.kind === "stroke" ? `Stroke · ${fmt(l.strokeCm)} cm` : l.kind === "vector" ? "Cutout" : "Acetate"} · {fmt(l.w)} × {fmt(l.h)} cm
+                    {l.kind === "stroke" ? `Cut Shape · Outline ${fmt(l.strokeCm)} cm` : l.kind === "vector" ? "Cut Shape · SVG" : l.kind === "acetate" ? "Backing Layer" : `Printable Image · ${l.sourceFormat || (l.kind === "nobg" ? "PNG" : "Image")} · ${l.rasterStatus === "background" ? "Background detected" : l.rasterStatus === "cleanup" ? "Edge cleanup recommended" : "Ready"}`} · {fmt(l.w)} × {fmt(l.h)} cm
                   </small>
                 </div>
                 {(l.invalid || (cutSafetyEnabled && l.cutRisk)) && (
@@ -6374,13 +6487,18 @@ export default function Home() {
             </div>
           );
         })()}
+      {edgeGuidanceLayerId && (() => {
+        const guided = layers.find((layer) => layer.id === edgeGuidanceLayerId);
+        if (!guided) return null;
+        return <div className="project-transition-modal edge-guidance-modal" role="dialog" aria-modal="true" aria-label="Edge preparation recommended" onPointerDown={()=>setEdgeGuidanceLayerId(null)}><div onPointerDown={(event)=>event.stopPropagation()}><header><span><Sparkles/></span><div><h3>Prepare the image edge</h3><p>This transparent image may have low-resolution or uneven edges. Your printable image will not be changed unless you choose an editing option.</p></div></header><div className="edge-guidance-actions"><button onClick={()=>{setEdgeGuidanceLayerId(null);openImageEditor(guided)}}><ImageIcon/><span><b>Clean Edges</b><small>Open image cleanup tools</small></span></button><button onClick={()=>{setEdgeGuidanceLayerId(null);openImageEditor(guided);window.setTimeout(()=>setImageTab("sticker"),0)}}><Sparkles/><span><b>Add Sticker Border</b><small>Create a forgiving printable edge</small></span></button><button className="continue" onClick={()=>{setEdgeGuidanceLayerId(null);setSelected([guided.id]);window.setTimeout(()=>void addOutlineToPrintable(true),0)}}><Scissors/><span><b>Continue Anyway</b><small>Keep these edges and create the Cut Shape</small></span></button></div><button className="cancel" onClick={()=>setEdgeGuidanceLayerId(null)}>Cancel</button></div></div>;
+      })()}
       {cutoutMenuOpen && (
-        <div className="preset-modal cutout-choice-modal" role="dialog" aria-modal="true" aria-label="Make Cutout" onPointerDown={() => setCutoutMenuOpen(false)}>
+        <div className="preset-modal cutout-choice-modal" role="dialog" aria-modal="true" aria-label="Create Cut Shape" onPointerDown={() => setCutoutMenuOpen(false)}>
           <div className="preset-dialog" onPointerDown={(e) => e.stopPropagation()}>
             <header>
               <div>
-                <b>Make Cutout</b>
-                <small>Choose how much contour detail your project needs.</small>
+                <b>Create Cut Shape</b>
+                <small>Turn printable artwork into an SVG cutting boundary. The original image remains available.</small>
               </div>
               <button onClick={() => setCutoutMenuOpen(false)}>
                 <X />
@@ -6391,14 +6509,14 @@ export default function Home() {
                 <span>
                   <img src="/cutout-presets/smooth.png" alt="Smooth cutout preview" />
                 </span>
-                <b>Smooth Cutout</b>
+                <b>Smooth Cut Shape</b>
                 <small>Cleaner curves and fewer blade movements</small>
               </button>
               <button onClick={() => void smoothCutoutV4(false)}>
                 <span>
                   <img src="/cutout-presets/detailed.png" alt="Detailed cutout preview" />
                 </span>
-                <b>Detailed Cutout</b>
+                <b>Detailed Cut Shape</b>
                 <small>Preserves more of the original contour</small>
               </button>
             </div>
@@ -6407,7 +6525,7 @@ export default function Home() {
                 <SlidersHorizontal />
               </i>
               <span>
-                <b>Advanced Cutout Edit</b>
+                <b>Advanced Cut Shape Edit</b>
                 <small>{picked.length === 1 ? "Create the detailed cutout and open its editing tools" : "Select one image to continue into the editor"}</small>
               </span>
             </button>
@@ -6646,7 +6764,7 @@ export default function Home() {
                       window.setTimeout(() => (cutout ? openCutoutEditor(risk) : openImageEditor(risk)), 0);
                     }}
                   >
-                    {cutout ? "Edit Cutout" : "Edit Image"}
+                    {cutout ? "Edit Cut Shape" : "Edit Image"}
                   </button>
                   <button className="confirm" onClick={() => (cutout ? void quickFixCutRisk() : void quickFixRasterRisk(risk))}>
                     <Sparkles /> {cutout ? "Quick Fix" : risk.steps.some(step=>step.type==="remove-bg"&&/rim/i.test(step.label))?"Quick Fix: Clean Alpha":"Quick Fix: Add Rim"}
@@ -7196,11 +7314,11 @@ export default function Home() {
           );
         })()}
       {cutEditor && (
-        <div className="bg-modal cutout-modal" role="dialog" aria-modal="true" aria-label="Cutout editor">
+        <div className="bg-modal cutout-modal" role="dialog" aria-modal="true" aria-label="Cut Shape editor">
           <div className="bg-dialog" onPointerDown={(e) => e.stopPropagation()}>
             <header>
               <div>
-                <b>Edit Cutout</b>
+                <b>Edit Cut Shape</b>
                 <small>Crop, remove pieces, erase details or create bridges.</small>
               </div>
               <button onClick={() => setCutEditor(null)}>×</button>
