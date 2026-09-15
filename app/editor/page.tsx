@@ -2921,7 +2921,7 @@ export default function Home() {
       ];
       if (type === "rim") edgeSmooth = 8;
     }
-    let refined = await refineBackground(source, 0, strokes, 0, edgeRefine, colors, edgeSmooth, true),
+    let refined = await refineBackground(source, 0, strokes, type === "text" ? 500 : 0, edgeRefine, colors, edgeSmooth, true),
       map = { left: 0, top: 0, width: 1, height: 1 };
     if (type === "rim") {
       const rim = await addProtectiveRim(refined, source, before.w);
@@ -2959,7 +2959,7 @@ export default function Home() {
       label = type === "image" ? "Image Remove Background" : type === "rim" ? "Image Background + Rim" : "Text Background Removal",
       removalSettings = {
         strokes,
-        speckles: 0,
+        speckles: type === "text" ? 500 : 0,
         edgeRefine,
         edgeSmooth,
         optimizeAlpha: true,
@@ -5369,16 +5369,16 @@ export default function Home() {
         <button className="brand-undo" onClick={undo} title="Undo (Ctrl+Z)">
           <Undo2 /> Undo
         </button>
-        <button className="brand-redo" disabled={!redoHistory.current.length} onClick={redo} title="Redo (Ctrl+Shift+Z)"><Redo2 /> Redo</button>
+        <button className="brand-redo" disabled={!redoHistory.current.length} onClick={redo} title="Redo (Ctrl+Shift+Z)">Redo <Redo2 /></button>
         <input hidden ref={fileRef} type="file" multiple accept=".jpg,.jpeg,.png,.svg,.webp" onChange={add} />
         <input hidden ref={clipFileRef} type="file" accept="image/png,image/jpeg,image/webp" onChange={chooseClipImage} />
         <span className="toolbar-divider" />
         <nav className="main-actions" aria-label="Recommended next actions">
           {one && !["vector", "stroke", "acetate"].includes(one.kind) && <>
-            <button type="button" className="remove-bg-main" onClick={() => setBgMenuOpen(true)}><Sparkles /> Remove Background</button>
+            <button type="button" className={one.rasterStatus === "background" ? "remove-bg-main primary" : "remove-bg-main"} onClick={() => setBgMenuOpen(true)}><Sparkles /> Remove Background</button>
             <button type="button" onClick={() => setCutoutMenuOpen(true)}><Scissors /> Create Cut Shape</button>
-            <button type="button" onClick={() => void openStickerBorder(one)}><Sparkles /> Add Sticker Border to Image</button>
-            <button type="button" className="primary" onClick={() => void addOutlineToPrintable()}><Scissors /> Add Outline as Cut Shape</button>
+            <button type="button" disabled={one.rasterStatus === "background"} onClick={() => void openStickerBorder(one)}><Sparkles /> Add Sticker Border to Image</button>
+            <button type="button" className={one.rasterStatus === "background" ? "" : "primary"} onClick={() => void addOutlineToPrintable()}><Scissors /> Add Outline as Cut Shape</button>
           </>}
           {one && ["vector", "stroke"].includes(one.kind) && <><button type="button" className="primary" onClick={() => openCutoutEditor()}><Scissors /> Edit Cut Shape</button><button type="button" onClick={() => void addStroke()}><Scissors /> Add Outline as Cut Shape</button></>}
           {!one && <><button disabled><Sparkles/> Remove Background</button><button disabled><Scissors/> Create Cut Shape</button><button disabled><Sparkles/> Add Sticker Border to Image</button><button disabled><Scissors/> Add Outline as Cut Shape</button></>}
@@ -6657,8 +6657,8 @@ export default function Home() {
                   <img src="/background-presets/image-default.png" alt="Default image background removal preview" />
                 </span>
                 <span>
-                  <b>Image Remove Background</b>
-                  <small>Default</small>
+                  <b>Remove Outside Background</b>
+                  <small>Detects and removes the background colour outside the shape.</small>
                 </span>
               </button>
               <button onClick={() => void applyBackgroundPreset("rim")}>
@@ -6666,8 +6666,8 @@ export default function Home() {
                   <img src="/background-presets/image-rim.png" alt="Image background removal with rim preview" />
                 </span>
                 <span>
-                  <b>Image Remove Background</b>
-                  <small>Add Rim</small>
+                  <b>Remove Background with Rim</b>
+                  <small>Removes the outside background while preserving colour around the edge.</small>
                 </span>
               </button>
               <button onClick={() => void applyBackgroundPreset("text")}>
@@ -6675,8 +6675,8 @@ export default function Home() {
                   <img src="/background-presets/text-bw.png" alt="Black and white text background removal preview" />
                 </span>
                 <span>
-                  <b>Text Remove Background</b>
-                  <small>Black and White</small>
+                  <b>Remove Background of a Text</b>
+                  <small>Removes the background colour outside and inside the lettering.</small>
                 </span>
               </button>
             </div>
@@ -7095,20 +7095,20 @@ export default function Home() {
                             {
                               id: "image",
                               image: "/background-presets/image-default.png",
-                              title: "Image Remove Background",
-                              sub: "Default",
+                              title: "Remove Outside Background",
+                              sub: "Detects and removes the background colour outside the shape.",
                             },
                             {
                               id: "rim",
                               image: "/background-presets/image-rim.png",
-                              title: "Image Remove Background",
-                              sub: "Add Rim",
+                              title: "Remove Background with Rim",
+                              sub: "Removes the outside background while preserving colour around the edge.",
                             },
                             {
                               id: "text",
                               image: "/background-presets/text-bw.png",
-                              title: "Text Remove Background",
-                              sub: "Black and White",
+                              title: "Remove Background of a Text",
+                              sub: "Removes the background colour outside and inside the lettering.",
                             },
                           ] as const
                         ).map((preset) => (
