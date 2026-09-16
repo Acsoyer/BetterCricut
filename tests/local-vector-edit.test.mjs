@@ -21,3 +21,14 @@ test('untouched sharp corners and Bezier handles survive local vector edits', ()
     }
   } finally {s.project.remove();}
 });
+
+test('SVG viewport clipping rectangles are not treated as filled geometry', async () => {
+  const { editableVectorPaths }=await import('../app/editor/local-vector-edit.ts');
+  const s=new paper.PaperScope();s.setup(new s.Size(100,100));
+  try {
+    const rectangle=new s.Path.Rectangle({from:[0,0],to:[100,100]});rectangle.clipMask=true;
+    const text=new s.CompoundPath('M10 10L90 10L90 90L10 90Z M30 30L30 60L60 60L60 30Z');
+    const group=new s.Group([rectangle,text]);group.clipped=true;
+    assert.deepEqual(editableVectorPaths(group),[text]);
+  } finally {s.remove();}
+});

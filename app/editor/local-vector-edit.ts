@@ -1,5 +1,15 @@
 import type paper from "paper";
 type Stroke = { tool: string; brush: number; points: { x: number; y: number }[] };
+export function editableVectorPaths(item: paper.Item): paper.PathItem[] {
+  const paths: paper.PathItem[]=[];
+  const visit=(node: paper.Item) => {
+    if(node.clipMask) return;
+    if(node.className === "Path" || node.className === "CompoundPath") { paths.push(node as paper.PathItem); return; }
+    if(node.className === "Shape") { paths.push((node as paper.Shape).toPath(false)); return; }
+    for(const child of node.children ?? []) visit(child);
+  };
+  visit(item);return paths;
+}
 export async function localVectorEdit(raw: string, width: number, height: number, strokes: Stroke[], color: string, smoothed?: string) {
   const library = (await import("paper")).default;
   const scope = new library.PaperScope(); scope.setup(new scope.Size(width,height));
@@ -9,13 +19,7 @@ export async function localVectorEdit(raw: string, width: number, height: number
     root.setAttribute("width",String(width*(padded?1.2:1))); root.setAttribute("height",String(height*(padded?1.2:1)));
     const item=scope.project.importSVG(root as unknown as SVGElement,{insert:false,applyMatrix:true});
     if(padded) item.translate(new scope.Point(-width*.1,-height*.1));
-    const paths: paper.PathItem[]=[];
-    const visit=(node: paper.Item) => {
-      if(node.className === "Path" || node.className === "CompoundPath") { paths.push(node as paper.PathItem); return; }
-      if(node.className === "Shape") { paths.push((node as paper.Shape).toPath(false)); return; }
-      for(const child of node.children ?? []) visit(child);
-    };
-    visit(item);
+    const paths=editableVectorPaths(item);
     if(!paths.length) throw new Error("No editable vector paths found");
     let combined=paths[0];
     for(const path of paths.slice(1)) combined=combined.unite(path,{insert:false});

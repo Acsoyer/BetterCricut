@@ -9,6 +9,7 @@ import PickedColorControls from "./PickedColorControls";
 import { navigatePreview } from "./preview-navigation";
 import { fillVectorGaps } from "./vector-gap-fill";
 import { localVectorEdit, reframeVector } from "./local-vector-edit";
+import ColorPickLens, { type PickPointer } from "./ColorPickLens";
 import { getSVG, traceCanvas } from "@cadit-app/potrace-ts";
 import cutPreviewWorkerUrl from "./cut-preview.worker?worker&url";
 import { fittedCutSvg, detailedRecoveryScales } from "./cut-curve-fit";
@@ -1332,6 +1333,7 @@ async function renderCutoutEdit(editor: CutoutEditor, applyCrop = false, preview
     }
   x.putImageData(outlined, 0, 0);
   if (vectorSource) {
+    if(!editor.strokes.length && !applyCrop) {const raw=cutDisplayMarkup(decodeSvgData(editor.source),false);const doc=new DOMParser().parseFromString(raw,"image/svg+xml");doc.documentElement.setAttribute("width",String(baseWidth*1.2));doc.documentElement.setAttribute("height",String(baseHeight*1.2));doc.querySelectorAll("[data-cut-contour]").forEach(node=>node.setAttribute("stroke","none"));return {src:`data:image/svg+xml,${encodeURIComponent(new XMLSerializer().serializeToString(doc))}`,left:-.1,top:-.1,width:1.2,height:1.2};}
     const smoothed = editor.strokes.some(stroke => stroke.tool === "smooth") ? decodeSvgData(await smoothVectorCutout(c.toDataURL(),editor.color,true,"detailed")) : undefined;
     const raw = await localVectorEdit(decodeSvgData(editor.source),baseWidth,baseHeight,editor.strokes,editor.color,smoothed);
     if (applyCrop) {
@@ -3270,6 +3272,7 @@ export default function Home() {
   const moveBackgroundStroke = (e: RPointer<HTMLImageElement>) => {
     const cursor = bgPointFromEvent(e);
     setBgCursor({ ...cursor, visible: true });
+    if(bgEditor?.pickingColor !== null) setPickPointer({...cursor,clientX:e.clientX,clientY:e.clientY});
     if (!bgDrawing.current || e.buttons !== 1) return;
     const point = cursor,
       id = bgDrawing.current;
@@ -3422,8 +3425,12 @@ export default function Home() {
       y: clamp(((e.clientY - r.top) / r.height) * 1.2 - 0.1, -0.1, 1.1),
     };
   };
+  const [toolReminder,setToolReminder]=useState(false);
+  const [pickPointer,setPickPointer]=useState<PickPointer|null>(null);
+  useEffect(()=>{if(!toolReminder)return;const timer=window.setTimeout(()=>setToolReminder(false),1000);return()=>window.clearTimeout(timer);},[toolReminder]);
   const startCutEdit = (e: RPointer<HTMLElement>) => {
-    if (!cutEditor || !cutEditor.tool || e.button !== 0) return;
+    if (!cutEditor || e.button !== 0) return;
+    if (!cutEditor.tool) {setToolReminder(true);return;}
     e.preventDefault();
     e.currentTarget.setPointerCapture(e.pointerId);
     const id = uid();
@@ -7528,8 +7535,8 @@ export default function Home() {
               <aside className="bg-controls cutout-controls">
                 {cutoutTab === "edit" ? (
                   <>
-                    <section>
-                      <label>Edit Tool</label>
+                    <section className={toolReminder ? "edit-tools-reminder" : ""}>
+                      <label>Edit Tools</label>
                       <div className="edit-tool-grid">
                         {(["bridge", "erase", "smooth", "lasso", "rectangle"] as EditTool[]).map((tool) => (
                           <button
@@ -7619,15 +7626,16 @@ export default function Home() {
           </div>
         </div>
       )}
+      {bgEditor && bgEditor.pickingColor !== null && bgCursor.visible && pickPointer && <ColorPickLens src={bgEditor.source} pointer={pickPointer}/>}
       {bgEditor && !imageEditor && (
         <div className="bg-modal" role="dialog" aria-modal="true" aria-label="Background removal editor">
           <div className="bg-dialog" onPointerDown={(e) => e.stopPropagation()}>
-            <header>
+            <header className="background-history-header">
               <div>
                 <b>Refine Background Removal</b>
                 <small>Mark areas to remove or protect before applying.</small>
               </div>
-              <div className="refine-quick-tools">
+              <div className="refine-quick-tools"><div className="background-header-history">
                 <button
                   disabled={!bgEditor.strokes.length}
                   onClick={() =>
@@ -7637,13 +7645,13 @@ export default function Home() {
                     })
                   }
                 >
-                  Undo
+                  <Undo2 /> Undo
                 </button>
                 <button disabled={!bgEditor.strokes.length} onClick={() => setBgEditor({ ...bgEditor, strokes: [] })}>
-                  Reset
+                  <RotateCw /> Reset
                 </button>
-                <label>
-                  <input type="checkbox" checked={bgEditor.alphaView} onChange={(e) => setBgEditor({ ...bgEditor, alphaView: e.target.checked })} /> Alpha
+                </div><label>
+                  <input type="checkbox" checked={bgEditor.alphaView} onChange={(e) => setBgEditor({ ...bgEditor, alphaView: e.target.checked })} /> Show Alpha Channel
                 </label>
                 <button
                   className={bgEditor.optimizeAlpha ? "active optimize-alpha" : "optimize-alpha"}

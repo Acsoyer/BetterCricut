@@ -244,7 +244,7 @@ function contourCrosses(curves: Cubic[]): boolean {
   return false;
 }
 
-const FIT_ERROR = { smooth: 1.45, detailed: 0.55 };
+const FIT_ERROR = { smooth: 1.6, detailed: 0.55 };
 export function detailedRecoveryScales() {
   const fine = FIT_ERROR.detailed,
     coarse = FIT_ERROR.smooth;

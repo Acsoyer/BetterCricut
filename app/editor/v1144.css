@@ -1,0 +1,14 @@
+/* Shared modal typography: category, control, value, help. */
+.bg-modal .bg-dialog .bg-controls section>label,.bg-modal .bg-dialog .bg-controls .compact-slider>label,.bg-modal .bg-dialog .image-edit-tools section>label{font-size:12px!important;line-height:1.4!important;font-weight:650!important}
+.bg-modal .bg-dialog .bg-controls label b,.bg-modal .bg-dialog .image-edit-tools label b{font-size:12px!important;font-weight:700!important}
+.bg-modal .bg-dialog small,.bg-modal .bg-dialog p,.bg-modal .bg-dialog .bg-controls section>small{font-size:9px!important;line-height:1.45!important}
+.bg-modal .bg-dialog button,.bg-modal .bg-dialog button span{font-size:11px!important;line-height:1.2!important}
+.bg-modal .bg-dialog .edit-tool-grid button,.bg-modal .bg-dialog .bg-tool-grid button{font-size:11px!important;gap:7px!important}
+.bg-modal .bg-dialog .edit-tool-grid button svg,.bg-modal .bg-dialog .bg-tool-grid button svg{width:17px!important;height:17px!important;flex:none!important}
+.bg-modal.cutout-modal .bg-dialog .edit-tool-grid button{min-height:40px!important;height:40px!important}
+.edit-tools-reminder{animation:edit-tools-reminder 1s ease-out}.edit-tools-reminder .edit-tool-grid button{animation:edit-tools-reminder 1s ease-out}
+@keyframes edit-tools-reminder{0%,20%{background:#cdeff1;box-shadow:0 0 0 2px #4eafbc}100%{background:transparent;box-shadow:0 0 0 0 transparent}}
+.background-history-header{display:flex!important;align-items:center!important;gap:12px!important}.background-history-header>div:first-child{flex:0 1 270px!important}.background-history-header .refine-quick-tools{display:contents!important}.background-history-header .background-header-history{display:flex!important;gap:8px!important;margin-right:auto!important}.background-header-history button{height:36px!important;padding:0 12px!important;border:1px solid #d7e1dd!important;border-radius:8px!important;background:#fff!important;display:inline-flex!important;align-items:center!important;gap:6px!important}.background-header-history svg{width:15px!important;height:15px!important}
+.preset-dialog .advanced-preset{background:#4eafbc!important;color:#fff!important;border-color:#4eafbc!important}.preset-dialog .advanced-preset b,.preset-dialog .advanced-preset small,.preset-dialog .advanced-preset svg{color:#fff!important}
+.color-pick-lens{position:fixed;z-index:10000;pointer-events:none;display:grid;justify-items:center;gap:6px}.color-pick-lens canvas{width:104px;height:104px;border:3px solid #4eafbc;border-radius:50%;background:repeating-conic-gradient(#e5ebe9 0% 25%,#fff 0% 50%) 50% / 16px 16px;box-shadow:0 2px 10px #17211c30}.color-pick-lens span{font-size:11px;background:#17211c;color:white;border-radius:5px;padding:5px 9px}
+.bg-modal .bg-dialog .bg-image-wrap:has(.eyedrop-active) .bg-brush-cursor{display:none!important}.bg-modal .bg-dialog .eyedrop-active{cursor:crosshair!important}
