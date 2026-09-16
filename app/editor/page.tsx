@@ -1,7 +1,7 @@
 "use client";
 /* eslint-disable react-hooks/set-state-in-effect, react-hooks/refs, react-hooks/purity */
 import { ChangeEvent, Fragment, PointerEvent as RPointer, WheelEvent as RWheel, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { AlignVerticalJustifyCenter, AlignEndHorizontal, AlignEndVertical, AlignHorizontalJustifyCenter, AlignStartHorizontal, AlignStartVertical, AlertTriangle, BringToFront, ChevronDown, Check, Copy, Crosshair, Download, Eye, EyeOff, FileImage, File, ImagePlus, Laptop, Paintbrush, Eraser, GripVertical, Grid3X3, Link as LinkIcon, Link2Off, Layers3, Maximize2, Minimize2, Palette, Pipette, Plus, Redo2, RotateCw, Replace, Ruler, Scissors, ShieldCheck, SlidersHorizontal, SendToBack, Sparkles, Star, Trash2, Type, Undo2, ZoomIn, ZoomOut, User, FolderOpen, Image as ImageIcon, LogOut, X } from "lucide-react";
+import { AlignVerticalJustifyCenter, AlignEndHorizontal, AlignEndVertical, AlignHorizontalJustifyCenter, AlignStartHorizontal, AlignStartVertical, AlertTriangle, BringToFront, ChevronDown, Check, Copy, Crosshair, Download, Eye, EyeOff, FileImage, File, ImagePlus, Laptop, Paintbrush, Eraser, GripVertical, Link as LinkIcon, Link2Off, Layers3, Maximize2, Minimize2, Palette, Pipette, Plus, Redo2, RotateCw, Replace, Ruler, Scissors, ShieldCheck, SlidersHorizontal, SendToBack, Sparkles, Star, Trash2, Type, Undo2, ZoomIn, ZoomOut, User, FolderOpen, Image as ImageIcon, LogOut, X } from "lucide-react";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
 import { EDITOR_VERSION, editorDevLog } from "../editor-dev-log";
@@ -387,11 +387,6 @@ const cropSvgWithoutRetracing = (src: string, part: SplitPart) => {
   maskImage.setAttribute("href",part.src);maskImage.setAttribute("x",String(left));maskImage.setAttribute("y",String(top));maskImage.setAttribute("width",String(width));maskImage.setAttribute("height",String(height));maskImage.setAttribute("preserveAspectRatio","none");mask.appendChild(maskImage);defs.appendChild(mask);
   [...root.childNodes].forEach(node=>group.appendChild(node));group.setAttribute("mask",`url(#${maskId})`);root.appendChild(defs);root.appendChild(group);
   root.setAttribute("viewBox",`${left} ${top} ${width} ${height}`); root.setAttribute("width",String(width)); root.setAttribute("height",String(height)); root.setAttribute("preserveAspectRatio","none"); root.setAttribute("overflow","hidden");
-  return `data:image/svg+xml,${encodeURIComponent(new XMLSerializer().serializeToString(root))}`;
-};
-const svgWithoutPreviewContour = (src:string) => {
-  const doc=new DOMParser().parseFromString(decodeSvgData(src),"image/svg+xml"),root=doc.documentElement;
-  root.querySelectorAll("path,rect,ellipse,circle,polygon,polyline").forEach(node=>{node.setAttribute("stroke","none");node.removeAttribute("paint-order")});
   return `data:image/svg+xml,${encodeURIComponent(new XMLSerializer().serializeToString(root))}`;
 };
 const getImage = (src: string) =>
@@ -1889,7 +1884,6 @@ export default function Home() {
     [settingsSection, setSettingsSection] = useState<"size" | "orientation" | "units" | "color" | "grid" | "safe" | "control" | null>(null),
     [controlMode, setControlMode] = useState<"touchpad" | "mouse">("touchpad"),
     [safeMargin, setSafeMargin] = useState(1),
-    [safeOpen, setSafeOpen] = useState(false),
     [gridVisible, setGridVisible] = useState(true),
     [settingsHydrated, setSettingsHydrated] = useState(false),
     [bgMenuOpen, setBgMenuOpen] = useState(false),
@@ -2599,7 +2593,6 @@ export default function Home() {
       if (!(e.target as HTMLElement).closest(".wrap")) {
         setAlignOpen(false);
         setColorOpen(false);
-        setSafeOpen(false);
       }
     };
     document.addEventListener("pointerdown", close);
@@ -5586,7 +5579,7 @@ export default function Home() {
               }}
             >
               <span className="profile-placeholder">{session?.user.user_metadata?.avatar_url || session?.user.user_metadata?.picture ? <img src={session.user.user_metadata.avatar_url || session.user.user_metadata.picture} alt="" /> : <User />}</span>
-              <small>My Account</small>
+              <small>My Account</small><ChevronDown className="account-chevron"/>
             </button>
           </div>
 </header>
