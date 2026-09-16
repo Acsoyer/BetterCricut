@@ -107,7 +107,7 @@ type Layer = {
   groupHidden?: boolean;
   sourceFormat?: "JPG" | "PNG" | "WEBP" | "SVG" | "AI";
   rasterStatus?: "background" | "cleanup" | "ready";
-  stickerOffset?: { enabled: boolean; sizeMm: number; color: string; smoothness: number; baseSrc: string; baseX: number; baseY: number; baseW: number; baseH: number; previewSrc: string };
+  stickerOffset?: { enabled: boolean; sizeMm: number; color: string; smoothness: number; baseSrc: string; baseX: number; baseY: number; baseW: number; baseH: number; previewSrc: string; borders?: { id: string; sizeMm: number; color: string }[] };
 };
 type AIGeneration = { id: string; mode: "text" | "image"; name: string; src: string; created_at: string };
 type SavedProject = {
@@ -136,7 +136,7 @@ type SessionLogEntry = { id: string; at: string; action: string; details: string
 type PageMode = "portrait" | "landscape" | "full";
 type PageSize = keyof typeof PAGE_SIZES;
 type Unit = "cm" | "in";
-type PageColor = "white" | "offwhite" | "warm" | "lightgray" | "darkgray" | "canson";
+type PageColor = "white" | "offwhite" | "warm" | "lightgray" | "darkgray" | "canson" | "custom";
 const PAGE_COLORS: Record<PageColor, { label: string; color: string }> = {
   white: { label: "White", color: "#ffffff" },
   offwhite: { label: "Broken White", color: "#fffdf7" },
@@ -144,6 +144,7 @@ const PAGE_COLORS: Record<PageColor, { label: string; color: string }> = {
   lightgray: { label: "Light Gray", color: "#e7e9e8" },
   darkgray: { label: "Dark Gray", color: "#777d7a" },
   canson: { label: "Canson Paper", color: "#f6eddd" },
+  custom: { label: "Choose Color", color: "#ffffff" },
 };
 const TEXT_FONT_OPTIONS = [
   ["cursive", "Cursive Font", "/create-examples/text-black/black-happy-birthday-sophia-v2-cursive.png"],
@@ -1725,13 +1726,27 @@ async function createProjectThumbnail(layers: Layer[]) {
   return canvas.toDataURL("image/webp", 0.62);
 }
 async function renderStickerOffset(layer: Layer, multiplier = 1) {
-  const style = layer.stickerOffset!, scale = DPI * multiplier / 2.54, pad = Math.max(1, Math.round((style.sizeMm / 10) * scale)), baseW = style.baseW || Math.max(.01, layer.w - style.sizeMm / 5), baseH = style.baseH || Math.max(.01, layer.h - style.sizeMm / 5), w = Math.max(1, Math.round(baseW * scale)), h = Math.max(1, Math.round(baseH * scale)), source = await getImage(style.baseSrc || layer.src), output = document.createElement("canvas");
-  output.width = w + pad * 2; output.height = h + pad * 2;
+  const style = layer.stickerOffset!;
+  const borders = style.borders?.length ? style.borders : [{ id: "legacy", sizeMm: style.sizeMm, color: style.color }];
+  const scale = DPI * multiplier / 2.54;
+  const totalMm = borders.reduce((sum, border) => sum + border.sizeMm, 0);
+  const totalPad = Math.max(1, Math.round((totalMm / 10) * scale));
+  const baseW = style.baseW || Math.max(.01, layer.w - totalMm / 5), baseH = style.baseH || Math.max(.01, layer.h - totalMm / 5);
+  const w = Math.max(1, Math.round(baseW * scale)), h = Math.max(1, Math.round(baseH * scale));
+  const source = await getImage(style.baseSrc || layer.src), output = document.createElement("canvas");
+  output.width = w + totalPad * 2; output.height = h + totalPad * 2;
   const context = output.getContext("2d")!; context.imageSmoothingEnabled = true; context.imageSmoothingQuality = "high";
-  const steps = Math.max(64, Math.min(256, Math.ceil(pad * Math.PI * 4)));
-  context.fillStyle = style.color;
-  for (let index = 0; index < steps; index++) { const angle = index / steps * Math.PI * 2; context.drawImage(source, pad + Math.cos(angle) * pad, pad + Math.sin(angle) * pad, w, h); }
-  context.globalCompositeOperation = "source-in"; context.fillRect(0, 0, output.width, output.height); context.globalCompositeOperation = "source-over"; context.drawImage(source, pad, pad, w, h);
+  const paintDilated = (radius: number, color: string) => {
+    const mask = document.createElement("canvas"); mask.width = output.width; mask.height = output.height;
+    const mx = mask.getContext("2d")!; mx.imageSmoothingEnabled = true; mx.imageSmoothingQuality = "high";
+    const steps = Math.max(72, Math.min(320, Math.ceil(radius * Math.PI * 4)));
+    for (let index = 0; index < steps; index++) { const angle = index / steps * Math.PI * 2; mx.drawImage(source, totalPad + Math.cos(angle) * radius, totalPad + Math.sin(angle) * radius, w, h); }
+    mx.globalCompositeOperation = "source-in"; mx.fillStyle = color; mx.fillRect(0, 0, mask.width, mask.height);
+    context.drawImage(mask, 0, 0);
+  };
+  let radius = totalPad;
+  for (let index = borders.length - 1; index >= 0; index--) { paintDilated(radius, borders[index].color); radius -= Math.round((borders[index].sizeMm / 10) * scale); }
+  context.drawImage(source, totalPad, totalPad, w, h);
   return output;
 }
 const lighten = (hex: string, amount = 0.34) => {
@@ -1808,6 +1823,7 @@ export default function Home() {
     [pageSize, setPageSize] = useState<PageSize>("a4"),
     [unit, setUnit] = useState<Unit>("cm"),
     [pageColor,setPageColor]=useState<PageColor>("white"),
+    [customPageColor,setCustomPageColor]=useState("#ffffff"),
     [pageSetupOpen, setPageSetupOpen] = useState(false),
     [settingsSection, setSettingsSection] = useState<"size" | "orientation" | "units" | "color" | "grid" | "safe" | "control" | null>(null),
     [controlMode, setControlMode] = useState<"touchpad" | "mouse">("touchpad"),
@@ -1888,6 +1904,8 @@ export default function Home() {
     [imageTab, setImageTab] = useState<"edit" | "background" | "preset" | "sticker">("edit"),
     [stickerSizeMm, setStickerSizeMm] = useState(2),
     [stickerColor, setStickerColor] = useState("#ffffff"),
+    [stickerBorders, setStickerBorders] = useState<{id:string;sizeMm:number;color:string}[]>([{id:uid(),sizeMm:2,color:"#ffffff"}]),
+    [activeStickerBorder, setActiveStickerBorder] = useState(0),
     [imagePreset, setImagePreset] = useState<"image" | "rim" | "text">("image"),
     [imagePresetPreview, setImagePresetPreview] = useState("") ,
     [imagePresetResult, setImagePresetResult] = useState<Layer | null>(null),
@@ -2069,11 +2087,12 @@ export default function Home() {
     try {
       const raw = localStorage.getItem("cake-topper-editor-settings:v1");
       if (raw) {
-        const saved = JSON.parse(raw) as Partial<{ pageMode: PageMode; pageSize: PageSize; unit: Unit; pageColor: PageColor; safeMargin: number; gridVisible: boolean; controlMode: "touchpad" | "mouse" }>;
+        const saved = JSON.parse(raw) as Partial<{ pageMode: PageMode; pageSize: PageSize; unit: Unit; pageColor: PageColor; customPageColor: string; safeMargin: number; gridVisible: boolean; controlMode: "touchpad" | "mouse" }>;
         if (["portrait", "landscape", "full"].includes(saved.pageMode || "")) setPageMode(saved.pageMode!);
         if (["a4", "letter", "a5", "full"].includes(saved.pageSize || "")) setPageSize(saved.pageSize!);
         if (["cm", "in"].includes(saved.unit || "")) setUnit(saved.unit!);
         if (saved.pageColor && Object.hasOwn(PAGE_COLORS, saved.pageColor)) setPageColor(saved.pageColor);
+        if (saved.customPageColor) setCustomPageColor(saved.customPageColor);
         if (typeof saved.safeMargin === "number") setSafeMargin(saved.safeMargin);
         if (typeof saved.gridVisible === "boolean") setGridVisible(saved.gridVisible);
         if (["touchpad", "mouse"].includes(saved.controlMode || "")) setControlMode(saved.controlMode!);
@@ -2083,8 +2102,8 @@ export default function Home() {
   }, []);
   useEffect(() => {
     if (!settingsHydrated) return;
-    localStorage.setItem("cake-topper-editor-settings:v1", JSON.stringify({ pageMode, pageSize, unit, pageColor, safeMargin, gridVisible, controlMode }));
-  }, [settingsHydrated, pageMode, pageSize, unit, pageColor, safeMargin, gridVisible, controlMode]);
+    localStorage.setItem("cake-topper-editor-settings:v1", JSON.stringify({ pageMode, pageSize, unit, pageColor, customPageColor, safeMargin, gridVisible, controlMode }));
+  }, [settingsHydrated, pageMode, pageSize, unit, pageColor, customPageColor, safeMargin, gridVisible, controlMode]);
   useEffect(() => {
     if (suppressLayerLog.current) {
       suppressLayerLog.current = false;
@@ -2374,14 +2393,14 @@ export default function Home() {
   useEffect(() => {
     if (!imageEditor || imageTab !== "sticker") { setStickerPreviewSrc(""); return; }
     const target = layers.find((layer) => layer.id === imageEditor.layerId); if (!target) return;
-    const prior = target.stickerOffset, baseSrc = prior?.baseSrc || imageEditor.source, baseW = prior?.baseW || target.w, baseH = prior?.baseH || target.h;
+    const prior = target.stickerOffset, baseSrc = prior?.baseSrc || imageEditor.source, baseW = prior?.baseW || target.w, baseH = prior?.baseH || target.h, borders = stickerBorders.map((border,index)=>index===activeStickerBorder?{...border,sizeMm:stickerSizeMm,color:stickerColor}:border);
     let cancelled = false;
     const timer = window.setTimeout(() => {
-      const draft: Layer = { ...target, src: baseSrc, w: baseW, h: baseH, stickerOffset: { enabled: true, sizeMm: stickerSizeMm, color: stickerColor, smoothness: .7, baseSrc, baseX: prior?.baseX ?? target.x, baseY: prior?.baseY ?? target.y, baseW, baseH, previewSrc: "" } };
+      const draft: Layer = { ...target, src: baseSrc, w: baseW, h: baseH, stickerOffset: { enabled: true, sizeMm: borders.reduce((sum,border)=>sum+border.sizeMm,0), color: borders[borders.length-1]?.color || stickerColor, smoothness: .7, baseSrc, baseX: prior?.baseX ?? target.x, baseY: prior?.baseY ?? target.y, baseW, baseH, previewSrc: "", borders } };
       void renderStickerOffset(draft, 1).then((canvas) => { if (!cancelled) setStickerPreviewSrc(canvas.toDataURL("image/png")); });
     }, 70);
     return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [imageEditor?.layerId, imageTab, stickerSizeMm, stickerColor]);
+  }, [imageEditor?.layerId, imageTab, stickerSizeMm, stickerColor, stickerBorders, activeStickerBorder]);
   useEffect(() => {
     if (!bgEditor) return;
     let cancelled = false;
@@ -3509,7 +3528,7 @@ export default function Home() {
     setImageEditorSize({ w: 0, h: 0 });
     setImagePresetPreview(""); setImagePresetResult(null);
     setImageTab("edit");
-    if (chosen.stickerOffset?.enabled) { setStickerSizeMm(chosen.stickerOffset.sizeMm); setStickerColor(chosen.stickerOffset.color); }
+    if (chosen.stickerOffset?.enabled) { const borders=chosen.stickerOffset.borders?.length?chosen.stickerOffset.borders:[{id:uid(),sizeMm:chosen.stickerOffset.sizeMm,color:chosen.stickerOffset.color}]; setStickerBorders(borders); setActiveStickerBorder(0); setStickerSizeMm(borders[0].sizeMm); setStickerColor(borders[0].color); } else { const fresh=[{id:uid(),sizeMm:2,color:"#ffffff"}]; setStickerBorders(fresh); setActiveStickerBorder(0); setStickerSizeMm(2); setStickerColor("#ffffff"); }
     setImageEditor({
       layerId: chosen.id,
       source: chosen.stickerOffset?.baseSrc || chosen.src,
@@ -5104,14 +5123,27 @@ export default function Home() {
     mutate(target.id, (layer) => ({ ...layer, src: style.baseSrc || layer.src, x: style.baseX ?? layer.x, y: style.baseY ?? layer.y, w: style.baseW || layer.w, h: style.baseH || layer.h, stickerOffset: undefined }));
     setStickerPreviewSrc(""); setNotice("Sticker offset removed");
   };
+  const removeStickerBorder = (index: number) => {
+    const next = stickerBorders.filter((_, borderIndex) => borderIndex !== index);
+    if (!next.length) { const target=layers.find((layer)=>layer.id===imageEditor?.layerId); if(target) removeStickerStyle(target); setImageTab("edit"); return; }
+    const selectedIndex=Math.min(index,next.length-1); setStickerBorders(next); setActiveStickerBorder(selectedIndex); setStickerSizeMm(next[selectedIndex].sizeMm); setStickerColor(next[selectedIndex].color);
+  };
+  const addStickerBorder = () => {
+    if(stickerBorders.length>=3)return;
+    const current=stickerBorders.map((border,index)=>index===activeStickerBorder?{...border,sizeMm:stickerSizeMm,color:stickerColor}:border), next=[...current,{id:uid(),sizeMm:2,color:"#ffffff"}];
+    setStickerBorders(next); setActiveStickerBorder(next.length-1); setStickerSizeMm(2); setStickerColor("#ffffff");
+  };
+  const selectStickerBorder = (index:number) => {
+    const current=stickerBorders.map((border,borderIndex)=>borderIndex===activeStickerBorder?{...border,sizeMm:stickerSizeMm,color:stickerColor}:border); setStickerBorders(current); setActiveStickerBorder(index); setStickerSizeMm(current[index].sizeMm); setStickerColor(current[index].color);
+  };
   const applyStickerStyle = async () => {
     if (!imageEditor) return;
     const target = layers.find((layer) => layer.id === imageEditor.layerId); if (!target) return;
-    const previous = target.stickerOffset, baseSrc = previous?.baseSrc || target.src, baseX = previous?.baseX ?? target.x, baseY = previous?.baseY ?? target.y, baseW = previous?.baseW || target.w, baseH = previous?.baseH || target.h,
-      draft: Layer = { ...target, src: baseSrc, x: baseX, y: baseY, w: baseW, h: baseH, stickerOffset: { enabled: true, sizeMm: stickerSizeMm, color: stickerColor, smoothness: 0.7, baseSrc, baseX, baseY, baseW, baseH, previewSrc: "" } },
-      previewSrc = (await renderStickerOffset(draft, 1)).toDataURL("image/png"), padCm = stickerSizeMm / 10;
+    const borders=stickerBorders.map((border,index)=>index===activeStickerBorder?{...border,sizeMm:stickerSizeMm,color:stickerColor}:border), previous = target.stickerOffset, baseSrc = previous?.baseSrc || target.src, baseX = previous?.baseX ?? target.x, baseY = previous?.baseY ?? target.y, baseW = previous?.baseW || target.w, baseH = previous?.baseH || target.h,
+      totalMm=borders.reduce((sum,border)=>sum+border.sizeMm,0), draft: Layer = { ...target, src: baseSrc, x: baseX, y: baseY, w: baseW, h: baseH, stickerOffset: { enabled: true, sizeMm: totalMm, color: borders[borders.length-1]?.color || stickerColor, smoothness: 0.7, baseSrc, baseX, baseY, baseW, baseH, previewSrc: "", borders } },
+      previewSrc = (await renderStickerOffset(draft, 1)).toDataURL("image/png"), padCm = totalMm / 10;
     mutate(target.id, (layer) => ({ ...layer, src: baseSrc, x: baseX - padCm, y: baseY - padCm, w: baseW + padCm * 2, h: baseH + padCm * 2, stickerOffset: { ...draft.stickerOffset!, previewSrc } }));
-    addSessionLog("Sticker offset applied", `${target.name} · ${stickerSizeMm.toFixed(1)} mm · ${stickerColor}`); setImageEditor(null); setBgEditor(null); setNotice("Editable sticker offset applied");
+    addSessionLog("Sticker borders applied", `${target.name} · ${borders.length} border${borders.length===1?"":"s"}`); setImageEditor(null); setBgEditor(null); setNotice("Editable sticker borders applied");
   };
   const bakeStickerImage = async () => {
     if (!one?.stickerOffset?.enabled) return;
@@ -5388,7 +5420,7 @@ export default function Home() {
           {one && ["vector", "stroke"].includes(one.kind) && <><button type="button" className="primary" onClick={() => openCutoutEditor()}><Scissors /> Edit Cut Shape</button><button type="button" onClick={() => void addStroke()}><Scissors /> Add Outline as Cut Shape</button></>}
           {!one && <><button disabled><Sparkles/> Remove Background</button><button disabled><Scissors/> Create Cut Shape</button><button disabled><Sparkles/> Add Sticker Border to Image</button><button disabled><Scissors/> Add Outline as Cut Shape</button></>}
         </nav>
-        <div className="export-actions" aria-label="Export options">
+        <div className="export-actions" aria-label="Export options"><span className="export-as-label">Export As:</span>
           {picked.length > 1 && canSVG && (
             <button className="multiple-svg" onClick={() => void exportSVG()} title="Export every selected Cutout as a separate SVG file">
               <Type /> Multiple SVG
@@ -5453,7 +5485,7 @@ export default function Home() {
                     Page Color <ChevronDown />
                   </button>
                   <div className={`setup-submenu page-color-submenu ${settingsSection === "color" ? "open" : ""}`}>
-                    {(Object.keys(PAGE_COLORS) as PageColor[]).map(value=><button key={value} className={pageColor===value?"active":""} onClick={()=>{setPageColor(value);setPageSetupOpen(false)}}><i style={{background:PAGE_COLORS[value].color}} className={value==="canson"?"paper-swatch":""}/><b>{PAGE_COLORS[value].label}</b></button>)}
+                    {(Object.keys(PAGE_COLORS) as PageColor[]).filter(value=>value!=="custom").map(value=><button key={value} className={pageColor===value?"active":""} onClick={()=>{setPageColor(value);setPageSetupOpen(false)}}><i style={{background:PAGE_COLORS[value].color}} className={value==="canson"?"paper-swatch":""}/><b>{PAGE_COLORS[value].label}</b></button>)}<div className="page-color-divider"/><label className={`custom-page-color ${pageColor==="custom"?"active":""}`}><i style={{background:customPageColor}}/><b>Choose Color</b><div className="custom-page-palette">{COLORS.map(color=><button key={color} type="button" style={{background:color}} onClick={(event)=>{event.preventDefault();setCustomPageColor(color);setPageColor("custom");setPageSetupOpen(false)}} aria-label={`Use ${color} for page`}/>)}</div><input title="Choose a custom page color" type="color" value={customPageColor} onChange={(event)=>{setCustomPageColor(event.target.value);setPageColor("custom")}}/></label>
                   </div>
                 </div>
                 <div className="setup-group">
@@ -5786,9 +5818,10 @@ export default function Home() {
                 top: 42,
                 width: A4.w * scale,
                 height: A4.h * scale,
-                backgroundColor:PAGE_COLORS[pageColor].color,
+                backgroundColor:pageColor === "custom" ? customPageColor : PAGE_COLORS[pageColor].color,
                 backgroundImage: canvasBackgroundImage,
                 backgroundSize: canvasBackgroundSize,
+                "--ui-inverse-zoom": String(Math.min(1 / zoom, 1.8)),
               }}
             >
               <div
@@ -5800,7 +5833,7 @@ export default function Home() {
                   height: SAFE.h * scale,
                 }}
               >
-                <span>SAFE AREA · {unit === "cm" ? safeMargin : (safeMargin / 2.54).toFixed(2)} {unit.toUpperCase()}</span>
+                <span style={{fontSize:`${zoom<.5?Math.max(5,8*zoom/.5):zoom>5?Math.min(13,8+(zoom-5)*.8):8}px`}}>SAFE AREA · {unit === "cm" ? safeMargin : (safeMargin / 2.54).toFixed(2)} {unit.toUpperCase()}</span>
               </div>
               {layers
                 .filter((l) => l.visible && !l.groupHidden)
@@ -5995,7 +6028,7 @@ export default function Home() {
               </>
             }
           </div>
-          <div className={`layer-properties-panel ${one?"enabled":"disabled-panel"}`}><div className="side-tool-title"><b>Layer Properties</b><small>Selected artwork</small></div>{one?<><dl><div className="property-type-row"><dt>{["vector","stroke"].includes(one.kind)?<Scissors/>:<ImageIcon/>}</dt><dd><b>{["vector","stroke"].includes(one.kind)?"Cut Shape":"Printable Image"}</b><small>{one.sourceFormat||(one.kind==="vector"||one.kind==="stroke"?"SVG":"PNG")}</small></dd></div>{one.weldedSources?.length&&<div><dt>Weld</dt><dd>Editable · {one.weldedSources.length} sources</dd></div>}</dl><div className="property-edit-list">{one.stickerOffset?.enabled&&<div className="sticker-layer-style" onDoubleClick={()=>{openImageEditor(one);setImageTab("sticker")}}><span className="sticker-style-swatch" style={{background:one.stickerOffset.color}}/><button className="sticker-style-name" onClick={()=>{openImageEditor(one);window.setTimeout(()=>setImageTab("sticker"),0)}}><b>Sticker Offset</b><small>{one.stickerOffset.sizeMm.toFixed(1)} mm</small></button><button className="sticker-style-remove" onClick={()=>removeStickerStyle(one)}>×</button></div>}{one.steps.map((step,index)=><div key={step.id} className={`style-step ${index>one.activeStep?"step-off":""}`}><button className="step-eye" onClick={()=>showStep(one,index)}>{index<=one.activeStep?<Eye/>:<EyeOff/>}</button><span onClick={()=>showStep(one,index)}>{step.label}</span>{!step.locked&&<button className="step-remove" onClick={()=>removeStep(one,index)}>×</button>}</div>)}{!one.steps.length&&!one.stickerOffset?.enabled&&<span className="property-no-edits">No layer edits yet</span>}</div></>:<p>Select a layer to view its properties.</p>}</div>
+          <div className={`layer-properties-panel ${one?"enabled":"disabled-panel"}`}><div className="side-tool-title"><b>Layer Properties</b><small>Selected artwork</small></div>{one?<><dl><div className="property-type-row"><dt>{["vector","stroke"].includes(one.kind)?<Scissors/>:<ImageIcon/>}</dt><dd><b>{["vector","stroke"].includes(one.kind)?"Cut Shape":"Printable Image"}</b><small>{one.sourceFormat||(one.kind==="vector"||one.kind==="stroke"?"SVG":"PNG")}</small></dd></div>{one.weldedSources?.length&&<div><dt>Weld</dt><dd>Editable · {one.weldedSources.length} sources</dd></div>}</dl><div className="property-edit-heading">Edit History</div><div className="property-edit-list">{one.stickerOffset?.enabled&&<div className="sticker-layer-style" onDoubleClick={()=>{openImageEditor(one);setImageTab("sticker")}}><span className="sticker-style-swatch" style={{background:one.stickerOffset.color}}/><button className="sticker-style-name" onClick={()=>{openImageEditor(one);window.setTimeout(()=>setImageTab("sticker"),0)}}><b>Sticker Offset</b><small>{one.stickerOffset.sizeMm.toFixed(1)} mm</small></button><button className="sticker-style-remove" onClick={()=>removeStickerStyle(one)}>×</button></div>}{one.steps.map((step,index)=><div key={step.id} className={`style-step ${index>one.activeStep?"step-off":""}`}><button className="step-eye" onClick={()=>showStep(one,index)}>{index<=one.activeStep?<Eye/>:<EyeOff/>}</button><span onClick={()=>showStep(one,index)}>{step.label}</span>{!step.locked&&<button className="step-remove" onClick={()=>removeStep(one,index)}>×</button>}</div>)}{!one.steps.length&&!one.stickerOffset?.enabled&&<span className="property-no-edits">No layer edits yet</span>}</div></>:<p>Select a layer to view its properties.</p>}</div>
           {
             <div className={`finalize-tool legacy-gap-panel ${!one || !["vector", "stroke"].includes(one.kind) ? "cut-option-disabled" : ""}`}>
               <div className="side-tool-title">
@@ -6357,7 +6390,7 @@ export default function Home() {
                   createNewProject();
                 }}
               >
-                OK
+                New Project
               </button>
             </footer>
           </div>
@@ -6570,8 +6603,8 @@ export default function Home() {
                 <div className="text-compose-row">
                   <div className="text-compose-fields">
                     <div className="text-line-inputs">
-                      {Array.from({length:textLineCount},(_,index)=><label key={index}>Line {index+1}<input value={textLines[index]} placeholder={textPlaceholders(textLineCount)[index]} onChange={(e)=>setTextLines((lines)=>lines.map((line,lineIndex)=>lineIndex===index?e.target.value:line))}/></label>)}
                       <div className="line-actions"><button disabled={textLineCount>=4} onClick={()=>setTextLineCount(Math.min(4,textLineCount+1) as 1|2|3|4)}><Plus/> Add line</button><button disabled={textLineCount<=1} onClick={()=>setTextLineCount(Math.max(1,textLineCount-1) as 1|2|3|4)}>− Remove line</button></div>
+                      <div className="line-field-stack">{Array.from({length:textLineCount},(_,index)=><label key={index}>Line {index+1}<input value={textLines[index]} placeholder={textPlaceholders(textLineCount)[index]} onChange={(e)=>setTextLines((lines)=>lines.map((line,lineIndex)=>lineIndex===index?e.target.value:line))}/></label>)}</div>
                     </div>
                     <small className="effective-lines">{activeTextLines.length || textLineCount} line{(activeTextLines.length || textLineCount) === 1 ? "" : "s"} will be generated{activeTextLines.length < textLineCount && activeTextLines.length > 0 ? " — empty lines are ignored" : ""}.</small>
                   </div>
@@ -6582,7 +6615,7 @@ export default function Home() {
                 </div></section>
                 <section className="letter-details-section">
                   <button className="optional-prompt-toggle" onClick={()=>setTextDetailsOpen((open)=>!open)}><span><b>Extra Prompt</b><small>Optional instructions for decorative lettering</small></span><ChevronDown className={textDetailsOpen?"open":""}/></button>
-                  {textDetailsOpen&&<label>Extra Prompt<textarea value={textExtraPrompt} onChange={(e)=>setTextExtraPrompt(e.target.value)} placeholder="For example: Add a small heart above the S, or extend the tail of the final a." maxLength={240}/><small>{textExtraPrompt.length}/240 · Describe letter details only; the line text above stays unchanged.</small></label>}
+                  {textDetailsOpen&&<label className="extra-prompt-field"><textarea value={textExtraPrompt} onChange={(e)=>setTextExtraPrompt(e.target.value)} placeholder="For example: Add a small heart above the S, or extend the tail of the final a." maxLength={240}/><small>{textExtraPrompt.length}/240 · Describe letter details only; the line text above stays unchanged.</small></label>}
                 </section>
                 <label className="sticker-toggle connect-everything-toggle"><input type="checkbox" checked={connectEverything} onChange={(event)=>setConnectEverything(event.target.checked)}/><span/><b>Connect Everything</b><small>Join every letter and word into one cuttable piece with connections at least 10 px / approximately 1 mm thick</small></label>
                 <div className="text-create-actions">
@@ -7063,13 +7096,11 @@ export default function Home() {
                     <div className="sticker-offset-body">
                       <div className="sticker-offset-preview"><img src={stickerPreviewSrc || imageEditor.source} alt="Sticker offset preview" /></div>
                       <aside className="sticker-offset-controls">
-                        <h3>Add Sticker Border to Image</h3><p>Add a smooth, editable border around the image. It stays proportional in physical units and is baked into PNG exports.</p>
-                        <label>Offset width <b>{stickerSizeMm.toFixed(1)} mm</b></label><input type="range" min="0.5" max="15" step="0.5" value={stickerSizeMm} onChange={(event)=>setStickerSizeMm(+event.target.value)} />
-                        <label>Offset color</label><div className="sticker-color-palette">{COLORS.map((color)=><button key={color} className={stickerColor.toLowerCase()===color.toLowerCase()?"active":""} style={{background:color}} onClick={()=>setStickerColor(color)} aria-label={`Use ${color}`}/>)}</div><button className="pick-color-button large" onClick={()=>void pickStickerColor()}><Pipette/> Pick color from image</button><button className="advanced-color-toggle" onClick={()=>setStickerAdvancedColor(value=>!value)}>Advanced color <ChevronDown className={stickerAdvancedColor?"open":""}/></button>{stickerAdvancedColor&&<div className="advanced-color-panel"><input type="color" value={stickerColor} onChange={(event)=>setStickerColor(event.target.value)}/><span style={{background:stickerColor}}/><input value={stickerColor} onChange={(event)=>setStickerColor(event.target.value)}/></div>}
-                        {target?.stickerOffset?.enabled && <button className="remove-sticker-style" onClick={()=>removeStickerStyle(target)}><Trash2/> Remove current offset</button>}
+                        <h3>Add Sticker Border to Image</h3><p>Add up to three smooth, editable borders. They remain parametric until export or Bake Image.</p>
+                        <div className="sticker-border-stack">{stickerBorders.map((border,index)=><section key={border.id} className={`sticker-border-card ${activeStickerBorder===index?"open":""}`}><button className="sticker-border-heading" onClick={()=>selectStickerBorder(index)}><span><i style={{background:border.color}}/><b>Border {index+1}</b></span><small>{(activeStickerBorder===index?stickerSizeMm:border.sizeMm).toFixed(1)} mm</small><ChevronDown/></button>{activeStickerBorder===index&&<div className="sticker-border-fields"><label>Offset width <b>{stickerSizeMm.toFixed(1)} mm</b></label><input type="range" min="0.5" max="15" step="0.5" value={stickerSizeMm} onChange={(event)=>setStickerSizeMm(+event.target.value)} /><label>Offset color</label><div className="sticker-color-palette">{COLORS.map((color)=><button key={color} className={stickerColor.toLowerCase()===color.toLowerCase()?"active":""} style={{background:color}} onClick={()=>setStickerColor(color)} aria-label={`Use ${color}`}/>)}</div><div className="sticker-color-actions"><i className="selected-color-sample" style={{background:stickerColor}}/><button className="pick-color-button large" onClick={()=>void pickStickerColor()}><Pipette/> Pick color from image</button><button className="advanced-color-toggle" onClick={()=>setStickerAdvancedColor(value=>!value)}>Advanced Color <ChevronDown className={stickerAdvancedColor?"open":""}/></button></div>{stickerAdvancedColor&&<div className="advanced-color-panel"><input type="color" value={stickerColor} onChange={(event)=>setStickerColor(event.target.value)}/><span style={{background:stickerColor}}/><input value={stickerColor} onChange={(event)=>setStickerColor(event.target.value)}/></div>}<div className="sticker-border-actions"><button className="remove-sticker-style" onClick={()=>removeStickerBorder(index)}><Trash2/> Remove Offset</button>{stickerBorders.length<3&&<button className="add-sticker-border" onClick={addStickerBorder}><Plus/> Add Offset</button>}</div></div>}</section>)}</div>
                       </aside>
                     </div>
-                    <footer><span className="footer-spacer"/><button className="cancel" onClick={()=>setImageTab("edit")}>Back</button><button className="confirm" onClick={()=>void applyStickerStyle()}><Sparkles/> Apply Sticker Border to Image</button></footer>
+                    <footer><span className="footer-spacer"/><button className="cancel" onClick={()=>setImageTab("edit")}>Back</button><button className="confirm" onClick={()=>void applyStickerStyle()}><Sparkles/> Apply Border</button></footer>
                   </>
                 ) : imageTab === "preset" ? (
                   <>
@@ -7756,7 +7787,7 @@ export default function Home() {
                 Cancel
               </button>
               <button className="confirm" disabled={!bgPreview} onClick={() => void commitBackground()}>
-                OK
+                Apply
               </button>
             </footer>
           </div>
