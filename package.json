@@ -1,6 +1,6 @@
 {
   "name": "better-cricut-editor",
-  "version": "1.12.2",
+  "version": "1.13.0",
   "private": true,
   "engines": {
     "node": ">=22.13.0"

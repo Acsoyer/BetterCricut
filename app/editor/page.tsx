@@ -139,7 +139,7 @@ type Unit = "cm" | "in";
 type PageColor = "white" | "offwhite" | "warm" | "lightgray" | "darkgray" | "canson" | "custom";
 const PAGE_COLORS: Record<PageColor, { label: string; color: string }> = {
   white: { label: "White", color: "#ffffff" },
-  offwhite: { label: "Broken White", color: "#fffdf7" },
+  offwhite: { label: "Off-White", color: "#fffdf7" },
   warm: { label: "Warm White", color: "#fff6dc" },
   lightgray: { label: "Light Gray", color: "#e7e9e8" },
   darkgray: { label: "Dark Gray", color: "#777d7a" },
@@ -1170,19 +1170,20 @@ async function renderCutoutEdit(editor: CutoutEditor, applyCrop = false) {
   // Keep vector edits independent from the browser's arbitrary SVG preview size.
   const vectorSource = editor.source.startsWith("data:image/svg+xml"),
     workingScale = vectorSource ? Math.max(1, 3200 / Math.max(img.naturalWidth, img.naturalHeight, 1)) : 1;
-  c.width = Math.max(1, Math.round(img.naturalWidth * workingScale));
-  c.height = Math.max(1, Math.round(img.naturalHeight * workingScale));
+  const baseWidth = Math.max(1, Math.round(img.naturalWidth * workingScale)), baseHeight = Math.max(1, Math.round(img.naturalHeight * workingScale)), padX = Math.round(baseWidth * .1), padY = Math.round(baseHeight * .1);
+  c.width = baseWidth + padX * 2;
+  c.height = baseHeight + padY * 2;
   const x = c.getContext("2d")!;
   x.imageSmoothingEnabled = true;
   x.imageSmoothingQuality = "high";
-  x.drawImage(img, 0, 0, c.width, c.height);
+  x.drawImage(img, padX, padY, baseWidth, baseHeight);
   for (const stroke of editor.strokes) {
     if (!stroke.points.length) continue;
     if (stroke.tool === "smooth") continue;
     x.save();
     x.lineCap = "round";
     x.lineJoin = "round";
-    x.lineWidth = Math.max(2, (stroke.brush / 100) * Math.min(c.width, c.height));
+    x.lineWidth = Math.max(2, (stroke.brush / 100) * Math.min(baseWidth, baseHeight));
     if (stroke.tool === "bridge") {
       x.globalCompositeOperation = "source-over";
       x.strokeStyle = editor.color;
@@ -1193,18 +1194,18 @@ async function renderCutoutEdit(editor: CutoutEditor, applyCrop = false) {
       x.fillStyle = "#000";
     }
     x.beginPath();
-    x.moveTo(stroke.points[0].x * c.width, stroke.points[0].y * c.height);
-    for (const p of stroke.points.slice(1)) x.lineTo(p.x * c.width, p.y * c.height);
+    x.moveTo((stroke.points[0].x + .1) * baseWidth, (stroke.points[0].y + .1) * baseHeight);
+    for (const p of stroke.points.slice(1)) x.lineTo((p.x + .1) * baseWidth, (p.y + .1) * baseHeight);
     if (stroke.tool === "rectangle" && stroke.points.length > 1) {
       const a = stroke.points[0],
         z = stroke.points.at(-1)!;
-      x.fillRect(Math.min(a.x, z.x) * c.width, Math.min(a.y, z.y) * c.height, Math.abs(z.x - a.x) * c.width, Math.abs(z.y - a.y) * c.height);
+      x.fillRect((Math.min(a.x, z.x) + .1) * baseWidth, (Math.min(a.y, z.y) + .1) * baseHeight, Math.abs(z.x - a.x) * baseWidth, Math.abs(z.y - a.y) * baseHeight);
     } else if (stroke.tool === "lasso" && stroke.points.length > 2) {
       x.closePath();
       x.fill();
     } else if (stroke.points.length === 1) {
       const p = stroke.points[0];
-      x.arc(p.x * c.width, p.y * c.height, x.lineWidth / 2, 0, Math.PI * 2);
+      x.arc((p.x + .1) * baseWidth, (p.y + .1) * baseHeight, x.lineWidth / 2, 0, Math.PI * 2);
       x.fill();
     } else x.stroke();
     x.restore();
@@ -1219,7 +1220,7 @@ async function renderCutoutEdit(editor: CutoutEditor, applyCrop = false) {
     maskContext.lineCap = "round";
     maskContext.lineJoin = "round";
     maskContext.strokeStyle = "#fff";
-    maskContext.lineWidth = Math.max(4, (stroke.brush / 100) * Math.min(c.width, c.height));
+    maskContext.lineWidth = Math.max(4, (stroke.brush / 100) * Math.min(baseWidth, baseHeight));
     const trajectory = stroke.points.map((point, index, points) => {
       if (index === 0 || index === points.length - 1) return point;
       const from = Math.max(0, index - 3),
@@ -1231,9 +1232,9 @@ async function renderCutoutEdit(editor: CutoutEditor, applyCrop = false) {
       };
     });
     maskContext.beginPath();
-    maskContext.moveTo(trajectory[0].x * c.width, trajectory[0].y * c.height);
-    for (const point of trajectory.slice(1)) maskContext.lineTo(point.x * c.width, point.y * c.height);
-    if (stroke.points.length === 1) maskContext.lineTo(stroke.points[0].x * c.width + 0.01, stroke.points[0].y * c.height);
+    maskContext.moveTo((trajectory[0].x + .1) * baseWidth, (trajectory[0].y + .1) * baseHeight);
+    for (const point of trajectory.slice(1)) maskContext.lineTo((point.x + .1) * baseWidth, (point.y + .1) * baseHeight);
+    if (stroke.points.length === 1) maskContext.lineTo((stroke.points[0].x + .1) * baseWidth + 0.01, (stroke.points[0].y + .1) * baseHeight);
     maskContext.stroke();
     softContext.filter = `blur(${Math.max(4, maskContext.lineWidth * 0.2)}px)`;
     softContext.drawImage(c, 0, 0);
@@ -1289,7 +1290,7 @@ async function renderCutoutEdit(editor: CutoutEditor, applyCrop = false) {
       }
     }
   x.putImageData(outlined, 0, 0);
-  if (!applyCrop) return { src: c.toDataURL(), left: 0, top: 0, width: 1, height: 1 };
+  if (!applyCrop) return { src: c.toDataURL(), left: -.1, top: -.1, width: 1.2, height: 1.2 };
   const l = clamp(editor.crop.left / 100, 0, 0.9),
     t = clamp(editor.crop.top / 100, 0, 0.9),
     r = clamp(editor.crop.right / 100, 0, Math.max(0, 0.95 - l)),
@@ -3304,14 +3305,14 @@ export default function Home() {
       smoothPasses: 0,
     });
   };
-  const cutPoint = (e: RPointer<HTMLImageElement>) => {
+  const cutPoint = (e: RPointer<HTMLElement>) => {
     const r = e.currentTarget.getBoundingClientRect();
     return {
-      x: clamp((e.clientX - r.left) / r.width, 0, 1),
-      y: clamp((e.clientY - r.top) / r.height, 0, 1),
+      x: clamp(((e.clientX - r.left) / r.width) * 1.2 - 0.1, -0.1, 1.1),
+      y: clamp(((e.clientY - r.top) / r.height) * 1.2 - 0.1, -0.1, 1.1),
     };
   };
-  const startCutEdit = (e: RPointer<HTMLImageElement>) => {
+  const startCutEdit = (e: RPointer<HTMLElement>) => {
     if (!cutEditor || !cutEditor.tool || e.button !== 0) return;
     e.preventDefault();
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -3329,10 +3330,11 @@ export default function Home() {
     cutDraftStroke.current = stroke;
     if (cutLivePathRef.current) {
       cutLivePathRef.current.setAttribute("class", `edit-brush-stroke ${stroke.tool}`);
-      cutLivePathRef.current.setAttribute("points", `${stroke.points[0].x * cutImageSize.w},${stroke.points[0].y * cutImageSize.h}`);
+      const surfaceScale = cutEditor.strokes.length ? 1 : 1.2;
+      cutLivePathRef.current.setAttribute("points", `${((stroke.points[0].x+.1)/1.2) * cutImageSize.w * surfaceScale},${((stroke.points[0].y+.1)/1.2) * cutImageSize.h * surfaceScale}`);
     }
   };
-  const moveCutEdit = (e: RPointer<HTMLImageElement>) => {
+  const moveCutEdit = (e: RPointer<HTMLElement>) => {
     if (!cutEditor) return;
     const cursor = cutPoint(e);
     if (cutCursorRef.current) {
@@ -3352,13 +3354,14 @@ export default function Home() {
       if (!current) return;
       const shownPoints = ["bridge","erase"].includes(current.tool) ? smoothBrushPoints(current.points,smoothing) : current.points,
         first = shownPoints[0], lastPoint = shownPoints.at(-1)!;
+      const surfaceScale = cutEditor.strokes.length ? 1 : 1.2;
       if (current.tool === "rectangle" && cutLiveRectRef.current) {
-        cutLiveRectRef.current.setAttribute("x", String(Math.min(first.x, lastPoint.x) * cutImageSize.w));
-        cutLiveRectRef.current.setAttribute("y", String(Math.min(first.y, lastPoint.y) * cutImageSize.h));
-        cutLiveRectRef.current.setAttribute("width", String(Math.abs(lastPoint.x - first.x) * cutImageSize.w));
-        cutLiveRectRef.current.setAttribute("height", String(Math.abs(lastPoint.y - first.y) * cutImageSize.h));
+        cutLiveRectRef.current.setAttribute("x", String(((Math.min(first.x, lastPoint.x)+.1)/1.2) * cutImageSize.w * surfaceScale));
+        cutLiveRectRef.current.setAttribute("y", String(((Math.min(first.y, lastPoint.y)+.1)/1.2) * cutImageSize.h * surfaceScale));
+        cutLiveRectRef.current.setAttribute("width", String((Math.abs(lastPoint.x - first.x)/1.2) * cutImageSize.w * surfaceScale));
+        cutLiveRectRef.current.setAttribute("height", String((Math.abs(lastPoint.y - first.y)/1.2) * cutImageSize.h * surfaceScale));
         cutLiveRectRef.current.style.display = "block";
-      } else if (cutLivePathRef.current) cutLivePathRef.current.setAttribute("points", shownPoints.map((point) => `${point.x * cutImageSize.w},${point.y * cutImageSize.h}`).join(" "));
+      } else if (cutLivePathRef.current) cutLivePathRef.current.setAttribute("points", shownPoints.map((point) => `${((point.x+.1)/1.2) * cutImageSize.w * surfaceScale},${((point.y+.1)/1.2) * cutImageSize.h * surfaceScale}`).join(" "));
     });
   };
   const endCutEdit = () => {
@@ -5448,7 +5451,7 @@ export default function Home() {
               <div className="pop page-setup-menu setup-root">
                 <div className="setup-group">
                   <button onClick={()=>setSettingsSection(settingsSection === "size" ? null : "size")}>
-                    Page Size <ChevronDown />
+                    Page Size <small className="setting-current">{PAGE_SIZES[pageSize].label}</small><ChevronDown />
                   </button>
                   <div className={`setup-submenu ${settingsSection === "size" ? "open" : ""}`}>
                     {(["a4", "letter", "a5", "full"] as PageSize[]).map((size) => (
@@ -5470,20 +5473,20 @@ export default function Home() {
                   </div>
                 </div>
                 <div className="setup-group">
-                  <button onClick={()=>setSettingsSection(settingsSection === "orientation" ? null : "orientation")}>Orientation <ChevronDown /></button>
+                  <button onClick={()=>setSettingsSection(settingsSection === "orientation" ? null : "orientation")}>Orientation <small className="setting-current orientation-mark">{pageMode === "landscape" ? "▭" : "▯"}</small><ChevronDown /></button>
                   <div className={`setup-submenu ${settingsSection === "orientation" ? "open" : ""}`}>
                     {(["portrait", "landscape"] as const).map((orientation) => <button key={orientation} disabled={pageSize === "full"} className={pageMode === orientation ? "active" : ""} onClick={() => { setPageMode(orientation); setPageSetupOpen(false); setSelected([]); }}><b>{orientation === "portrait" ? "Portrait" : "Landscape"}</b></button>)}
                   </div>
                 </div>
                 <div className="setup-group">
-                  <button onClick={()=>setSettingsSection(settingsSection === "units" ? null : "units")}>Units <ChevronDown /></button>
+                  <button onClick={()=>setSettingsSection(settingsSection === "units" ? null : "units")}>Units <small className="setting-current">{unit}</small><ChevronDown /></button>
                   <div className={`setup-submenu ${settingsSection === "units" ? "open" : ""}`}>
                     {(["cm", "in"] as Unit[]).map((value) => <button key={value} className={unit === value ? "active" : ""} onClick={() => { setUnit(value); setPageSetupOpen(false); }}><b>{value === "cm" ? "Centimeters" : "Inches"}</b></button>)}
                   </div>
                 </div>
                 <div className="setup-group page-color-group">
                   <button onClick={()=>setSettingsSection(settingsSection === "color" ? null : "color")}>
-                    Page Color <ChevronDown />
+                    Page Color <i className="setting-color-dot" style={{background:pageColor==="custom"?customPageColor:PAGE_COLORS[pageColor].color}}/><ChevronDown />
                   </button>
                   <div className={`setup-submenu page-color-submenu ${settingsSection === "color" ? "open" : ""}`}>
                     {(Object.keys(PAGE_COLORS) as PageColor[]).filter(value=>value!=="custom").map(value=><button key={value} className={pageColor===value?"active":""} onClick={()=>{setPageColor(value);setPageSetupOpen(false)}}><i style={{background:PAGE_COLORS[value].color}} className={value==="canson"?"paper-swatch":""}/><b>{PAGE_COLORS[value].label}</b></button>)}<div className="page-color-divider"/><label className={`custom-page-color ${pageColor==="custom"?"active":""}`}><i style={{background:customPageColor}}/><b>Choose Color</b><div className="custom-page-palette">{COLORS.map(color=><button key={color} type="button" style={{"--swatch":color,background:color} as React.CSSProperties} onClick={(event)=>{event.preventDefault();setCustomPageColor(color);setPageColor("custom");setPageSetupOpen(false)}} aria-label={`Use ${color} for page`}/>)}</div><input title="Choose a custom page color" type="color" value={customPageColor} onChange={(event)=>{setCustomPageColor(event.target.value);setPageColor("custom")}}/></label>
@@ -5491,7 +5494,7 @@ export default function Home() {
                 </div>
                 <div className="setup-group">
                   <button onClick={()=>setSettingsSection(settingsSection === "grid" ? null : "grid")}>
-                    Grid <ChevronDown />
+                    Grid <small className="setting-current">{gridVisible?"On":"Off"}</small><ChevronDown />
                   </button>
                   <div className={`setup-submenu ${settingsSection === "grid" ? "open" : ""}`}>
                     <button
@@ -5515,7 +5518,7 @@ export default function Home() {
                   </div>
                 </div>
                 <div className="setup-group control-group">
-                  <button onClick={()=>setSettingsSection(settingsSection === "control" ? null : "control")}>Control <ChevronDown /></button>
+                  <button onClick={()=>setSettingsSection(settingsSection === "control" ? null : "control")}>Control <small className="setting-current">{controlMode === "mouse" ? "Mouse" : "Touch"}</small><ChevronDown /></button>
                   <div className={`setup-submenu ${settingsSection === "control" ? "open" : ""}`}>
                     <button className={controlMode === "touchpad" ? "active" : ""} onClick={()=>{setControlMode("touchpad");setPageSetupOpen(false);setSettingsSection(null)}}><b>Touchpad</b><span>Two-finger pan · pinch zoom</span></button>
                     <button className={controlMode === "mouse" ? "active" : ""} onClick={()=>{setControlMode("mouse");setPageSetupOpen(false);setSettingsSection(null)}}><b>Mouse</b><span>Wheel zoom · Ctrl+wheel scroll</span></button>
@@ -5523,7 +5526,7 @@ export default function Home() {
                 </div>
                 <div className="setup-group">
                   <button onClick={()=>setSettingsSection(settingsSection === "safe" ? null : "safe")}>
-                    Safe Area <ChevronDown />
+                    Safe Area <small className="setting-current">{unit === "cm" ? `${safeMargin} cm` : `${(safeMargin/2.54).toFixed(2)} in`}</small><ChevronDown />
                   </button>
                   <div className={`setup-submenu ${settingsSection === "safe" ? "open" : ""}`}>
                     {[0, 0.5, 1].map((margin) => (
@@ -7366,7 +7369,7 @@ export default function Home() {
               <div className="bg-preview cutout-preview" ref={cutPreviewRef} onWheel={zoomCutout} onPointerDown={startCutoutPan} onPointerMove={moveCutoutPan} onPointerUp={endCutoutPan} onPointerCancel={endCutoutPan}>
                 {cutPreview && (
                   <div
-                    className="cut-image-wrap"
+                    className={`cut-image-wrap ${cutEditor.strokes.length ? "has-edit-padding" : "initial-edit-padding"}`} onPointerDown={startCutEdit} onPointerMove={moveCutEdit} onPointerUp={endCutEdit} onPointerCancel={endCutEdit} onPointerEnter={() => setCutCursor((v) => ({ ...v, visible: true }))} onPointerLeave={() => setCutCursor((v) => ({ ...v, visible: false }))}
                     style={
                       {
                         "--fit-w": cutImageSize.w ? `${cutImageSize.w}px` : "auto",
@@ -7376,9 +7379,9 @@ export default function Home() {
                       } as React.CSSProperties
                     }
                   >
-                    <img className={`cut-tool-${cutEditor.tool} cutout-edge-preview`} src={cutPreview} alt="Cutout edit preview" draggable={false} onLoad={(e) => setCutImageSize(fitEditorImage(e.currentTarget, cutPreviewRef.current))} onPointerDown={startCutEdit} onPointerMove={moveCutEdit} onPointerUp={endCutEdit} onPointerCancel={endCutEdit} onPointerEnter={() => setCutCursor((v) => ({ ...v, visible: true }))} onPointerLeave={() => setCutCursor((v) => ({ ...v, visible: false }))} />
+                    <img className={`cut-tool-${cutEditor.tool} cutout-edge-preview`} src={cutPreview} alt="Cutout edit preview" draggable={false} onLoad={(e) => setCutImageSize(fitEditorImage(e.currentTarget, cutPreviewRef.current))} />
                     {cutEdgeOverlay && <img className="cut-selected-edge" src={cutEdgeOverlay} alt="" draggable={false} />}
-                    <svg className="cut-edit-overlay" viewBox={`0 0 ${cutImageSize.w || 100} ${cutImageSize.h || 100}`} preserveAspectRatio="none">
+                    <svg className="cut-edit-overlay" viewBox={`0 0 ${(cutImageSize.w || 100) * (cutEditor.strokes.length ? 1 : 1.2)} ${(cutImageSize.h || 100) * (cutEditor.strokes.length ? 1 : 1.2)}`} preserveAspectRatio="none">
                       <polyline ref={cutLivePathRef} points="" className="edit-brush-stroke" style={{ strokeWidth: (cutEditor.brush / cutEditor.zoom / 100) * Math.min(cutImageSize.w || 100, cutImageSize.h || 100) }} />
                       <rect ref={cutLiveRectRef} className="eraser-selection" style={{ display: "none" }} />
                     </svg>
