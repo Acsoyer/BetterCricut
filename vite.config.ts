@@ -26,6 +26,17 @@ export default defineConfig(async () => {
       ? { watch: { useFsEvents: false, usePolling: true } }
       : undefined,
     plugins: [
+      // Paper is used only inside browser edit actions. Strip its optional
+      // Node canvas adapters so SSR does not resolve jsdom/canvas dependencies.
+      {
+        name: 'paper-browser-only',
+        enforce: 'pre' as const,
+        transform(code: string, id: string) {
+          if (!/[/\\]paper[/\\]dist[/\\]paper-full\.js(?:\?|$)/.test(id)) return;
+          return code.replace("self = self || require('./node/self.js');", 'self = self || { navigator: { userAgent: "" } };')
+            .replace(/if \(paper\.agent\.node\) \{\s*require\('\.\/node\/extend\.js'\)\(paper\);\s*\}/, '');
+        },
+      },
       vinext(),
       cloudflare({
         viteEnvironment: { name: 'rsc', childEnvironments: ['ssr'] },

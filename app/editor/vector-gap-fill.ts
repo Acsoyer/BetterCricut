@@ -1,3 +1,4 @@
+import { absoluteSubpaths } from "./svg-subpaths";
 import { sampleGapContour, gapBounds } from "./gap-contour-sampling";
 type Point = { x: number; y: number };
 export function polygonArea(points: Point[]) {
@@ -34,7 +35,7 @@ export async function fillVectorGaps(raw: string, widthCm: number, heightCm: num
     await new Promise<void>(resolve => setTimeout(resolve, 0));
     for (const path of Array.from(live.querySelectorAll("path"))) {
       const d = path.getAttribute("d") ?? "";
-      const parts = d.match(/[Mm][^Mm]*/g);
+      const parts = absoluteSubpaths(d);
       // Relative moveto depends on the preceding subpath's position. Fail safe
       // rather than detach or rewrite native geometry with that dependency.
       if (!parts || parts.length < 2 || parts.some(p => p[0] !== "M" || !/[zZ]\s*$/.test(p))) continue;

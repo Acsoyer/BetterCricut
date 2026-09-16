@@ -9,7 +9,7 @@ test('cubic inspection retains curvature and closing bounds without length queri
 test('scientific notation and implicit line coordinates are supported', () => {
   assert.deepEqual(sampleGapContour('M 1e1 0 20 0 20 10 Z'),[{x:10,y:0},{x:20,y:0},{x:20,y:10}]);
   assert.equal(sampleGapContour('M0 0 A20 20 0 0 1 20 20 Z'),null);
-  assert.equal(sampleGapContour('M0 0 c0 10 10 10 10 0 Z'),null);
+  assert.ok(sampleGapContour('M0 0 c0 10 10 10 10 0 Z').length > 3);
 });
 test('thousands of straight cubic segments are inspected in linear work', () => {
   const raw='M0 0 '+Array.from({length:2000},(_,i)=>`C ${i+.3} 0 ${i+.6} 0 ${i+1} 0`).join(' ')+' L0 0 Z';

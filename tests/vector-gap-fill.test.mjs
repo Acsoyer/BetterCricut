@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { registerHooks } from 'node:module';
-registerHooks({ resolve(specifier, context, next) { return next(specifier === './gap-contour-sampling' ? './gap-contour-sampling.ts' : specifier, context); } });
+registerHooks({ resolve(specifier, context, next) { return next(['./gap-contour-sampling','./svg-subpaths'].includes(specifier) ? specifier+'.ts' : specifier, context); } });
 const { polygonArea, containsPoint, fillVectorGaps } = await import('../app/editor/vector-gap-fill.ts');
 test('hole nesting distinguishes gaps from adjacent separate pieces', () => {
   const outer = [{x:0,y:0},{x:100,y:0},{x:100,y:100},{x:0,y:100}];
@@ -40,6 +40,8 @@ test('generated cubic holes fill without browser length traversal or rewriting o
     assert.equal(await fillVectorGaps('<svg/>',10,10,'all'),outer);
     d=outer+hole+island;
     assert.equal(await fillVectorGaps('<svg/>',10,10,1),outer+hole+island);
+    d="m0 0 h100 v100 h-100 z m20 20 v20 h20 v-20 z";
+    assert.equal(await fillVectorGaps("<svg/>",10,10,"all"),"M0 0 h100 v100 h-100 z ");
   } finally {
     for(const [key,descriptor] of originals) {if(descriptor) Object.defineProperty(globalThis,key,descriptor); else delete globalThis[key];}
   }

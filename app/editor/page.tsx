@@ -8,6 +8,7 @@ import { EDITOR_VERSION, editorDevLog } from "../editor-dev-log";
 import PickedColorControls from "./PickedColorControls";
 import { navigatePreview } from "./preview-navigation";
 import { fillVectorGaps } from "./vector-gap-fill";
+import { localVectorEdit, reframeVector } from "./local-vector-edit";
 import { getSVG, traceCanvas } from "@cadit-app/potrace-ts";
 import cutPreviewWorkerUrl from "./cut-preview.worker?worker&url";
 import { fittedCutSvg, detailedRecoveryScales } from "./cut-curve-fit";
@@ -15,6 +16,7 @@ import { cutFitRetryPlan, losslessCutMaskSvg } from "./cut-fit-retry";
 import { smoothAlphaCoverage } from "./alpha-coverage";
 import { cutContourOptions, prepareCutContour, cutMaskTopology, type CutContourProfile } from "./cut-contour";
 import { faStar, faHeart, faArrowRight, faBolt, faBurst, faCloud, faMoon, faSun, faDiamond, faShield, faDroplet, faLeaf, faCrown, faBell, faGift, faTag, faBookmark, faLocationPin, faComment, faPuzzlePiece } from "@fortawesome/free-solid-svg-icons";
+function OutlineIcon() { return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path strokeDasharray="3 2" d="M12 2 22 9 18 21H6L2 9Z"/><path d="m12 7 5.5 4-2 6h-7l-2-6Z"/></svg>; }
 const PAGE_SIZES = { a4: { label: "A4", w: 21, h: 29.7 }, letter: { label: "Letter", w: 21.59, h: 27.94 }, a5: { label: "A5", w: 14.8, h: 21 }, full: { label: "Large canvas", w: 100, h: 100 } } as const,
   PPCM = 34,
   DPI = 150,
@@ -1222,7 +1224,7 @@ async function renderCutoutEdit(editor: CutoutEditor, applyCrop = false, preview
     x.save();
     x.lineCap = "round";
     x.lineJoin = "round";
-    x.lineWidth = Math.max(2, (stroke.brush / 100) * Math.min(baseWidth, baseHeight));
+    x.lineWidth = Math.max(.01, (stroke.brush / 100) * Math.min(baseWidth, baseHeight));
     if (stroke.tool === "bridge") {
       x.globalCompositeOperation = "source-over";
       x.strokeStyle = editor.color;
@@ -1259,7 +1261,7 @@ async function renderCutoutEdit(editor: CutoutEditor, applyCrop = false, preview
     maskContext.lineCap = "round";
     maskContext.lineJoin = "round";
     maskContext.strokeStyle = "#fff";
-    maskContext.lineWidth = Math.max(4, (stroke.brush / 100) * Math.min(baseWidth, baseHeight));
+    maskContext.lineWidth = Math.max(.01, (stroke.brush / 100) * Math.min(baseWidth, baseHeight));
     const trajectory = stroke.points.map((point, index, points) => {
       if (index === 0 || index === points.length - 1) return point;
       const from = Math.max(0, index - 3),
@@ -1329,6 +1331,15 @@ async function renderCutoutEdit(editor: CutoutEditor, applyCrop = false, preview
       }
     }
   x.putImageData(outlined, 0, 0);
+  if (vectorSource) {
+    const smoothed = editor.strokes.some(stroke => stroke.tool === "smooth") ? decodeSvgData(await smoothVectorCutout(c.toDataURL(),editor.color,true,"detailed")) : undefined;
+    const raw = await localVectorEdit(decodeSvgData(editor.source),baseWidth,baseHeight,editor.strokes,editor.color,smoothed);
+    if (applyCrop) {
+      const l=clamp(editor.crop.left/100,0,.9), t=clamp(editor.crop.top/100,0,.9), r=clamp(editor.crop.right/100,0,.95-l), b=clamp(editor.crop.bottom/100,0,.95-t);
+      return {src:`data:image/svg+xml,${encodeURIComponent(reframeVector(raw,l,t,1-l-r,1-t-b))}`,left:-.1+1.2*l,top:-.1+1.2*t,width:1.2*(1-l-r),height:1.2*(1-t-b)};
+    }
+    return { src: `data:image/svg+xml,${encodeURIComponent(raw)}`, left: -.1, top: -.1, width: 1.2, height: 1.2 };
+  }
   if (!applyCrop) return { src: c.toDataURL(), left: -.1, top: -.1, width: 1.2, height: 1.2 };
   const l = clamp(editor.crop.left / 100, 0, 0.9),
     t = clamp(editor.crop.top / 100, 0, 0.9),
@@ -2484,8 +2495,8 @@ export default function Home() {
   }, [cutEditor?.source, cutEditor?.strokes, cutEditor?.color]);
   useEffect(() => {
     if (!cutEditor || !cutPreview) { setCutVectorDisplay(null); return; }
-    if (!cutEditor.strokes.length && cutEditor.source.startsWith("data:image/svg+xml")) {
-      setCutVectorDisplay({ key: cutPreview, markup: cutDisplayMarkup(decodeSvgData(cutEditor.source), false) });
+    if (cutPreview.startsWith("data:image/svg+xml")) {
+      setCutVectorDisplay({ key: cutPreview, markup: cutDisplayMarkup(decodeSvgData(cutPreview), true, cutEditor.color) });
       return;
     }
     let cancelled = false;
@@ -2565,7 +2576,7 @@ export default function Home() {
     redoHistory.current.push(layers.map((layer) => ({ ...layer })));
     undoing.current = true;
     setLayers(previous);
-    setSelected([]);
+    setSelected(current => current.filter(id => previous.some(layer => layer.id === id)));
     setNotice("Undone");
   };
   const redo = () => {
@@ -2574,7 +2585,7 @@ export default function Home() {
     history.current.push(layers.map((layer) => ({ ...layer })));
     undoing.current = true;
     setLayers(next);
-    setSelected([]);
+    setSelected(current => current.filter(id => next.some(layer => layer.id === id)));
     setNotice("Redone");
   };
   useEffect(() => {
@@ -3519,14 +3530,14 @@ export default function Home() {
     if (!cutEditor) return;
     const target = layers.find((l) => l.id === cutEditor.layerId);
     if (!target) return;
-    if (!cutEditor.strokes.length && !Object.values(cutEditor.crop).some(value => Math.abs(value) > .001)) { setCutEditor(null); return; }
+    if (cutEditor.source === target.src && !cutEditor.strokes.length && !Object.values(cutEditor.crop).some(value => Math.abs(value) > .001)) { setCutEditor(null); return; }
     setWorking(true);
     try {
       const hasCrop = Object.values(cutEditor.crop).some((value) => Math.abs(value) > 0.001),
         rendered = await renderCutoutEdit(cutEditor, hasCrop),
         trimmed = await trimTransparent(rendered.src, 3),
         result = { src: trimmed.src, left: rendered.left + rendered.width * trimmed.left, top: rendered.top + rendered.height * trimmed.top, width: rendered.width * trimmed.width, height: rendered.height * trimmed.height },
-        finalSrc = cutEditor.strokes.length || hasCrop ? await smoothVectorCutout(result.src, target.color, true) : target.src,
+        finalSrc = rendered.src.startsWith("data:image/svg+xml") ? `data:image/svg+xml,${encodeURIComponent(reframeVector(decodeSvgData(rendered.src),trimmed.left,trimmed.top,trimmed.width,trimmed.height))}` : await smoothVectorCutout(result.src, target.color, true),
         safety = await analyzeCutSafety(finalSrc, target.w * result.width),
         next: Layer = {
           ...target,
@@ -4052,7 +4063,7 @@ export default function Home() {
     if (!cutEditor.strokes.length) { await openSeparateLayers(target.src, target.id, undefined, true); return; }
     setWorking(true);
     try {
-      const result = await renderCutoutEdit(cutEditor), src = await smoothVectorCutout(result.src, target.color, true);
+      const result = await renderCutoutEdit(cutEditor), src = result.src.startsWith("data:image/svg+xml") ? result.src : await smoothVectorCutout(result.src, target.color, true);
       await openSeparateLayers(src, target.id, { x: target.x + target.w * result.left, y: target.y + target.h * result.top, w: target.w * result.width, h: target.h * result.height }, true);
     } finally { setWorking(false); }
   };
@@ -5533,9 +5544,9 @@ export default function Home() {
             <button type="button" className={one.rasterStatus === "background" ? "remove-bg-main primary" : "remove-bg-main"} onClick={() => setBgMenuOpen(true)}><Sparkles /> Remove Background</button>
             <button type="button" onClick={() => setCutoutMenuOpen(true)}><Scissors /> Create Cut Shape</button>
             <button type="button" disabled={one.rasterStatus === "background"} onClick={() => void openStickerBorder(one)}><Sparkles /> Add Sticker Border to Image</button>
-            <button type="button" className={one.rasterStatus === "background" ? "" : "primary"} onClick={() => void addOutlineToPrintable()}><Scissors /> Add Outline as Cut Shape</button>
+            <button type="button" className={one.rasterStatus === "background" ? "" : "primary"} onClick={() => void addOutlineToPrintable()}><OutlineIcon /> Add Outline as Cut Shape</button>
           </>}
-          {one && ["vector", "stroke"].includes(one.kind) && <><button type="button" onClick={() => void addStroke(DEFAULT_OUTLINE_CM)}><Scissors /> Add Outline as Cut Shape</button></>}
+          {one && ["vector", "stroke"].includes(one.kind) && <><button type="button" onClick={() => void addStroke(DEFAULT_OUTLINE_CM)}><OutlineIcon /> Add Outline</button><button type="button" onClick={() => void makeGapsPermanent()}><Sparkles /> Bake Cutout</button></>}
           {!one && <><button disabled><Sparkles/> Remove Background</button><button disabled><Scissors/> Create Cut Shape</button><button disabled><Sparkles/> Add Sticker Border to Image</button><button disabled><Scissors/> Add Outline as Cut Shape</button></>}
         </nav>
         <div className="export-actions" aria-label="Export options"><span className="export-as-label">Export As:</span>
@@ -5708,7 +5719,6 @@ export default function Home() {
           {one && ["vector", "stroke"].includes(one.kind) && <button onClick={() => openCutoutEditor()}><Scissors /> Edit Cut Shape</button>}
           {one && !["vector", "stroke", "acetate"].includes(one.kind) && <button onClick={() => openImageEditor()}><ImageIcon /> Edit Image</button>}
           {one?.isShape && <button className={imageOnShapeTarget || shapeImageEditing ? "active-action" : ""} onClick={startImageOnShape}><ImagePlus /> Image on Shape</button>}
-          {one && ["vector", "stroke"].includes(one.kind) && <button className="bake-cutout" onClick={() => void makeGapsPermanent()}><Sparkles /> Bake Cutout</button>}
           {one?.stickerOffset?.enabled && <button className="bake-image" onClick={() => void bakeStickerImage()}><Sparkles /> Bake Image</button>}
           <button disabled={picked.length < 2 && !picked.some((layer)=>layer.groupId)} onClick={picked.some((layer)=>layer.groupId) ? ungroupSelection : groupSelection}>
             <Layers3 /> {picked.some((layer)=>layer.groupId) ? "Ungroup" : "Group"}
@@ -5906,7 +5916,7 @@ export default function Home() {
               </div>}
               <div className="floating-property-block">
                 <label>Fill Gaps <b>{fillGapsDraft.toFixed(fillGapsDraft < 5 ? 1 : 0)} mm²</b></label>
-                <input type="range" min="0" max="30" step={fillGapsDraft < 5 ? ".5" : "1"} value={fillGapsDraft} onChange={(event)=>setFillGapsDraft(+event.target.value)}/>
+                <input type="range" min="0" max="30" disabled={fillAllGapsDraft} step={fillGapsDraft < 5 ? ".5" : "1"} value={fillGapsDraft} onChange={(event)=>setFillGapsDraft(+event.target.value)}/>
                 <div className="floating-property-actions gap-actions"><label className="fill-all-check"><input type="checkbox" checked={fillAllGapsDraft} onChange={(event)=>setFillAllGapsDraft(event.target.checked)}/> Fill all the gaps</label><button className="primary-property" onClick={()=>fillAllGapsDraft?void fillEveryGap():void applyGapPreview()}>Apply Fill</button></div>
                 <small>Only enclosed openings are filled; the outside edge is preserved.</small>
               </div>
@@ -6158,9 +6168,9 @@ export default function Home() {
               </div>
               <div className="fill-gaps-row">
                 <div className="gap-control-row" title="Fills enclosed holes whose total area is below the selected square-mm threshold">
-                  <input disabled={!one || !["stroke", "vector"].includes(one.kind)} type="number" min="0" max="30" step={fillGapsDraft < 5 ? ".5" : "1"} value={fillGapsDraft} onChange={(e) => setFillGapsDraft(clamp(+e.target.value, 0, 30))} />
+                  <input disabled={fillAllGapsDraft || !one || !["stroke", "vector"].includes(one.kind)} type="number" min="0" max="30" step={fillGapsDraft < 5 ? ".5" : "1"} value={fillGapsDraft} onChange={(e) => setFillGapsDraft(clamp(+e.target.value, 0, 30))} />
                   <span>mm²</span>
-                  <button className="gap-apply" disabled={!one || !["stroke", "vector"].includes(one.kind)} onClick={() => void applyGapPreview()}>
+                  <button className="gap-apply" disabled={fillAllGapsDraft || !one || !["stroke", "vector"].includes(one.kind)} onClick={() => void applyGapPreview()}>
                     Apply Fill
                   </button>
                 </div>
@@ -6985,7 +6995,7 @@ export default function Home() {
                     <small>Crop, erase or refine the image background.</small>
                   </div>
                   {bgEditor && (
-                    <div className="refine-quick-tools image-refine-tools">
+                    <div className="refine-quick-tools image-refine-tools"><div className="cut-header-history image-header-history">
                       <button
                         title="Undo"
                         disabled={imageTab === "edit" ? !imageEditor.history.length : !bgEditor.strokes.length}
@@ -7005,7 +7015,7 @@ export default function Home() {
                         <RotateCw />
                         <span>Reset</span>
                       </button>
-                      <label title="Show alpha mask">
+                      </div><label title="Show alpha mask">
                         <input
                           type="checkbox"
                           checked={bgEditor.alphaView}
@@ -7469,9 +7479,9 @@ export default function Home() {
                           left: "50%",
                           top: "50%",
                           width: `${(cutEditor.brush / cutEditor.zoom / 100) * Math.min(cutImageSize.w || 100, cutImageSize.h || 100)}px`,
-                          aspectRatio: "1",
+                          height: `${(cutEditor.brush / cutEditor.zoom / 100) * Math.min(cutImageSize.w || 100, cutImageSize.h || 100)}px`,
                         }}
-                      />
+                      ><svg width="100%" height="100%" style={{overflow:"visible",display:"block"}}><circle cx="50%" cy="50%" r="50%" fill="#ffffff18" stroke="#17211c" strokeWidth={1 / cutEditor.zoom} /></svg></i>
                     )}
                     {cutCropActive && (
                       <div
@@ -7585,7 +7595,7 @@ export default function Home() {
                       <label>
                         Fill Gaps <b>{fillGapsDraft.toFixed(fillGapsDraft < 5 ? 1 : 0)} mm²</b>
                       </label>
-                      <input type="range" min="0" max="30" step={fillGapsDraft < 5 ? ".5" : "1"} value={fillGapsDraft} onChange={(e) => setFillGapsDraft(+e.target.value)} />
+                      <input type="range" min="0" max="30" disabled={fillAllGapsDraft} step={fillGapsDraft < 5 ? ".5" : "1"} value={fillGapsDraft} onChange={(e) => setFillGapsDraft(+e.target.value)} />
                       <button onClick={() => void applyGapPreview()}>Apply Fill Gaps</button>
                     </section>
                     <p>Fill Gaps removes small enclosed holes that would create unnecessary blade movements.</p>

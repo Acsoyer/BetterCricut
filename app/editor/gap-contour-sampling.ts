@@ -3,7 +3,6 @@ export type GapPoint = { x: number; y: number };
 // to traverse the entire Bezier path for thousands of length queries.
 // These samples are never used to write the output path.
 export function sampleGapContour(part: string, tolerance = .05): GapPoint[] | null {
-  if (/[a-bd-kno-z]/i.test(part.replace(/[MmLlCcZzEe]/g, ""))) return null;
   const tokens = part.match(/[a-zA-Z]|[-+]?(?:\d*\.\d+|\d+\.?\d*)(?:[eE][-+]?\d+)?/g) ?? [];
   const points: GapPoint[] = [];
   let index = 0, command = "", current = { x: 0, y: 0 };
@@ -21,13 +20,20 @@ export function sampleGapContour(part: string, tolerance = .05): GapPoint[] | nu
     if (/^[a-z]$/i.test(tokens[index])) command=tokens[index++];
     if (command === "Z" || command === "z") { command=""; continue; }
     // Unsupported commands use the bounded, cooperative browser fallback.
-    if (!["M","L","C"].includes(command)) return null;
-    const needed=command === "C"?6:2;
+    const upper=command.toUpperCase(), relative=command!==upper;
+    if (!["M","L","C","H","V"].includes(upper)) return null;
+    const needed=upper === "C"?6:upper === "H" || upper === "V"?1:2;
     if (index+needed>tokens.length || tokens.slice(index,index+needed).some(v=>!Number.isFinite(Number(v)))) return null;
-    if (command === "C") {
-      const b={x:number(),y:number()}, c={x:number(),y:number()}, d={x:number(),y:number()};
+    const pair=() => ({x:number()+(relative?current.x:0),y:number()+(relative?current.y:0)});
+    if (upper === "C") {
+      const b=pair(), c=pair(), d=pair();
       cubic(current,b,c,d,0); current=d;
-    } else { current={x:number(),y:number()}; points.push(current); if(command === "M") command="L"; }
+    } else {
+      if(upper === "H") current={x:number()+(relative?current.x:0),y:current.y};
+      else if(upper === "V") current={x:current.x,y:number()+(relative?current.y:0)};
+      else current=pair();
+      points.push(current); if(upper === "M") command=relative?"l":"L";
+    }
   }
   return points.length >= 3 ? points : null;
 }
