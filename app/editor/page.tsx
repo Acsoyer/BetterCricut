@@ -10,6 +10,7 @@ import { navigatePreview } from "./preview-navigation";
 import { fillVectorGaps } from "./vector-gap-fill";
 import { localVectorEdit, reframeVector } from "./local-vector-edit";
 import ColorPickLens, { type PickPointer } from "./ColorPickLens";
+import { savedProjectDisplayName } from "./project-display-name";
 import { getSVG, traceCanvas } from "@cadit-app/potrace-ts";
 import cutPreviewWorkerUrl from "./cut-preview.worker?worker&url";
 import { fittedCutSvg, detailedRecoveryScales } from "./cut-curve-fit";
@@ -2294,7 +2295,7 @@ export default function Home() {
     setCurrentProjectId(data.id);
     setCurrentProjectAutosave(Boolean(autosave && (currentProjectAutosave || !currentProjectId)));
     setSessionLog(nextSessionLog);
-    if (!autosave) setProjectName(currentProjectAutosave && /^Autosave-/.test(data.name) ? "Untitled Project" : data.name);
+    setProjectName(current => savedProjectDisplayName(current, data.name, autosave));
     setLastSavedSignature(projectSignature(layers, pageMode, safeMargin, cutSafetyEnabled, pageSize, unit));
     setProjects((items) => [data as SavedProject, ...items.filter((project) => project.id !== data.id)]);
     void refreshProjects(false);
@@ -2310,8 +2311,8 @@ export default function Home() {
   autosaveRunner.current = () => {
     if (!session || !projectDirty || !layers.length || saveStatus === "saving" || storageBlocked) return;
     const stamp = new Date().toISOString().replace("T", "-").slice(0, 16).replace(/:/g, "-");
-    const autosaveName = `Autosave-${stamp}`;
-    void saveProject(false, undefined, currentProjectAutosave ? projects.find((project)=>project.id===currentProjectId)?.name || autosaveName : currentProjectId ? projectName : autosaveName, false, true).then((saved) => { if (!saved) setAutosaveStatus("failed"); });
+    const autosaveName = `Autosave - ${stamp}`;
+    void saveProject(false, undefined, currentProjectAutosave ? autosaveName : currentProjectId ? projectName : autosaveName, false, true).then((saved) => { if (!saved) setAutosaveStatus("failed"); });
   };
   const openProject = async (project: SavedProject) => {
     let full = project;
@@ -2903,7 +2904,9 @@ export default function Home() {
       priorRemoval = latestStep?.type === "remove-bg" && latestStep.before ? latestStep : undefined,
       base = priorRemoval?.before || snapshot(chosen),
       settings = priorRemoval?.removalSettings;
-    setBgPreview("");
+    // Paint the existing full-resolution layer immediately while refinement runs.
+    setBgPreview(chosen.src);
+    setBgRendering(true);
     setBgImageSize({ w: 0, h: 0 });
     setBgEditor({
       layerId: chosen.id,
@@ -7374,9 +7377,7 @@ export default function Home() {
                         </section>
                         <PickedColorControls entries={bgEditor.eraseColors} picking={bgEditor.pickingColor} onChange={(eraseColors) => setBgEditor((v) => v ? { ...v, eraseColors } : v)} onPick={(pickingColor) => setBgEditor((v) => v ? { ...v, pickingColor } : v)} />
                         <section>
-                          <label>
-                            Edge Refine (&lt;Add edge - Carve edge&gt;) <b>{bgEditor.edgeRefine}px</b>
-                          </label>
+                          <label className="edge-refine-label"><span>Edge Refine<small>&lt;Add edge - Carve edge&gt;</small></span><b>{bgEditor.edgeRefine > 0 ? "+" : ""}{bgEditor.edgeRefine}px</b></label>
                           <input
                             type="range"
                             min="-25"
@@ -7779,13 +7780,7 @@ export default function Home() {
                 </section>
                 <PickedColorControls entries={bgEditor.eraseColors} picking={bgEditor.pickingColor} onChange={(eraseColors) => setBgEditor((v) => v ? { ...v, eraseColors } : v)} onPick={(pickingColor) => setBgEditor((v) => v ? { ...v, pickingColor } : v)} />
                 <section>
-                  <label>
-                    Edge Refine (&lt;Add edge - Carve edge&gt;){" "}
-                    <b>
-                      {bgEditor.edgeRefine > 0 ? "+" : ""}
-                      {bgEditor.edgeRefine} px
-                    </b>
-                  </label>
+                  <label className="edge-refine-label"><span>Edge Refine<small>&lt;Add edge - Carve edge&gt;</small></span><b>{bgEditor.edgeRefine > 0 ? "+" : ""}{bgEditor.edgeRefine}px</b></label>
                   <input type="range" min="-25" max="25" step="1" value={bgEditor.edgeRefine} onChange={(e) => setBgEditor({ ...bgEditor, edgeRefine: +e.target.value })} />
                   <small>Positive values contract the edge to remove pale halos. Negative values recover pixels removed by an aggressive cut.</small>
                   <div className="compact-slider edge-smooth-control">
@@ -7822,7 +7817,7 @@ export default function Home() {
               <button className="cancel" onClick={() => setBgEditor(null)}>
                 Cancel
               </button>
-              <button className="confirm" disabled={!bgPreview} onClick={() => void commitBackground()}>
+              <button className="confirm" disabled={!bgPreview || bgRendering} onClick={() => void commitBackground()}>
                 Apply
               </button>
             </footer>
