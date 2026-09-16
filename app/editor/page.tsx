@@ -7,7 +7,7 @@ import { supabase } from "../lib/supabase";
 import { EDITOR_VERSION, editorDevLog } from "../editor-dev-log";
 import { getSVG, traceCanvas } from "@cadit-app/potrace-ts";
 import cutPreviewWorkerUrl from "./cut-preview.worker?worker&url";
-import { fittedCutSvg } from "./cut-curve-fit";
+import { fittedCutSvg, detailedRecoveryScales } from "./cut-curve-fit";
 import { cutFitRetryPlan, losslessCutMaskSvg } from "./cut-fit-retry";
 import { smoothAlphaCoverage } from "./alpha-coverage";
 import { cutContourOptions, prepareCutContour, cutMaskTopology, type CutContourProfile } from "./cut-contour";
@@ -896,28 +896,47 @@ async function smoothVectorCutout(src: string, color: string, preserveFrame = fa
   if (!paths.length) throw new Error("The cutout contour is empty");
   let svg = getSVG(paths, 1, "fill");
   if (profile && profileMask) {
-    let optimized = false;
-    const expected = cutMaskTopology(profileMask, mask.width, mask.height);
-    const area = profileMask.reduce((sum, value) => sum + value, 0), firstFit = fittedCutSvg(paths, profile, supersample);
-    for (const { scale: reduction, budget } of cutFitRetryPlan((firstFit.match(/[CL] /g) || []).length)) {
-      const candidate = (reduction === 1 ? firstFit : fittedCutSvg(paths, profile, supersample, reduction))
-        .replace("<svg", `<svg width="${mask.width}" height="${mask.height}" viewBox="${pad} ${pad} ${mask.width} ${mask.height}"`);
-      if ((candidate.match(/[CL] /g) || []).length > budget) continue;
+    const expected = cutMaskTopology(profileMask, mask.width, mask.height),
+      area = profileMask.reduce((sum, value) => sum + value, 0),
+      firstFit = fittedCutSvg(paths, profile, supersample),
+      segments = (raw: string) => (raw.match(/[CL] /g) || []).length,
+      reference = profile === "detailed" ? fittedCutSvg(paths, "smooth", supersample) : firstFit,
+      preferredLimit = profile === "detailed" ? Math.max(12, segments(reference) * 3) : Infinity;
+    let accepted: string | undefined, faithfulFallback: string | undefined;
+    const validFit = async (raw: string) => {
+      const candidate = raw.replace("<svg", `<svg width="${mask.width}" height="${mask.height}" viewBox="${pad} ${pad} ${mask.width} ${mask.height}"`);
       const image = await getImage(`data:image/svg+xml,${encodeURIComponent(candidate)}`);
       const check = document.createElement("canvas"); check.width = mask.width; check.height = mask.height;
       const ctx = check.getContext("2d")!; ctx.drawImage(image, 0, 0);
-      const coverage = ctx.getImageData(0, 0, check.width, check.height).data;
-      const actual = new Uint8Array(profileMask.length); let difference = 0;
+      const coverage = ctx.getImageData(0, 0, check.width, check.height).data,
+        actual = new Uint8Array(profileMask.length);
+      let difference = 0;
       for (let p = 0; p < actual.length; p++) {
         actual[p] = coverage[p * 4 + 3] >= 128 ? 1 : 0;
         if (actual[p] !== profileMask[p]) difference++;
       }
       const topology = cutMaskTopology(actual, mask.width, mask.height);
-      if (topology.pieces === expected.pieces && topology.holes === expected.holes && difference / Math.max(area, 1) <= .025) {
-        svg = candidate; optimized = true; break;
+      return topology.pieces === expected.pieces && topology.holes === expected.holes && difference / Math.max(area, 1) <= .025;
+    };
+    for (const { scale: reduction, budget } of cutFitRetryPlan(segments(firstFit))) {
+      const candidate = reduction === 1 ? firstFit : fittedCutSvg(paths, profile, supersample, reduction);
+      if (segments(candidate) > budget) continue;
+      // A high-density Detailed candidate is a reason to seek a balanced fit,
+      // not to keep chasing raster samples or abort the conversion.
+      if (segments(candidate) > preferredLimit) {
+        if (await validFit(candidate)) faithfulFallback = candidate;
+        break;
+      }
+      if (await validFit(candidate)) { accepted = candidate; break; }
+    }
+    if (!accepted && profile === "detailed") {
+      for (const scale of detailedRecoveryScales()) {
+        const candidate = fittedCutSvg(paths, "detailed", supersample, scale);
+        if (segments(candidate) > preferredLimit) continue;
+        if (await validFit(candidate)) { accepted = candidate; break; }
       }
     }
-    if (!optimized) svg = losslessCutMaskSvg(profileMask, mask.width, mask.height, pad);
+    svg = accepted || faithfulFallback || losslessCutMaskSvg(profileMask, mask.width, mask.height, pad);
   }
   const doc = new DOMParser().parseFromString(svg, "image/svg+xml"),
     root = doc.documentElement;

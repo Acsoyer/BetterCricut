@@ -62,8 +62,8 @@ export function prepareCutContour(
     original[p] = data[p * 4 + 3] >= (profile ? 128 : 96) ? 1 : 0;
   if (!profile) return original;
   let alpha = Float32Array.from(original, (_, p) => data[p * 4 + 3] / 255),
-    passes = profile === "smooth" ? 2 : 1;
-  const strength = profile === "smooth" ? 1 : 0.5;
+    passes = 2;
+  const strength = 1;
   while (passes--) {
     const next = new Float32Array(alpha.length);
     for (let y = 0; y < height; y++)

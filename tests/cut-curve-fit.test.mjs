@@ -1,6 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { fitClosedContour, cubicPoint } from "../app/editor/cut-curve-fit.ts";
+import { registerHooks } from "node:module";
+registerHooks({
+  resolve(s, c, next) {
+    return next(
+      s === "./cut-contour-denoise" ? "./cut-contour-denoise.ts" : s,
+      c,
+    );
+  },
+});
+const { fitClosedContour, cubicPoint } = await import(
+  "../app/editor/cut-curve-fit.ts"
+);
 
 test("pixel stair steps on a circle become a few continuous cubics", () => {
   const points = [];

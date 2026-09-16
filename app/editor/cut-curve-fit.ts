@@ -1,5 +1,6 @@
 import type { Path } from "@cadit-app/potrace-ts";
 import type { CutContourProfile } from "./cut-contour";
+import { cleanContourPoints } from "./cut-contour-denoise";
 
 type P = { x: number; y: number };
 type Cubic = [P, P, P, P];
@@ -243,6 +244,23 @@ function contourCrosses(curves: Cubic[]): boolean {
   return false;
 }
 
+const FIT_ERROR = { smooth: 1.45, detailed: 0.55 };
+export function detailedRecoveryScales() {
+  const fine = FIT_ERROR.detailed,
+    coarse = FIT_ERROR.smooth;
+  return [
+    0.7,
+    0.85,
+    1,
+    1.15,
+    1.3,
+    coarse,
+    coarse * 0.9,
+    coarse * 0.8,
+    coarse * 0.7,
+  ].map((error) => error / fine);
+}
+
 export function fittedCutSvg(
   paths: Path[],
   profile: CutContourProfile,
@@ -250,19 +268,19 @@ export function fittedCutSvg(
   toleranceScale = 1,
 ): string {
   // Tolerance is expressed in original image pixels, not upsampled pixels.
-  const tolerance =
-    (profile === "smooth" ? 1.8 : 1.2) * pixelScale * toleranceScale;
+  const tolerance = FIT_ERROR[profile] * pixelScale * toleranceScale;
   const num = (n: number) => Number(n.toFixed(3)),
     coord = (p: P) => `${num(p.x)} ${num(p.y)}`;
   const d = paths
     .map((path) => {
-      let curves = fitClosedContour(path.points, tolerance);
+      const contour = cleanContourPoints(path.points, pixelScale);
+      let curves = fitClosedContour(contour, tolerance);
       for (const factor of [0.85, 0.7, 0.5, 0.25]) {
         if (!contourCrosses(curves)) break;
-        curves = fitClosedContour(path.points, tolerance * factor);
+        curves = fitClosedContour(contour, tolerance * factor);
       }
       if (contourCrosses(curves))
-        return `M ${path.points.map(coord).join(" L ")} Z`;
+        return `M ${contour.map(coord).join(" L ")} Z`;
       if (!curves.length)
         throw new Error("An incomplete cut contour was traced");
       return (
