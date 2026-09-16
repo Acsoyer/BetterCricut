@@ -348,6 +348,22 @@ const svgViewBox = (root: Element) => {
   if (values.length === 4 && values.every(Number.isFinite) && values[2] > 0 && values[3] > 0) return values as [number,number,number,number];
   return [0,0,Number.parseFloat(root.getAttribute("width") || "100") || 100,Number.parseFloat(root.getAttribute("height") || "100") || 100] as [number,number,number,number];
 };
+const cutDisplayMarkup = (raw: string, padded: boolean, color?: string) => {
+  const doc = new DOMParser().parseFromString(raw, "image/svg+xml"), root = doc.documentElement;
+  root.querySelectorAll("script,foreignObject").forEach(node => node.remove());
+  [root, ...root.querySelectorAll("*")].forEach(node => [...node.attributes].forEach(attribute => { if (/^on/i.test(attribute.name)) node.removeAttribute(attribute.name); }));
+  const [x,y,w,h] = svgViewBox(root);
+  if (!padded) root.setAttribute("viewBox", `${x-w*.1} ${y-h*.1} ${w*1.2} ${h*1.2}`);
+  root.setAttribute("width", "100%"); root.setAttribute("height", "100%");
+  root.setAttribute("preserveAspectRatio", "none"); root.setAttribute("shape-rendering", "geometricPrecision");
+  root.querySelectorAll("path,rect,circle,ellipse,polygon,polyline").forEach(node => {
+    if (color) node.setAttribute("fill", color);
+    node.setAttribute("data-cut-contour", ""); node.setAttribute("stroke", "#141715");
+    node.setAttribute("stroke-linejoin", "round"); node.setAttribute("stroke-linecap", "round");
+    node.setAttribute("vector-effect", "non-scaling-stroke"); node.setAttribute("paint-order", "stroke fill");
+  });
+  return new XMLSerializer().serializeToString(root);
+};
 const cropSvgWithoutRetracing = (src: string, part: SplitPart) => {
   const doc = new DOMParser().parseFromString(decodeSvgData(src), "image/svg+xml"), root = doc.documentElement, [x,y,w,h] = svgViewBox(root);
   const left=x+part.left*w, top=y+part.top*h, width=part.width*w, height=part.height*h;
@@ -1895,6 +1911,7 @@ export default function Home() {
     [cutEditor, setCutEditor] = useState<CutoutEditor | null>(null),
     [cutoutTab, setCutoutTab] = useState<"edit" | "stroke">("edit"),
     [cutPreview, setCutPreview] = useState(""),
+    [cutVectorDisplay, setCutVectorDisplay] = useState<{ key: string; markup: string } | null>(null),
     [cutImageSize, setCutImageSize] = useState({ w: 0, h: 0 }),
     [cutActiveStroke, setCutActiveStroke] = useState<string | null>(null),
     [cutFinishedStroke, setCutFinishedStroke] = useState<string | null>(null),
@@ -2442,6 +2459,30 @@ export default function Home() {
     });
     return () => { cancelled = true; };
   }, [cutEditor?.source, cutEditor?.strokes, cutEditor?.color]);
+  useEffect(() => {
+    if (!cutEditor || !cutPreview) { setCutVectorDisplay(null); return; }
+    if (!cutEditor.strokes.length && cutEditor.source.startsWith("data:image/svg+xml")) {
+      setCutVectorDisplay({ key: cutPreview, markup: cutDisplayMarkup(decodeSvgData(cutEditor.source), false) });
+      return;
+    }
+    let cancelled = false;
+    const worker = new Worker(new URL("./cut-preview.worker.ts", import.meta.url), { type: "module" });
+    worker.onmessage = (event) => {
+      if (cancelled || event.data.error) { worker.terminate(); return; }
+      const doc = new DOMParser().parseFromString(event.data.svg, "image/svg+xml"), root = doc.documentElement;
+      root.setAttribute("viewBox", `0 0 ${event.data.width} ${event.data.height}`);
+      setCutVectorDisplay({ key: cutPreview, markup: cutDisplayMarkup(new XMLSerializer().serializeToString(root), true, cutEditor.color) });
+      worker.terminate();
+    };
+    void getImage(cutPreview).then(img => {
+      if (cancelled) return;
+      const canvas = document.createElement("canvas"); canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+      const context = canvas.getContext("2d")!; context.drawImage(img, 0, 0);
+      const buffer = context.getImageData(0,0,canvas.width,canvas.height).data.buffer;
+      worker.postMessage({ width: canvas.width, height: canvas.height, buffer }, [buffer]);
+    });
+    return () => { cancelled = true; worker.terminate(); };
+  }, [cutPreview, cutEditor?.source, cutEditor?.strokes.length, cutEditor?.color]);
   useEffect(() => {
     const id = cutActiveStroke || cutFinishedStroke,
       stroke = cutEditor?.strokes.find((item) => item.id === id);
@@ -3938,6 +3979,17 @@ export default function Home() {
         h: target.h * imageEditor.heightScale * h,
       };
     await openSeparateLayers(rendered?.src || imageEditor.source, imageEditor.layerId, base);
+  };
+  const separateCutoutEditor = async () => {
+    if (!cutEditor) return;
+    const target = layers.find(layer => layer.id === cutEditor.layerId);
+    if (!target) return;
+    if (!cutEditor.strokes.length) { await openSeparateLayers(target.src, target.id, undefined, true); return; }
+    setWorking(true);
+    try {
+      const result = await renderCutoutEdit(cutEditor), src = await smoothVectorCutout(result.src, target.color, true);
+      await openSeparateLayers(src, target.id, { x: target.x + target.w * result.left, y: target.y + target.h * result.top, w: target.w * result.width, h: target.h * result.height }, true);
+    } finally { setWorking(false); }
   };
   const confirmSeparateLayers = async () => {
     if (!splitPreview) return;
@@ -6661,7 +6713,7 @@ export default function Home() {
           <h1>Welcome to Cake Topper Maker</h1>
           <p>Everything you need to turn an idea into a Cricut-ready design.</p>
           <div className="welcome-steps">
-            <article><span>1</span><b>Bring your image file from your computer or generate new text or image!</b></article>
+            <article><span>1</span><b>Bring your image from your computer or generate new image!</b></article>
             <article><span>2</span><b>Edit and make them best for Cricut</b></article>
             <article><span>3</span><b>Download ready to use images in Cricut projects</b></article>
           </div>
@@ -7383,6 +7435,7 @@ export default function Home() {
                     }
                   >
                     <img className={`cut-tool-${cutEditor.tool} cutout-edge-preview`} src={cutPreview} alt="Cutout edit preview" draggable={false} onLoad={(e) => { if (!cutImageSize.w) { const fitted = fitEditorImage(e.currentTarget, cutPreviewRef.current); setCutImageSize({ w: fitted.w / 1.2, h: fitted.h / 1.2 }); } }} />
+                    {cutVectorDisplay?.key === cutPreview && <div className="cut-vector-display" dangerouslySetInnerHTML={{ __html: cutVectorDisplay.markup }} />}
                     {cutEdgeOverlay && <img className="cut-selected-edge" src={cutEdgeOverlay} alt="" draggable={false} />}
                     <svg className="cut-edit-overlay" viewBox={`0 0 ${(cutImageSize.w || 100) * 1.2} ${(cutImageSize.h || 100) * 1.2}`} preserveAspectRatio="none">
                       <polyline ref={cutLivePathRef} points="" className="edit-brush-stroke" style={{ strokeWidth: (cutEditor.brush / cutEditor.zoom / 100) * Math.min(cutImageSize.w || 100, cutImageSize.h || 100) }} />
@@ -7521,7 +7574,7 @@ export default function Home() {
               </aside>
             </div>
             <footer>
-              <button className="footer-separate" onClick={() => void openSeparateLayers(cutEditor.strokes.length ? svgWithoutPreviewContour(cutPreview) : cutEditor.source, cutEditor.layerId,undefined,true)}>
+              <button className="footer-separate" onClick={() => void separateCutoutEditor()}>
                 <Layers3 /> Separate as Layers
               </button>
               <button className="footer-smooth" onClick={() => void smoothCutoutNow()}><Sparkles /> Smooth</button>
