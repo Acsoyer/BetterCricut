@@ -6,6 +6,8 @@ import type { Session } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
 import { EDITOR_VERSION, editorDevLog } from "../editor-dev-log";
 import { getSVG, traceCanvas } from "@cadit-app/potrace-ts";
+import cutPreviewWorkerUrl from "./cut-preview.worker?worker&url";
+import { cutContourOptions, prepareCutContour, type CutContourProfile } from "./cut-contour";
 import { faStar, faHeart, faArrowRight, faBolt, faBurst, faCloud, faMoon, faSun, faDiamond, faShield, faDroplet, faLeaf, faCrown, faBell, faGift, faTag, faBookmark, faLocationPin, faComment, faPuzzlePiece } from "@fortawesome/free-solid-svg-icons";
 const PAGE_SIZES = { a4: { label: "A4", w: 21, h: 29.7 }, letter: { label: "Letter", w: 21.59, h: 27.94 }, a5: { label: "A5", w: 14.8, h: 21 }, full: { label: "Large canvas", w: 100, h: 100 } } as const,
   PPCM = 34,
@@ -884,11 +886,11 @@ async function layerOpaqueAtWorld(layer:Layer,worldX:number,worldY:number){
   const cx=layer.x+layer.w/2,cy=layer.y+layer.h/2,rad=-layer.rotation*Math.PI/180,dx=worldX-cx,dy=worldY-cy,localX=cx+dx*Math.cos(rad)-dy*Math.sin(rad),localY=cy+dx*Math.sin(rad)+dy*Math.cos(rad),u=(localX-layer.x)/layer.w,v=(localY-layer.y)/layer.h;
   if(u<0||u>1||v<0||v>1)return false;const img=await getImage(layer.src),c=document.createElement("canvas");c.width=c.height=1;const x=c.getContext("2d")!;x.drawImage(img,clamp(Math.floor(u*img.naturalWidth),0,img.naturalWidth-1),clamp(Math.floor(v*img.naturalHeight),0,img.naturalHeight-1),1,1,0,0,1,1);return x.getImageData(0,0,1,1).data[3]>=64;
 }
-async function smoothVectorCutout(src: string, color: string, preserveFrame = false) {
+async function smoothVectorCutout(src: string, color: string, preserveFrame = false, profile?: CutContourProfile) {
   const img = await getImage(src),
     longest = Math.max(img.naturalWidth, img.naturalHeight),
     supersample = clamp(2200 / Math.max(longest, 1), 1, 3.5),
-    pad = preserveFrame ? 0 : Math.ceil(supersample * 6),
+    pad = profile ? 6 : preserveFrame ? 0 : Math.ceil(supersample * 6),
     mask = document.createElement("canvas"),
     traced = document.createElement("canvas");
   mask.width = Math.max(1, Math.round(img.naturalWidth * supersample));
@@ -897,7 +899,7 @@ async function smoothVectorCutout(src: string, color: string, preserveFrame = fa
   mx.imageSmoothingEnabled = true;
   mx.imageSmoothingQuality = "high";
   mx.drawImage(img, 0, 0, mask.width, mask.height);
-  const pixels = mx.getImageData(0, 0, mask.width, mask.height);
+  const pixels = mx.getImageData(0, 0, mask.width, mask.height), profileMask = profile ? prepareCutContour(pixels.data, mask.width, mask.height, profile) : null;
   traced.width = mask.width + pad * 2;
   traced.height = mask.height + pad * 2;
   const tx = traced.getContext("2d")!;
@@ -905,24 +907,24 @@ async function smoothVectorCutout(src: string, color: string, preserveFrame = fa
   tx.fillRect(0, 0, traced.width, traced.height);
   const binary = tx.createImageData(mask.width, mask.height);
   for (let i = 0; i < pixels.data.length; i += 4) {
-    const solid = pixels.data[i + 3] >= 96;
+    const solid = profileMask ? Boolean(profileMask[i / 4]) : pixels.data[i + 3] >= 96;
     binary.data[i] = binary.data[i + 1] = binary.data[i + 2] = solid ? 0 : 255;
     binary.data[i + 3] = 255;
   }
   tx.putImageData(binary, pad, pad);
   const paths = traceCanvas(traced, {
-    turnpolicy: "minority",
-    turdsize: Math.max(2, Math.round(supersample * supersample * 0.25)),
+    ...cutContourOptions(profile),
+    turdsize: profile ? 0 : Math.max(2, Math.round(supersample * supersample * 0.25)),
     alphamax: 1,
     optcurve: true,
-    opttolerance: 0.12,
+    opttolerance: cutContourOptions(profile).opttolerance,
   });
   if (!paths.length) throw new Error("The cutout contour is empty");
   const doc = new DOMParser().parseFromString(getSVG(paths, 1, "fill"), "image/svg+xml"),
     root = doc.documentElement;
-  root.setAttribute("width", String(traced.width));
-  root.setAttribute("height", String(traced.height));
-  root.setAttribute("viewBox", `0 0 ${traced.width} ${traced.height}`);
+  root.setAttribute("width", String(profile ? mask.width : traced.width));
+  root.setAttribute("height", String(profile ? mask.height : traced.height));
+  root.setAttribute("viewBox", profile ? `${pad} ${pad} ${mask.width} ${mask.height}` : `0 0 ${traced.width} ${traced.height}`);
   root.setAttribute("preserveAspectRatio", "none");
   root.setAttribute("shape-rendering", "geometricPrecision");
   root.querySelectorAll("path").forEach((path) => {
@@ -2466,13 +2468,19 @@ export default function Home() {
       return;
     }
     let cancelled = false;
-    const worker = new Worker(new URL("./cut-preview.worker.ts", import.meta.url), { type: "module" });
+    let worker: Worker;
+    try { worker = new Worker(new URL(cutPreviewWorkerUrl, window.location.origin), { type: "module" }); }
+    catch (error) { console.warn("Cut preview could not start", error); return; }
+    const timeout = window.setTimeout(() => worker.terminate(), 15000);
+    const stop = () => { window.clearTimeout(timeout); worker.terminate(); };
+    worker.onerror = stop;
     worker.onmessage = (event) => {
-      if (cancelled || event.data.error) { worker.terminate(); return; }
+      if (cancelled || event.data.error) { stop(); return; }
+      try {
       const doc = new DOMParser().parseFromString(event.data.svg, "image/svg+xml"), root = doc.documentElement;
       root.setAttribute("viewBox", `0 0 ${event.data.width} ${event.data.height}`);
       setCutVectorDisplay({ key: cutPreview, markup: cutDisplayMarkup(new XMLSerializer().serializeToString(root), true, cutEditor.color) });
-      worker.terminate();
+      } catch (error) { console.warn("Cut preview failed", error); } finally { stop(); }
     };
     void getImage(cutPreview).then(img => {
       if (cancelled) return;
@@ -2480,9 +2488,9 @@ export default function Home() {
       const context = canvas.getContext("2d")!; context.drawImage(img, 0, 0);
       const buffer = context.getImageData(0,0,canvas.width,canvas.height).data.buffer;
       worker.postMessage({ width: canvas.width, height: canvas.height, buffer }, [buffer]);
-    });
-    return () => { cancelled = true; worker.terminate(); };
-  }, [cutPreview, cutEditor?.source, cutEditor?.strokes.length, cutEditor?.color]);
+    }).catch(error => { console.warn("Cut preview failed", error); stop(); });
+    return () => { cancelled = true; stop(); };
+  }, [cutPreview, cutEditor?.source, cutEditor?.color]);
   useEffect(() => {
     const id = cutActiveStroke || cutFinishedStroke,
       stroke = cutEditor?.strokes.find((item) => item.id === id);
@@ -4352,9 +4360,7 @@ export default function Home() {
           refined = alreadyTransparent ? target.src : await featherAlphaInside(await refineBackground(target.src, 46, [], 12, 0)),
           trimmed = await trimTransparent(refined),
           color = COLORS[Math.floor(Math.random() * 21)],
-          vectorSrc = alreadyTransparent
-            ? await smoothVectorCutout(trimmed.src, color)
-            : await vTracerCutout(await silhouette(trimmed.src, color, 255), color, undefined, extraSmooth ? 2.25 : 1.25),
+          vectorSrc = await smoothVectorCutout(trimmed.src, color, true, extraSmooth ? "smooth" : "detailed"),
           safety = await analyzeCutSafety(vectorSrc, target.w * trimmed.width),
           noBgLayer: Layer = {
             ...target,
