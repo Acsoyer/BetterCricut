@@ -11,6 +11,8 @@ import { fillVectorGaps } from "./vector-gap-fill";
 import { localVectorEdit, reframeVector } from "./local-vector-edit";
 import ColorPickLens, { type PickPointer } from "./ColorPickLens";
 import { savedProjectDisplayName } from "./project-display-name";
+import ColorControls from "./ColorControls";
+import { normalizePickedColors } from "./color-model";
 import { getSVG, traceCanvas } from "@cadit-app/potrace-ts";
 import cutPreviewWorkerUrl from "./cut-preview.worker?worker&url";
 import { fittedCutSvg, detailedRecoveryScales } from "./cut-curve-fit";
@@ -2929,7 +2931,7 @@ export default function Home() {
       edgeRefine: settings?.edgeRefine ?? 3,
       edgeSmooth: settings?.edgeSmooth ?? 5,
       optimizeAlpha: settings?.optimizeAlpha || false,
-      eraseColors: settings?.eraseColors.map((entry) => ({ ...entry })) || [{ color: null, sensitivity: 30 }],
+      eraseColors: normalizePickedColors(settings?.eraseColors),
       pickingColor: null,
     });
   };
@@ -5754,7 +5756,7 @@ export default function Home() {
           <button className="new-project" onClick={newProject} title="Start a new project">
             <Plus /> New Project
           </button>
-          <button className="save-project" onClick={() => void saveProject(false, undefined, projectName, false)} title="Save current project">
+          <button className={currentProjectId ? "save-project save-update" : "save-project"} onClick={() => void saveProject(false, undefined, projectName, false)} title="Save current project">
             <Download /> {currentProjectId ? "Save - Update" : "Save"}
           </button>
           <button
@@ -7182,10 +7184,7 @@ export default function Home() {
                             {imageEditor.tool === "add" && <div className="image-paint-colors">
                               <label>Brush Color <b>{imageEditor.paintColor.toUpperCase()}</b></label>
                               <div className="image-color-swatches">{COLORS.map((color)=><button key={color} className={imageEditor.paintColor.toLowerCase()===color.toLowerCase()?"active":""} style={{background:color}} onClick={()=>setImageEditor({...imageEditor,paintColor:color})} aria-label={`Use ${color}`}/>)}</div>
-                              <button className="advanced-color-toggle" onClick={()=>setImageEditor({...imageEditor,colorAdvanced:!imageEditor.colorAdvanced})}><span>Advanced</span><ChevronDown className={imageEditor.colorAdvanced?"open":""}/></button>
-                              {imageEditor.colorAdvanced && <div className="advanced-color-panel"><input type="color" value={imageEditor.paintColor} onChange={(e)=>setImageEditor({...imageEditor,paintColor:e.target.value})}/><input type="text" value={imageEditor.paintColor} maxLength={7} onChange={(e)=>/^#[0-9a-f]{0,6}$/i.test(e.target.value)&&setImageEditor({...imageEditor,paintColor:e.target.value})}/></div>}
-                              <button className={imageEditor.pickingColor?"pick-image-color active":"pick-image-color"} onClick={()=>setImageEditor({...imageEditor,pickingColor:!imageEditor.pickingColor})}><Pipette/> Pick Color from Image</button>
-                            </div>}
+                              <ColorControls color={imageEditor.paintColor} advanced={imageEditor.colorAdvanced} onAdvanced={()=>setImageEditor({...imageEditor,colorAdvanced:!imageEditor.colorAdvanced})} onChange={(paintColor)=>setImageEditor({...imageEditor,paintColor})} onPick={()=>setImageEditor({...imageEditor,pickingColor:!imageEditor.pickingColor})} picking={imageEditor.pickingColor}/></div>}
                           </section>
                         )}
                         <section>
@@ -7241,7 +7240,7 @@ export default function Home() {
                       <div className="sticker-offset-preview"><img src={stickerPreviewSrc || imageEditor.source} alt="Sticker offset preview" /></div>
                       <aside className="sticker-offset-controls">
                         <h3>Add Sticker Border to Image</h3><p>Add up to three smooth, editable borders. They remain parametric until export or Bake Image.</p>
-                        <div className="sticker-border-stack">{stickerBorders.map((border,index)=><section key={border.id} className={`sticker-border-card ${activeStickerBorder===index?"open":""}`}><button className="sticker-border-heading" onClick={()=>selectStickerBorder(index)}><span><i style={{background:border.color}}/><b>Border {index+1}</b></span><small>{(activeStickerBorder===index?stickerSizeMm:border.sizeMm).toFixed(1)} mm</small><ChevronDown/></button>{activeStickerBorder===index&&<div className="sticker-border-fields"><label>Offset width <b>{stickerSizeMm.toFixed(1)} mm</b></label><input type="range" min="0.5" max="15" step="0.5" value={stickerSizeMm} onChange={(event)=>setStickerSizeMm(+event.target.value)} /><label>Offset color</label><div className="sticker-color-palette">{COLORS.map((color)=><button key={color} className={stickerColor.toLowerCase()===color.toLowerCase()?"active":""} style={{background:color}} onClick={()=>setStickerColor(color)} aria-label={`Use ${color}`}/>)}</div><div className="sticker-color-actions"><i className="selected-color-sample" style={{background:stickerColor}}/><button className="pick-color-button large" onClick={()=>void pickStickerColor()}><Pipette/> Pick color from image</button><button className="advanced-color-toggle" onClick={()=>setStickerAdvancedColor(value=>!value)}>Advanced Color <ChevronDown className={stickerAdvancedColor?"open":""}/></button></div>{stickerAdvancedColor&&<div className="advanced-color-panel"><input type="color" value={stickerColor} onChange={(event)=>setStickerColor(event.target.value)}/><span style={{background:stickerColor}}/><input value={stickerColor} onChange={(event)=>setStickerColor(event.target.value)}/></div>}<div className="sticker-border-actions"><button className="remove-sticker-style" onClick={()=>removeStickerBorder(index)}><Trash2/> Remove Offset</button>{stickerBorders.length<3&&<button className="add-sticker-border" onClick={addStickerBorder}><Plus/> Add Offset</button>}</div></div>}</section>)}</div>
+                        <div className="sticker-border-stack">{stickerBorders.map((border,index)=><section key={border.id} className={`sticker-border-card ${activeStickerBorder===index?"open":""}`}><button className="sticker-border-heading" onClick={()=>selectStickerBorder(index)}><span><i style={{background:border.color}}/><b>Border {index+1}</b></span><small>{(activeStickerBorder===index?stickerSizeMm:border.sizeMm).toFixed(1)} mm</small><ChevronDown/></button>{activeStickerBorder===index&&<div className="sticker-border-fields"><label>Offset width <b>{stickerSizeMm.toFixed(1)} mm</b></label><input type="range" min="0.5" max="15" step="0.5" value={stickerSizeMm} onChange={(event)=>setStickerSizeMm(+event.target.value)} /><label>Offset color</label><div className="sticker-color-palette">{COLORS.map((color)=><button key={color} className={stickerColor.toLowerCase()===color.toLowerCase()?"active":""} style={{background:color}} onClick={()=>setStickerColor(color)} aria-label={`Use ${color}`}/>)}</div><ColorControls color={stickerColor} advanced={stickerAdvancedColor} onAdvanced={()=>setStickerAdvancedColor(value=>!value)} onChange={setStickerColor} onPick={()=>void pickStickerColor()}/><div className="sticker-border-actions"><button className="remove-sticker-style" onClick={()=>removeStickerBorder(index)}><Trash2/> Remove Offset</button>{stickerBorders.length<3&&<button className="add-sticker-border" onClick={addStickerBorder}><Plus/> Add Offset</button>}</div></div>}</section>)}</div>
                       </aside>
                     </div>
                     <footer><span className="footer-spacer"/><button className="cancel" onClick={()=>setImageTab("edit")}>Back</button><button className="confirm" onClick={()=>void applyStickerStyle()}><Sparkles/> Apply Border</button></footer>
