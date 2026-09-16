@@ -7,7 +7,9 @@ import { supabase } from "../lib/supabase";
 import { EDITOR_VERSION, editorDevLog } from "../editor-dev-log";
 import { getSVG, traceCanvas } from "@cadit-app/potrace-ts";
 import cutPreviewWorkerUrl from "./cut-preview.worker?worker&url";
-import { cutContourOptions, prepareCutContour, type CutContourProfile } from "./cut-contour";
+import { fittedCutSvg } from "./cut-curve-fit";
+import { smoothAlphaCoverage } from "./alpha-coverage";
+import { cutContourOptions, prepareCutContour, cutMaskTopology, type CutContourProfile } from "./cut-contour";
 import { faStar, faHeart, faArrowRight, faBolt, faBurst, faCloud, faMoon, faSun, faDiamond, faShield, faDroplet, faLeaf, faCrown, faBell, faGift, faTag, faBookmark, faLocationPin, faComment, faPuzzlePiece } from "@fortawesome/free-solid-svg-icons";
 const PAGE_SIZES = { a4: { label: "A4", w: 21, h: 29.7 }, letter: { label: "Letter", w: 21.59, h: 27.94 }, a5: { label: "A5", w: 14.8, h: 21 }, full: { label: "Large canvas", w: 100, h: 100 } } as const,
   PPCM = 34,
@@ -489,52 +491,22 @@ async function optimizeAlphaChannel(src: string) {
   walkComponents(false, holeLimit, 1);
   for (let i = 0; i < count; i++) {
     const q = i * 4;
-    if (settled[i]) {
-      data.data[q] = source[q];
-      data.data[q + 1] = source[q + 1];
-      data.data[q + 2] = source[q + 2];
-      data.data[q + 3] = source[q + 3] >= 128 ? source[q + 3] : 255;
-    } else data.data[q + 3] = 0;
+    // Unchanged topology pixels retain their original fractional coverage.
+    data.data[q + 3] = settled[i] === alpha[i] ? source[q + 3] : settled[i] ? 255 : 0;
   }
+  data.data.set(smoothAlphaCoverage(data.data, c.width, c.height));
   x.putImageData(data, 0, 0);
   return c.toDataURL("image/png");
 }
 async function featherAlphaInside(src: string) {
-  const img = await getImage(src),
-    c = document.createElement("canvas");
-  c.width = img.naturalWidth;
-  c.height = img.naturalHeight;
-  const x = c.getContext("2d")!;
-  x.drawImage(img, 0, 0);
-  const data = x.getImageData(0, 0, c.width, c.height),
-    source = new Uint8ClampedArray(data.data),
-    w = c.width,
-    h = c.height;
-  // Keep transparent pixels transparent so no removed background colour can bleed back in.
-  // One-pixel, inside-only antialiasing: keep the result sharp and never revive
-  // removed background RGB as an outside halo.
-  for (let py = 0; py < h; py++)
-    for (let px = 0; px < w; px++) {
-      const at = py * w + px,
-        q = at * 4;
-      if (source[q + 3] < 128) {
-        data.data[q + 3] = 0;
-        continue;
-      }
-      let opaqueNeighbours = 0;
-      for (let oy = -1; oy <= 1; oy++)
-        for (let ox = -1; ox <= 1; ox++) {
-          if (!ox && !oy) continue;
-          const nx = px + ox,
-            ny = py + oy;
-          if (nx >= 0 && ny >= 0 && nx < w && ny < h && source[(ny * w + nx) * 4 + 3] >= 128) opaqueNeighbours++;
-        }
-      data.data[q + 3] = opaqueNeighbours === 8 ? 255 : clamp(96 + opaqueNeighbours * 18, 112, 232);
-    }
+  const img = await getImage(src), c = document.createElement("canvas");
+  c.width = img.naturalWidth; c.height = img.naturalHeight;
+  const x = c.getContext("2d")!; x.drawImage(img, 0, 0);
+  const data = x.getImageData(0, 0, c.width, c.height);
+  data.data.set(smoothAlphaCoverage(data.data, c.width, c.height));
   x.putImageData(data, 0, 0);
   return c.toDataURL("image/png");
 }
-
 type RefinedBackground = { src: string; left: number; top: number; width: number; height: number };
 async function refineBackgroundWithRoom(src: string, tolerance: number, strokes: BgStroke[], speckles = 0, edgeRefine = 0, eraseColors: EraseColor[] = [], edgeSmooth = 0, optimizeAlpha = false): Promise<RefinedBackground> {
   if (edgeRefine >= 0) {
@@ -889,7 +861,7 @@ async function layerOpaqueAtWorld(layer:Layer,worldX:number,worldY:number){
 async function smoothVectorCutout(src: string, color: string, preserveFrame = false, profile?: CutContourProfile) {
   const img = await getImage(src),
     longest = Math.max(img.naturalWidth, img.naturalHeight),
-    supersample = clamp(2200 / Math.max(longest, 1), 1, 3.5),
+    supersample = clamp(2200 / Math.max(longest, 1), profile ? .001 : 1, 3.5),
     pad = profile ? 6 : preserveFrame ? 0 : Math.ceil(supersample * 6),
     mask = document.createElement("canvas"),
     traced = document.createElement("canvas");
@@ -920,7 +892,32 @@ async function smoothVectorCutout(src: string, color: string, preserveFrame = fa
     opttolerance: cutContourOptions(profile).opttolerance,
   });
   if (!paths.length) throw new Error("The cutout contour is empty");
-  const doc = new DOMParser().parseFromString(getSVG(paths, 1, "fill"), "image/svg+xml"),
+  let svg = getSVG(paths, 1, "fill");
+  if (profile && profileMask) {
+    let optimized = false;
+    const expected = cutMaskTopology(profileMask, mask.width, mask.height);
+    const area = profileMask.reduce((sum, value) => sum + value, 0), priorSegments = paths.reduce((sum, path) => sum + path.curve.tag.reduce((n, tag) => n + (tag === "CORNER" ? 2 : 1), 0), 0);
+    for (const reduction of [1, .9, .8, .7, .6, .5, .35, .25]) {
+      const candidate = fittedCutSvg(paths, profile, supersample, reduction)
+        .replace("<svg", `<svg width="${mask.width}" height="${mask.height}" viewBox="${pad} ${pad} ${mask.width} ${mask.height}"`);
+      if ((candidate.match(/[CL] /g) || []).length > priorSegments) continue;
+      const image = await getImage(`data:image/svg+xml,${encodeURIComponent(candidate)}`);
+      const check = document.createElement("canvas"); check.width = mask.width; check.height = mask.height;
+      const ctx = check.getContext("2d")!; ctx.drawImage(image, 0, 0);
+      const coverage = ctx.getImageData(0, 0, check.width, check.height).data;
+      const actual = new Uint8Array(profileMask.length); let difference = 0;
+      for (let p = 0; p < actual.length; p++) {
+        actual[p] = coverage[p * 4 + 3] >= 128 ? 1 : 0;
+        if (actual[p] !== profileMask[p]) difference++;
+      }
+      const topology = cutMaskTopology(actual, mask.width, mask.height);
+      if (topology.pieces === expected.pieces && topology.holes === expected.holes && difference / Math.max(area, 1) <= .025) {
+        svg = candidate; optimized = true; break;
+      }
+    }
+    if (!optimized) throw new Error("This contour could not be simplified safely without changing small pieces or holes. The original image was kept.");
+  }
+  const doc = new DOMParser().parseFromString(svg, "image/svg+xml"),
     root = doc.documentElement;
   root.setAttribute("width", String(profile ? mask.width : traced.width));
   root.setAttribute("height", String(profile ? mask.height : traced.height));
@@ -4357,7 +4354,7 @@ export default function Home() {
       const converted: Layer[] = [];
       for (const target of targets) {
         const alreadyTransparent = await hasTransparentCanvas(target.src),
-          refined = alreadyTransparent ? target.src : await featherAlphaInside(await refineBackground(target.src, 46, [], 12, 0)),
+          refined = await featherAlphaInside(alreadyTransparent ? target.src : await refineBackground(target.src, 46, [], 12, 0)),
           trimmed = await trimTransparent(refined),
           color = COLORS[Math.floor(Math.random() * 21)],
           vectorSrc = await smoothVectorCutout(trimmed.src, color, true, extraSmooth ? "smooth" : "detailed"),
