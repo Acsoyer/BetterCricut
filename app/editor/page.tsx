@@ -8,12 +8,14 @@ import { EDITOR_VERSION, editorDevLog } from "../editor-dev-log";
 import { getSVG, traceCanvas } from "@cadit-app/potrace-ts";
 import cutPreviewWorkerUrl from "./cut-preview.worker?worker&url";
 import { fittedCutSvg } from "./cut-curve-fit";
+import { cutFitRetryPlan, losslessCutMaskSvg } from "./cut-fit-retry";
 import { smoothAlphaCoverage } from "./alpha-coverage";
 import { cutContourOptions, prepareCutContour, cutMaskTopology, type CutContourProfile } from "./cut-contour";
 import { faStar, faHeart, faArrowRight, faBolt, faBurst, faCloud, faMoon, faSun, faDiamond, faShield, faDroplet, faLeaf, faCrown, faBell, faGift, faTag, faBookmark, faLocationPin, faComment, faPuzzlePiece } from "@fortawesome/free-solid-svg-icons";
 const PAGE_SIZES = { a4: { label: "A4", w: 21, h: 29.7 }, letter: { label: "Letter", w: 21.59, h: 27.94 }, a5: { label: "A5", w: 14.8, h: 21 }, full: { label: "Large canvas", w: 100, h: 100 } } as const,
   PPCM = 34,
   DPI = 150,
+  DEFAULT_OUTLINE_CM = 0.4,
   DARK = "#3c4144";
 const COLORS = ["#EF9999", "#CF93DA", "#9DA8DB", "#90CAF8", "#A5D6A7", "#FEF59C", "#FFCC80", "#F53636", "#9928B1", "#3F51B5", "#2296F3", "#4DAF50", "#FFEC3C", "#FF9702", "#B71B1B", "#49148B", "#1B237E", "#0E47A0", "#1D5E21", "#FAC02E", "#E65002", "#FFFFFF", "#CCCCCC", "#999999", "#666666", "#333333", "#000000", "#8E5609"];
 const CUSTOM_SHAPES = [
@@ -896,11 +898,11 @@ async function smoothVectorCutout(src: string, color: string, preserveFrame = fa
   if (profile && profileMask) {
     let optimized = false;
     const expected = cutMaskTopology(profileMask, mask.width, mask.height);
-    const area = profileMask.reduce((sum, value) => sum + value, 0), priorSegments = paths.reduce((sum, path) => sum + path.curve.tag.reduce((n, tag) => n + (tag === "CORNER" ? 2 : 1), 0), 0);
-    for (const reduction of [1, .9, .8, .7, .6, .5, .35, .25]) {
-      const candidate = fittedCutSvg(paths, profile, supersample, reduction)
+    const area = profileMask.reduce((sum, value) => sum + value, 0), firstFit = fittedCutSvg(paths, profile, supersample);
+    for (const { scale: reduction, budget } of cutFitRetryPlan((firstFit.match(/[CL] /g) || []).length)) {
+      const candidate = (reduction === 1 ? firstFit : fittedCutSvg(paths, profile, supersample, reduction))
         .replace("<svg", `<svg width="${mask.width}" height="${mask.height}" viewBox="${pad} ${pad} ${mask.width} ${mask.height}"`);
-      if ((candidate.match(/[CL] /g) || []).length > priorSegments) continue;
+      if ((candidate.match(/[CL] /g) || []).length > budget) continue;
       const image = await getImage(`data:image/svg+xml,${encodeURIComponent(candidate)}`);
       const check = document.createElement("canvas"); check.width = mask.width; check.height = mask.height;
       const ctx = check.getContext("2d")!; ctx.drawImage(image, 0, 0);
@@ -915,7 +917,7 @@ async function smoothVectorCutout(src: string, color: string, preserveFrame = fa
         svg = candidate; optimized = true; break;
       }
     }
-    if (!optimized) throw new Error("This contour could not be simplified safely without changing small pieces or holes. The original image was kept.");
+    if (!optimized) svg = losslessCutMaskSvg(profileMask, mask.width, mask.height, pad);
   }
   const doc = new DOMParser().parseFromString(svg, "image/svg+xml"),
     root = doc.documentElement;
@@ -1832,7 +1834,7 @@ export default function Home() {
     [notice, setNotice] = useState(""),
     [drag, setDrag] = useState<Drag>(null),
     [cycle, setCycle] = useState({ key: "", index: 0, x: -9999, y: -9999 }),
-    [strokeDraft, setStrokeDraft] = useState(0.5),
+    [strokeDraft, setStrokeDraft] = useState(DEFAULT_OUTLINE_CM),
     [fillGapsDraft, setFillGapsDraft] = useState(0),
     [fillAllGapsDraft, setFillAllGapsDraft] = useState(false),
     [stickerBackgroundPromptId, setStickerBackgroundPromptId] = useState<string | null>(null),
@@ -4060,7 +4062,7 @@ export default function Home() {
     try {
       const outlineSource = one.stickerOffset?.enabled ? (one.stickerOffset.previewSrc || (await renderStickerOffset(one, 1)).toDataURL("image/png")) : one.src,
         cutSrc = await smoothVectorCutout(outlineSource, DARK, true),
-        cm = strokeDraft,
+        cm = DEFAULT_OUTLINE_CM,
         outlineColor = lighten(DARK),
         rasterStroke = await strokeImage(cutSrc, cm, one.w, outlineColor, fillGapsDraft),
         src = await smoothVectorCutout(rasterStroke, outlineColor, true),
@@ -5479,7 +5481,7 @@ export default function Home() {
             <button type="button" disabled={one.rasterStatus === "background"} onClick={() => void openStickerBorder(one)}><Sparkles /> Add Sticker Border to Image</button>
             <button type="button" className={one.rasterStatus === "background" ? "" : "primary"} onClick={() => void addOutlineToPrintable()}><Scissors /> Add Outline as Cut Shape</button>
           </>}
-          {one && ["vector", "stroke"].includes(one.kind) && <><button type="button" className="primary" onClick={() => openCutoutEditor()}><Scissors /> Edit Cut Shape</button><button type="button" onClick={() => void addStroke()}><Scissors /> Add Outline as Cut Shape</button></>}
+          {one && ["vector", "stroke"].includes(one.kind) && <><button type="button" onClick={() => void addStroke(DEFAULT_OUTLINE_CM)}><Scissors /> Add Outline as Cut Shape</button></>}
           {!one && <><button disabled><Sparkles/> Remove Background</button><button disabled><Scissors/> Create Cut Shape</button><button disabled><Sparkles/> Add Sticker Border to Image</button><button disabled><Scissors/> Add Outline as Cut Shape</button></>}
         </nav>
         <div className="export-actions" aria-label="Export options"><span className="export-as-label">Export As:</span>
@@ -5853,7 +5855,10 @@ export default function Home() {
                 <input type="range" min="0" max="30" step={fillGapsDraft < 5 ? ".5" : "1"} value={fillGapsDraft} onChange={(event)=>setFillGapsDraft(+event.target.value)}/>
                 <div className="floating-property-actions gap-actions"><label className="fill-all-check"><input type="checkbox" checked={fillAllGapsDraft} onChange={(event)=>setFillAllGapsDraft(event.target.checked)}/> Fill all the gaps</label><button className="primary-property" onClick={()=>fillAllGapsDraft?void fillEveryGap():void applyGapPreview()}>Apply Fill</button></div>
                 <small>Only enclosed openings are filled; the outside edge is preserved.</small>
-              </div></div>
+              </div>
+              <footer style={{borderTop:"1px solid #dce5e1",paddingTop:10,marginTop:10}}>
+                <button type="button" className="primary-property" style={{width:"100%",minHeight:36,display:"flex",alignItems:"center",justifyContent:"center",gap:8,fontSize:12,border:"1px solid #cbd9d3",borderRadius:7,background:"#f4f8f6",color:"#275346",fontWeight:700}} onClick={()=>openCutoutEditor()}><Scissors style={{width:16,height:16}}/> Edit Cut Shape</button>
+              </footer></div>
             </section>
           )}
           <div className="board" style={{ width: A4.w * scale + 42, height: A4.h * scale + 42 }}>
