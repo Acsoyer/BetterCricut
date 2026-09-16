@@ -40,6 +40,8 @@ test('generated cubic holes fill without browser length traversal or rewriting o
     assert.equal(await fillVectorGaps('<svg/>',10,10,'all'),outer);
     d=outer+hole+island;
     assert.equal(await fillVectorGaps('<svg/>',10,10,1),outer+hole+island);
+    d="M0 0 L100 0 L100 100 L0 100 L0 0 M20 20 L20 40 L40 40 L40 20 L20 20";
+    assert.equal(await fillVectorGaps("<svg/>",10,10,"all"),"M0 0 L100 0 L100 100 L0 100 L0 0 ");
     d="m0 0 h100 v100 h-100 z m20 20 v20 h20 v-20 z";
     assert.equal(await fillVectorGaps("<svg/>",10,10,"all"),"M0 0 h100 v100 h-100 z ");
   } finally {

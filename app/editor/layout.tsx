@@ -60,6 +60,7 @@ import "./v112.css";
 import "./v114-fixes.css";
 import "./v1144.css";
 import "./v1145.css";
+import "./v1146.css";
 
 export default function EditorLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();

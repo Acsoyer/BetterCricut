@@ -5552,30 +5552,42 @@ export default function Home() {
         <nav className="main-actions" aria-label="Recommended next actions">
           {one && !["vector", "stroke", "acetate"].includes(one.kind) && <>
             <button type="button" className={one.rasterStatus === "background" ? "remove-bg-main primary" : "remove-bg-main"} onClick={() => setBgMenuOpen(true)}><Sparkles /> Remove Background</button>
-            <button type="button" onClick={() => setCutoutMenuOpen(true)}><Scissors /> Create Cut Shape</button>
+            <button type="button" onClick={() => setCutoutMenuOpen(true)}><Scissors /> Convert to Cut Shape</button>
             <button type="button" disabled={one.rasterStatus === "background"} onClick={() => void openStickerBorder(one)}><Sparkles /> Add Sticker Border to Image</button>
             <button type="button" className={one.rasterStatus === "background" ? "" : "primary"} onClick={() => void addOutlineToPrintable()}><OutlineIcon /> Add Outline as Cut Shape</button>
           </>}
           {one && ["vector", "stroke"].includes(one.kind) && <><button type="button" onClick={() => void addStroke(DEFAULT_OUTLINE_CM)}><OutlineIcon /> Add Outline</button><button type="button" onClick={() => void makeGapsPermanent()}><Sparkles /> Bake Cutout</button></>}
-          {!one && <><button disabled><Sparkles/> Remove Background</button><button disabled><Scissors/> Create Cut Shape</button><button disabled><Sparkles/> Add Sticker Border to Image</button><button disabled><Scissors/> Add Outline as Cut Shape</button></>}
+          {!one && <><button disabled><Sparkles/> Remove Background</button><button disabled><Scissors/> Convert to Cut Shape</button><button disabled><Sparkles/> Add Sticker Border to Image</button><button disabled><Scissors/> Add Outline as Cut Shape</button></>}
         </nav>
-        <div className="export-actions" aria-label="Export options"><span className="export-as-label">Export As:</span>
-          {picked.length > 1 && canSVG && (
-            <button className="multiple-svg" onClick={() => void exportSVG()} title="Export every selected Cutout as a separate SVG file">
-              <Type /> Multiple SVG
+
+      <div className="top-account-actions">
+            <button className="left-ai-library" onClick={()=>{setAiLibraryOpen(true);setProjectsOpen(false);setAccountOpen(false)}}>
+              <Sparkles />
+              <small>AI Archive</small>
             </button>
-          )}
-          <button disabled={picked.length !== 1 || !canSVG} onClick={() => void exportSVG()} title="Export selected Cutout as SVG">
-            <Type /> SVG
-          </button>
-          <button disabled={!canExport} onClick={exportPNG} title="Export selected layers as separate PNG files">
-            <FileImage /> PNG
-          </button>
-          <button disabled={invalid || !layers.some((l) => l.visible)} onClick={exportPDF} title="Export visible A4 canvas as PDF">
-            <Download /> PDF
-          </button>
-        </div>
-      </header>
+            <button
+              className="left-projects"
+              onClick={() => {
+                setProjectsOpen(true);
+                setAccountOpen(false);
+                void refreshProjects(projects.length === 0);
+              }}
+            >
+              <FolderOpen />
+              <small>My Projects</small>
+            </button>
+            <button
+              className="left-account"
+              onClick={() => {
+                setAccountOpen(true);
+                setProjectsOpen(false);
+              }}
+            >
+              <span className="profile-placeholder">{session?.user.user_metadata?.avatar_url || session?.user.user_metadata?.picture ? <img src={session.user.user_metadata.avatar_url || session.user.user_metadata.picture} alt="" /> : <User />}</span>
+              <small>My Account</small>
+            </button>
+          </div>
+</header>
       <div className="sub-toolbar">
         <div className="sub-left">
           <div className="wrap page-setup-slot">
@@ -5805,33 +5817,24 @@ export default function Home() {
               </div>
             )}
           </div>
-          <div className="left-future">
-            <button className="left-ai-library" onClick={()=>{setAiLibraryOpen(true);setProjectsOpen(false);setAccountOpen(false)}}>
-              <Sparkles />
-              <small>AI Archive</small>
+
+<div className="export-actions left-export-actions" aria-label="Export options"><span className="export-as-label">Export As:</span>
+          {picked.length > 1 && canSVG && (
+            <button className="multiple-svg" onClick={() => void exportSVG()} title="Export every selected Cutout as a separate SVG file">
+              <Type /> Multiple SVG
             </button>
-            <button
-              className="left-projects"
-              onClick={() => {
-                setProjectsOpen(true);
-                setAccountOpen(false);
-                void refreshProjects(projects.length === 0);
-              }}
-            >
-              <FolderOpen />
-              <small>My Projects</small>
-            </button>
-            <button
-              className="left-account"
-              onClick={() => {
-                setAccountOpen(true);
-                setProjectsOpen(false);
-              }}
-            >
-              <span className="profile-placeholder">{session?.user.user_metadata?.avatar_url || session?.user.user_metadata?.picture ? <img src={session.user.user_metadata.avatar_url || session.user.user_metadata.picture} alt="" /> : <User />}</span>
-              <small>My Account</small>
-            </button>
-          </div>
+          )}
+          {picked.length > 1 && canExport && picked.every(layer => !["vector","stroke"].includes(layer.kind)) && <button className="multiple-png" onClick={()=>void exportPNG()}><FileImage/> Multiple PNG</button>}
+          <button disabled={picked.length !== 1 || !canSVG} onClick={() => void exportSVG()} title="Export selected Cutout as SVG">
+            <Type /> SVG
+          </button>
+          <button disabled={!canExport} onClick={exportPNG} title="Export selected layers as separate PNG files">
+            <FileImage /> PNG
+          </button>
+          <button disabled={invalid || !layers.some((l) => l.visible)} onClick={exportPDF} title="Export visible A4 canvas as PDF">
+            <Download /> PDF
+          </button>
+        </div>
         </div>
         <div className={`stage ${pageMode === "full" ? "full-page" : "standard-page"}`} ref={stageRef} onScroll={updateRulers} onPointerDown={stageDown}>
           <div className="viewport-rulers">
@@ -6667,11 +6670,11 @@ export default function Home() {
         return <div className="project-transition-modal edge-guidance-modal" role="dialog" aria-modal="true" aria-label="Edge preparation recommended" onPointerDown={()=>setEdgeGuidanceLayerId(null)}><div onPointerDown={(event)=>event.stopPropagation()}><header><span><Sparkles/></span><div><h3>Prepare the image edge</h3><p>This transparent image may have low-resolution or uneven edges. Your printable image will not be changed unless you choose an editing option.</p></div></header><div className="edge-guidance-actions"><button onClick={()=>{setEdgeGuidanceLayerId(null);openImageEditor(guided)}}><ImageIcon/><span><b>Clean Edges</b><small>Open image cleanup tools</small></span></button><button onClick={()=>{setEdgeGuidanceLayerId(null);openImageEditor(guided);window.setTimeout(()=>setImageTab("sticker"),0)}}><Sparkles/><span><b>Add Sticker Border</b><small>Create a forgiving printable edge</small></span></button><button className="continue" onClick={()=>{setEdgeGuidanceLayerId(null);setSelected([guided.id]);window.setTimeout(()=>void addOutlineToPrintable(true),0)}}><Scissors/><span><b>Continue Anyway</b><small>Keep these edges and create the Cut Shape</small></span></button></div><button className="cancel" onClick={()=>setEdgeGuidanceLayerId(null)}>Cancel</button></div></div>;
       })()}
       {cutoutMenuOpen && (
-        <div className="preset-modal cutout-choice-modal" role="dialog" aria-modal="true" aria-label="Create Cut Shape" onPointerDown={() => setCutoutMenuOpen(false)}>
+        <div className="preset-modal cutout-choice-modal" role="dialog" aria-modal="true" aria-label="Convert to Cut Shape" onPointerDown={() => setCutoutMenuOpen(false)}>
           <div className="preset-dialog" onPointerDown={(e) => e.stopPropagation()}>
             <header>
               <div>
-                <b>Create Cut Shape</b>
+                <b>Convert to Cut Shape</b>
                 <small>Turn printable artwork into an SVG cutting boundary. The original image remains available.</small>
               </div>
               <button onClick={() => setCutoutMenuOpen(false)}>
@@ -7162,7 +7165,7 @@ export default function Home() {
                             {(["crop", "add", "erase", "lasso"] as ImageEditTool[]).map((tool) => (
                               <button key={tool} className={imageEditor.tool === tool ? "active" : ""} onClick={() => setImageEditor({ ...imageEditor, tool: imageEditor.tool === tool ? null : tool, pickingColor:false })}>
                                 {tool === "crop" ? <Maximize2 /> : tool === "add" ? <Paintbrush /> : tool === "erase" ? <Eraser /> : <Scissors />}
-                                <span>{tool === "add" ? "Add Brush" : tool === "erase" ? "Eraser" : tool === "lasso" ? "Lasso Erase" : "Crop"}</span>
+                                <span>{tool === "add" ? "Paint Brush" : tool === "erase" ? "Eraser" : tool === "lasso" ? "Lasso Erase" : "Crop"}</span>
                               </button>
                             ))}
                           </div>

@@ -38,7 +38,7 @@ export async function fillVectorGaps(raw: string, widthCm: number, heightCm: num
       const parts = absoluteSubpaths(d);
       // Relative moveto depends on the preceding subpath's position. Fail safe
       // rather than detach or rewrite native geometry with that dependency.
-      if (!parts || parts.length < 2 || parts.some(p => p[0] !== "M" || !/[zZ]\s*$/.test(p))) continue;
+      if (!parts || parts.length < 2 || parts.some(p => p[0] !== "M")) continue;
       const matrix = path.getCTM();
       if (!matrix) continue;
       const entries: { part: string; points: Point[]; area: number; box: ReturnType<typeof gapBounds>; parents: number[] }[] = [];

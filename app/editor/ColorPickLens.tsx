@@ -14,7 +14,7 @@ export default function ColorPickLens({src, pointer}: {src: string; pointer: Pic
     ctx.strokeStyle="#17211c";ctx.lineWidth=3;ctx.strokeRect(47,47,10,10);
     ctx.strokeStyle="#fff";ctx.lineWidth=1;ctx.strokeRect(48,48,8,8);
   },[image,pointer]);
-  return <div className="color-pick-lens" style={{left:Math.max(8,Math.min(pointer.clientX+22,window.innerWidth-124)),top:Math.max(8,Math.min(pointer.clientY-116,window.innerHeight-148))}}>
+  return <div className="color-pick-lens" style={{left:pointer.clientX-52,top:pointer.clientY-52}}>
     <canvas ref={canvas} width="104" height="104"/><span>Pick Color</span>
   </div>;
 }
