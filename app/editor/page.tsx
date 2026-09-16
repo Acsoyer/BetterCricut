@@ -1164,12 +1164,12 @@ async function analyzeCutSafety(src: string, widthCm: number) {
   overlayContext.putImageData(overlayData, 0, 0);
   return { cutRisk: true, cutRiskReason: reasons.join(", "), cutRiskOverlay: overlay.toDataURL("image/png") };
 }
-async function renderCutoutEdit(editor: CutoutEditor, applyCrop = false) {
+async function renderCutoutEdit(editor: CutoutEditor, applyCrop = false, preview = false) {
   const img = await getImage(editor.source),
     c = document.createElement("canvas");
   // Keep vector edits independent from the browser's arbitrary SVG preview size.
   const vectorSource = editor.source.startsWith("data:image/svg+xml"),
-    workingScale = vectorSource ? Math.max(1, 3200 / Math.max(img.naturalWidth, img.naturalHeight, 1)) : 1;
+    workingScale = preview ? Math.min(1, 1000 / Math.max(img.naturalWidth, img.naturalHeight, 1)) : vectorSource ? Math.max(1, 3200 / Math.max(img.naturalWidth, img.naturalHeight, 1)) : 1;
   const baseWidth = Math.max(1, Math.round(img.naturalWidth * workingScale)), baseHeight = Math.max(1, Math.round(img.naturalHeight * workingScale)), padX = Math.round(baseWidth * .1), padY = Math.round(baseHeight * .1);
   c.width = baseWidth + padX * 2;
   c.height = baseHeight + padY * 2;
@@ -1416,7 +1416,7 @@ async function strokeImage(src: string, strokeCm: number, wCm: number, color: st
   }
   return await silhouette(c.toDataURL(), outer, 255);
 }
-async function trimTransparent(src: string) {
+async function trimTransparent(src: string, margin = 0) {
   const img = await getImage(src),
     c = document.createElement("canvas");
   c.width = img.naturalWidth;
@@ -1437,6 +1437,8 @@ async function trimTransparent(src: string) {
         maxY = Math.max(maxY, y);
       }
   if (maxX < minX) return { src, left: 0, top: 0, width: 1, height: 1 };
+  minX = Math.max(0, minX - margin); minY = Math.max(0, minY - margin);
+  maxX = Math.min(c.width - 1, maxX + margin); maxY = Math.min(c.height - 1, maxY + margin);
   const w = maxX - minX + 1,
     h = maxY - minY + 1,
     out = document.createElement("canvas");
@@ -1512,18 +1514,19 @@ async function selectedEdgeOverlay(src: string, stroke: EditStroke, color: strin
   const img = await getImage(src),
     c = document.createElement("canvas"),
     mask = document.createElement("canvas");
-  c.width = mask.width = img.naturalWidth;
-  c.height = mask.height = img.naturalHeight;
+  const ratio = Math.min(1, 1000 / Math.max(img.naturalWidth, img.naturalHeight));
+  c.width = mask.width = Math.max(1, Math.round(img.naturalWidth * ratio));
+  c.height = mask.height = Math.max(1, Math.round(img.naturalHeight * ratio));
   const cx = c.getContext("2d")!,
     mx = mask.getContext("2d")!;
-  cx.drawImage(img, 0, 0);
+  cx.drawImage(img, 0, 0, c.width, c.height);
   mx.lineCap = "round";
   mx.lineJoin = "round";
   mx.strokeStyle = "#fff";
-  mx.lineWidth = Math.max(4, (stroke.brush / 100) * Math.min(c.width, c.height));
+  mx.lineWidth = Math.max(4, (stroke.brush / 120) * Math.min(c.width, c.height));
   mx.beginPath();
-  stroke.points.forEach((p, i) => (i ? mx.lineTo(p.x * c.width, p.y * c.height) : mx.moveTo(p.x * c.width, p.y * c.height)));
-  if (stroke.points.length === 1) mx.lineTo(stroke.points[0].x * c.width + 0.01, stroke.points[0].y * c.height);
+  stroke.points.forEach((p, i) => (i ? mx.lineTo(((p.x + .1) / 1.2) * c.width, ((p.y + .1) / 1.2) * c.height) : mx.moveTo(((p.x + .1) / 1.2) * c.width, ((p.y + .1) / 1.2) * c.height)));
+  if (stroke.points.length === 1) mx.lineTo(((stroke.points[0].x + .1) / 1.2) * c.width + 0.01, ((stroke.points[0].y + .1) / 1.2) * c.height);
   mx.stroke();
   const source = cx.getImageData(0, 0, c.width, c.height),
     selection = mx.getImageData(0, 0, c.width, c.height),
@@ -1963,6 +1966,7 @@ export default function Home() {
     cutDrawing = useRef<string | null>(null),
     cutDraftStroke = useRef<EditStroke | null>(null),
     cutCursorRef = useRef<HTMLElement>(null),
+    cutEdgeBusy = useRef(false),
     cutLivePathRef = useRef<SVGPolylineElement>(null),
     cutLiveRectRef = useRef<SVGRectElement>(null),
     cutFrame = useRef<number | null>(null),
@@ -2432,24 +2436,11 @@ export default function Home() {
   }, [bgEditor?.source, bgEditor?.strokes, bgEditor?.speckles, bgEditor?.edgeRefine, bgEditor?.eraseColors, bgEditor?.edgeSmooth, bgEditor?.optimizeAlpha]);
   useEffect(() => {
     if (!cutEditor) return;
-    if (cutEditor.source.startsWith("data:image/svg+xml") && cutEditor.strokes.length === 0) {
-      setCutPreview(scalableSvgPreview(cutEditor.source));
-      return;
-    }
     let cancelled = false;
-    const timer = window.setTimeout(
-      () =>
-        void renderCutoutEdit(cutEditor)
-          .then((r) => smoothVectorCutout(r.src, cutEditor.color, true))
-          .then((src) => {
-            if (!cancelled) setCutPreview(scalableSvgPreview(src));
-          }),
-      80,
-    );
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
+    void renderCutoutEdit(cutEditor, false, true).then((result) => {
+      if (!cancelled) setCutPreview(result.src);
+    });
+    return () => { cancelled = true; };
   }, [cutEditor?.source, cutEditor?.strokes, cutEditor?.color]);
   useEffect(() => {
     const id = cutActiveStroke || cutFinishedStroke,
@@ -3287,14 +3278,13 @@ export default function Home() {
   };
   const openCutoutEditor = (chosen: Layer | null = one) => {
     if (!chosen || !["vector", "stroke"].includes(chosen.kind)) return;
-    const previewSrc = scalableSvgPreview(chosen.src);
-    setCutPreview(previewSrc);
+    setCutPreview("");
     setCutCropActive(false);
     setCutoutTab("edit");
     setCutImageSize({ w: 0, h: 0 });
     setCutEditor({
       layerId: chosen.id,
-      source: previewSrc,
+      source: chosen.src,
       color: chosen.color,
       tool: null,
       brush: 3,
@@ -3365,7 +3355,10 @@ export default function Home() {
         cutLiveRectRef.current.setAttribute("height", String((Math.abs(lastPoint.y - first.y)/1.2) * cutImageSize.h * surfaceScale));
         cutLiveRectRef.current.style.display = "block";
       } else if (cutLivePathRef.current) cutLivePathRef.current.setAttribute("points", shownPoints.map((point) => `${((point.x+.1)/1.2) * cutImageSize.w * surfaceScale},${((point.y+.1)/1.2) * cutImageSize.h * surfaceScale}`).join(" "));
-      if (current.tool === "smooth" && cutPreview) void selectedEdgeOverlay(cutPreview, { ...current, points: shownPoints }, "red").then(setCutEdgeOverlay);
+      if (current.tool === "smooth" && cutPreview && !cutEdgeBusy.current) {
+        cutEdgeBusy.current = true;
+        void selectedEdgeOverlay(cutPreview, { ...current, points: shownPoints }, "red").then((src) => { if (cutDrawing.current === current.id) setCutEdgeOverlay(src); }).finally(() => { cutEdgeBusy.current = false; });
+      }
     });
   };
   const endCutEdit = () => {
@@ -3420,10 +3413,13 @@ export default function Home() {
     if (!cutEditor) return;
     const target = layers.find((l) => l.id === cutEditor.layerId);
     if (!target) return;
+    if (!cutEditor.strokes.length && !Object.values(cutEditor.crop).some(value => Math.abs(value) > .001)) { setCutEditor(null); return; }
     setWorking(true);
     try {
       const hasCrop = Object.values(cutEditor.crop).some((value) => Math.abs(value) > 0.001),
-        result = await renderCutoutEdit(cutEditor, hasCrop),
+        rendered = await renderCutoutEdit(cutEditor, hasCrop),
+        trimmed = await trimTransparent(rendered.src, 3),
+        result = { src: trimmed.src, left: rendered.left + rendered.width * trimmed.left, top: rendered.top + rendered.height * trimmed.top, width: rendered.width * trimmed.width, height: rendered.height * trimmed.height },
         finalSrc = cutEditor.strokes.length || hasCrop ? await smoothVectorCutout(result.src, target.color, true) : target.src,
         safety = await analyzeCutSafety(finalSrc, target.w * result.width),
         next: Layer = {
@@ -6665,7 +6661,7 @@ export default function Home() {
           <h1>Welcome to Cake Topper Maker</h1>
           <p>Everything you need to turn an idea into a Cricut-ready design.</p>
           <div className="welcome-steps">
-            <article><span>1</span><b>Generate or bring your own image</b></article>
+            <article><span>1</span><b>Bring your image file from your computer or generate new text or image!</b></article>
             <article><span>2</span><b>Edit and make them best for Cricut</b></article>
             <article><span>3</span><b>Download ready to use images in Cricut projects</b></article>
           </div>
@@ -7376,7 +7372,7 @@ export default function Home() {
               <div className="bg-preview cutout-preview" ref={cutPreviewRef} onWheel={zoomCutout} onPointerDown={startCutoutPan} onPointerMove={moveCutoutPan} onPointerUp={endCutoutPan} onPointerCancel={endCutoutPan}>
                 {cutPreview && (
                   <div
-                    className={`cut-image-wrap ${cutEditor.strokes.length ? "has-edit-padding" : "initial-edit-padding"}`} onPointerDown={startCutEdit} onPointerMove={moveCutEdit} onPointerUp={endCutEdit} onPointerCancel={endCutEdit} onPointerEnter={() => setCutCursor((v) => ({ ...v, visible: true }))} onPointerLeave={() => setCutCursor((v) => ({ ...v, visible: false }))}
+                    className="cut-image-wrap has-edit-padding" onPointerDown={startCutEdit} onPointerMove={moveCutEdit} onPointerUp={endCutEdit} onPointerCancel={endCutEdit} onPointerEnter={() => setCutCursor((v) => ({ ...v, visible: true }))} onPointerLeave={() => setCutCursor((v) => ({ ...v, visible: false }))}
                     style={
                       {
                         "--fit-w": cutImageSize.w ? `${cutImageSize.w}px` : "auto",
@@ -7386,7 +7382,7 @@ export default function Home() {
                       } as React.CSSProperties
                     }
                   >
-                    <img className={`cut-tool-${cutEditor.tool} cutout-edge-preview`} src={cutPreview} alt="Cutout edit preview" draggable={false} onLoad={(e) => { if (!cutImageSize.w) setCutImageSize(fitEditorImage(e.currentTarget, cutPreviewRef.current)); }} />
+                    <img className={`cut-tool-${cutEditor.tool} cutout-edge-preview`} src={cutPreview} alt="Cutout edit preview" draggable={false} onLoad={(e) => { if (!cutImageSize.w) { const fitted = fitEditorImage(e.currentTarget, cutPreviewRef.current); setCutImageSize({ w: fitted.w / 1.2, h: fitted.h / 1.2 }); } }} />
                     {cutEdgeOverlay && <img className="cut-selected-edge" src={cutEdgeOverlay} alt="" draggable={false} />}
                     <svg className="cut-edit-overlay" viewBox={`0 0 ${(cutImageSize.w || 100) * 1.2} ${(cutImageSize.h || 100) * 1.2}`} preserveAspectRatio="none">
                       <polyline ref={cutLivePathRef} points="" className="edit-brush-stroke" style={{ strokeWidth: (cutEditor.brush / cutEditor.zoom / 100) * Math.min(cutImageSize.w || 100, cutImageSize.h || 100) }} />
