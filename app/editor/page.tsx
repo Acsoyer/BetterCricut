@@ -4269,7 +4269,7 @@ export default function Home() {
       const oldFill = one.steps.findIndex(step => step.type === "fill-gaps"),
         baseSrc = oldFill >= 0 ? one.steps[oldFill].before?.src || one.steps[oldFill - 1]?.snapshot.src || one.src : one.src,
         preservedColor = one.color,
-        src = `data:image/svg+xml,${encodeURIComponent(fillVectorGaps(decodeSvgData(baseSrc), one.w, one.h, fillGapsDraft))}`;
+        src = `data:image/svg+xml,${encodeURIComponent(await fillVectorGaps(decodeSvgData(baseSrc), one.w, one.h, fillGapsDraft))}`;
       mutate(one.id, (l) => {
         const next = {
             ...l,
@@ -4300,7 +4300,7 @@ export default function Home() {
     try {
       const oldFill = one.steps.findIndex(step => step.type === "fill-gaps"),
         baseSrc = oldFill >= 0 ? one.steps[oldFill].before?.src || one.steps[oldFill - 1]?.snapshot.src || one.src : one.src,
-        src = `data:image/svg+xml,${encodeURIComponent(fillVectorGaps(decodeSvgData(baseSrc), one.w, one.h, "all"))}`;
+        src = `data:image/svg+xml,${encodeURIComponent(await fillVectorGaps(decodeSvgData(baseSrc), one.w, one.h, "all"))}`;
       mutate(one.id, (layer) => {
         const next = { ...layer, src, fillGapsMm: 0, fillAllGaps: true },
           steps = layer.steps.filter((step) => step.type !== "fill-gaps");
