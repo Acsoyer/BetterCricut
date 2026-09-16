@@ -1343,10 +1343,12 @@ async function strokeImage(src: string, strokeCm: number, wCm: number, color: st
     iw = Math.max(1, Math.round(img.naturalWidth * s)),
     ih = Math.max(1, Math.round(img.naturalHeight * s)),
     r = Math.max(0, Math.min(72, Math.round((strokeCm / Math.max(wCm, 0.1)) * iw))),
+    guard = 4,
+    pad = r + guard,
     c = document.createElement("canvas"),
     mask = document.createElement("canvas");
-  c.width = iw + r * 2;
-  c.height = ih + r * 2;
+  c.width = iw + pad * 2;
+  c.height = ih + pad * 2;
   mask.width = iw;
   mask.height = ih;
   const mx = mask.getContext("2d")!,
@@ -1360,13 +1362,13 @@ async function strokeImage(src: string, strokeCm: number, wCm: number, color: st
   const steps = Math.max(32, Math.min(96, Math.ceil(r * 2.4)));
   for (let n = 0; n < steps; n++) {
     const a = (n / steps) * Math.PI * 2;
-    x.drawImage(mask, r + Math.cos(a) * r, r + Math.sin(a) * r);
+    x.drawImage(mask, pad + Math.cos(a) * r, pad + Math.sin(a) * r);
   }
   x.globalCompositeOperation = "source-in";
   x.fillStyle = outer;
   x.fillRect(0, 0, c.width, c.height);
   x.globalCompositeOperation = "source-over";
-  x.drawImage(mask, r, r);
+  x.drawImage(mask, pad, pad);
   x.globalCompositeOperation = "source-in";
   x.fillStyle = outer;
   x.fillRect(0, 0, c.width, c.height);
@@ -3338,8 +3340,8 @@ export default function Home() {
     if (!cutEditor) return;
     const cursor = cutPoint(e);
     if (cutCursorRef.current) {
-      cutCursorRef.current.style.left = `${cursor.x * 100}%`;
-      cutCursorRef.current.style.top = `${cursor.y * 100}%`;
+      cutCursorRef.current.style.left = `${((cursor.x + .1) / 1.2) * 100}%`;
+      cutCursorRef.current.style.top = `${((cursor.y + .1) / 1.2) * 100}%`;
     }
     const draft = cutDraftStroke.current;
     if (!draft || !cutDrawing.current || e.buttons !== 1) return;
@@ -4000,7 +4002,8 @@ export default function Home() {
     }
     setWorking(true);
     try {
-      const cutSrc = await smoothVectorCutout(one.src, DARK, true),
+      const outlineSource = one.stickerOffset?.enabled ? (one.stickerOffset.previewSrc || (await renderStickerOffset(one, 1)).toDataURL("image/png")) : one.src,
+        cutSrc = await smoothVectorCutout(outlineSource, DARK, true),
         cm = strokeDraft,
         outlineColor = lighten(DARK),
         rasterStroke = await strokeImage(cutSrc, cm, one.w, outlineColor, fillGapsDraft),
@@ -6607,7 +6610,7 @@ export default function Home() {
                 <div className="text-compose-row">
                   <div className="text-compose-fields">
                     <div className="text-line-inputs">
-                      <div className="line-actions"><button disabled={textLineCount>=4} onClick={()=>setTextLineCount(Math.min(4,textLineCount+1) as 1|2|3|4)}><Plus/> Add line</button><button disabled={textLineCount<=1} onClick={()=>setTextLineCount(Math.max(1,textLineCount-1) as 1|2|3|4)}>− Remove line</button></div>
+                      <div className="line-actions"><button disabled={textLineCount>=4} onClick={()=>setTextLineCount(Math.min(4,textLineCount+1) as 1|2|3|4)}><b>+</b><span>Add</span><span>Line</span></button><button disabled={textLineCount<=1} onClick={()=>setTextLineCount(Math.max(1,textLineCount-1) as 1|2|3|4)}><span>Remove</span><span>Line</span><b>−</b></button></div>
                       <div className="line-field-stack">{Array.from({length:textLineCount},(_,index)=><label key={index}>Line {index+1}<input value={textLines[index]} placeholder={textPlaceholders(textLineCount)[index]} onChange={(e)=>setTextLines((lines)=>lines.map((line,lineIndex)=>lineIndex===index?e.target.value:line))}/></label>)}</div>
                     </div>
                     <small className="effective-lines">{activeTextLines.length || textLineCount} line{(activeTextLines.length || textLineCount) === 1 ? "" : "s"} will be generated{activeTextLines.length < textLineCount && activeTextLines.length > 0 ? " — empty lines are ignored" : ""}.</small>
@@ -7382,7 +7385,7 @@ export default function Home() {
                     <img className={`cut-tool-${cutEditor.tool} cutout-edge-preview`} src={cutPreview} alt="Cutout edit preview" draggable={false} onLoad={(e) => setCutImageSize(fitEditorImage(e.currentTarget, cutPreviewRef.current))} />
                     {cutEdgeOverlay && <img className="cut-selected-edge" src={cutEdgeOverlay} alt="" draggable={false} />}
                     <svg className="cut-edit-overlay" viewBox={`0 0 ${(cutImageSize.w || 100) * (cutEditor.strokes.length ? 1 : 1.2)} ${(cutImageSize.h || 100) * (cutEditor.strokes.length ? 1 : 1.2)}`} preserveAspectRatio="none">
-                      <polyline ref={cutLivePathRef} points="" className="edit-brush-stroke" style={{ strokeWidth: (cutEditor.brush / cutEditor.zoom / 100) * Math.min(cutImageSize.w || 100, cutImageSize.h || 100) }} />
+                      <polyline ref={cutLivePathRef} points="" className="edit-brush-stroke" style={{ strokeWidth: (cutEditor.brush / cutEditor.zoom / 100) * Math.min(cutImageSize.w || 100, cutImageSize.h || 100) * (cutEditor.strokes.length ? 1 / 1.2 : 1) }} />
                       <rect ref={cutLiveRectRef} className="eraser-selection" style={{ display: "none" }} />
                     </svg>
                     {cutCursor.visible && cutEditor.tool && ["bridge", "erase", "smooth"].includes(cutEditor.tool) && (
@@ -7392,7 +7395,7 @@ export default function Home() {
                         style={{
                           left: "50%",
                           top: "50%",
-                          width: `${(cutEditor.brush / cutEditor.zoom / 100) * Math.min(cutImageSize.w || 100, cutImageSize.h || 100)}px`,
+                          width: `${(cutEditor.brush / cutEditor.zoom / 100) * Math.min(cutImageSize.w || 100, cutImageSize.h || 100) * (cutEditor.strokes.length ? 1 / 1.2 : 1)}px`,
                           aspectRatio: "1",
                         }}
                       />
