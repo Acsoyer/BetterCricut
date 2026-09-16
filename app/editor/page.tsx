@@ -7,6 +7,7 @@ import { supabase } from "../lib/supabase";
 import { EDITOR_VERSION, editorDevLog } from "../editor-dev-log";
 import PickedColorControls from "./PickedColorControls";
 import { navigatePreview } from "./preview-navigation";
+import { fillVectorGaps } from "./vector-gap-fill";
 import { getSVG, traceCanvas } from "@cadit-app/potrace-ts";
 import cutPreviewWorkerUrl from "./cut-preview.worker?worker&url";
 import { fittedCutSvg, detailedRecoveryScales } from "./cut-curve-fit";
@@ -4265,12 +4266,10 @@ export default function Home() {
     if (!one || !["vector", "stroke"].includes(one.kind)) return;
     setWorking(true);
     try {
-      const parent = one.kind === "stroke" ? layers.find((l) => l.id === one.parentId) : undefined,
-        base = parent || one,
-        cm = one.kind === "stroke" ? one.strokeCm : 0,
+      const oldFill = one.steps.findIndex(step => step.type === "fill-gaps"),
+        baseSrc = oldFill >= 0 ? one.steps[oldFill].before?.src || one.steps[oldFill - 1]?.snapshot.src || one.src : one.src,
         preservedColor = one.color,
-        rasterStroke = await strokeImage(base.src, cm, base.w, preservedColor, fillGapsDraft),
-        src = await smoothVectorCutout(rasterStroke, preservedColor, true);
+        src = `data:image/svg+xml,${encodeURIComponent(fillVectorGaps(decodeSvgData(baseSrc), one.w, one.h, fillGapsDraft))}`;
       mutate(one.id, (l) => {
         const next = {
             ...l,
@@ -4285,6 +4284,7 @@ export default function Home() {
             id: uid(),
             type: "fill-gaps",
             label: `Fill Gaps · ${Math.round(fillGapsDraft)} mm`,
+            before: { ...snapshot(l), src: baseSrc },
             snapshot: snapshot(next),
           });
         return { ...next, steps, activeStep: steps.length - 1 };
@@ -4298,15 +4298,13 @@ export default function Home() {
     if (!one || !["stroke", "vector"].includes(one.kind)) return;
     setWorking(true);
     try {
-      const parent = one.kind === "stroke" ? layers.find((layer) => layer.id === one.parentId) : undefined,
-        base = parent || one,
-        cm = one.kind === "stroke" ? one.strokeCm : 0,
-        raster = await strokeImage(base.src, cm, base.w, one.color, "all"),
-        src = await smoothVectorCutout(raster, one.color, true);
+      const oldFill = one.steps.findIndex(step => step.type === "fill-gaps"),
+        baseSrc = oldFill >= 0 ? one.steps[oldFill].before?.src || one.steps[oldFill - 1]?.snapshot.src || one.src : one.src,
+        src = `data:image/svg+xml,${encodeURIComponent(fillVectorGaps(decodeSvgData(baseSrc), one.w, one.h, "all"))}`;
       mutate(one.id, (layer) => {
         const next = { ...layer, src, fillGapsMm: 0, fillAllGaps: true },
           steps = layer.steps.filter((step) => step.type !== "fill-gaps");
-        steps.push({ id: uid(), type: "fill-gaps", label: "Fill Gaps · All", snapshot: snapshot(next) });
+        steps.push({ id: uid(), type: "fill-gaps", label: "Fill Gaps · All", before: { ...snapshot(layer), src: baseSrc }, snapshot: snapshot(next) });
         return { ...next, steps, activeStep: steps.length - 1 };
       });
       setFillGapsDraft(0);
@@ -4317,9 +4315,8 @@ export default function Home() {
     if (!one || !["stroke", "vector"].includes(one.kind)) return;
     setWorking(true);
     try {
-      const solid = await silhouette(one.src, one.color, 255),
-        trimmed = await trimTransparent(solid),
-        vectorSrc = await vTracerCutout(trimmed.src, one.color, one.w * trimmed.width, 1.25),
+      const trimmed = { left: 0, top: 0, width: 1, height: 1 },
+        vectorSrc = one.src,
         finalLayer: Layer = {
           ...one,
           name: one.name.replace(/_Stroke$/, ""),
