@@ -1920,6 +1920,7 @@ export default function Home() {
     [projectsLoading, setProjectsLoading] = useState(true),
     [storageBlocked, setStorageBlocked] = useState(false),
     [autosaveStatus, setAutosaveStatus] = useState<"saving" | "saved" | "failed" | null>(null),
+    [lastAutosaveAt, setLastAutosaveAt] = useState<Date | null>(null),
     [projectsOpen, setProjectsOpen] = useState(false),
     [expandedProjectId, setExpandedProjectId] = useState<string | null>(null),
     [pendingOpenProject, setPendingOpenProject] = useState<SavedProject | null>(null),
@@ -2242,7 +2243,7 @@ export default function Home() {
     void refreshProjects(false);
     if (closePanel) setProjectsOpen(false);
     setSaveAsMode(false);
-    if (autosave) setAutosaveStatus("saved");
+    if (autosave) { setAutosaveStatus("saved"); setLastAutosaveAt(new Date()); }
     if (!autosave && !saveToastDismissed.current) {
       setSaveStatus("saved");
       setSavedCountdown(2);
@@ -3332,7 +3333,7 @@ export default function Home() {
     cutDraftStroke.current = stroke;
     if (cutLivePathRef.current) {
       cutLivePathRef.current.setAttribute("class", `edit-brush-stroke ${stroke.tool}`);
-      const surfaceScale = cutEditor.strokes.length ? 1 : 1.2;
+      const surfaceScale = 1.2;
       cutLivePathRef.current.setAttribute("points", `${((stroke.points[0].x+.1)/1.2) * cutImageSize.w * surfaceScale},${((stroke.points[0].y+.1)/1.2) * cutImageSize.h * surfaceScale}`);
     }
   };
@@ -3356,7 +3357,7 @@ export default function Home() {
       if (!current) return;
       const shownPoints = ["bridge","erase"].includes(current.tool) ? smoothBrushPoints(current.points,smoothing) : current.points,
         first = shownPoints[0], lastPoint = shownPoints.at(-1)!;
-      const surfaceScale = cutEditor.strokes.length ? 1 : 1.2;
+      const surfaceScale = 1.2;
       if (current.tool === "rectangle" && cutLiveRectRef.current) {
         cutLiveRectRef.current.setAttribute("x", String(((Math.min(first.x, lastPoint.x)+.1)/1.2) * cutImageSize.w * surfaceScale));
         cutLiveRectRef.current.setAttribute("y", String(((Math.min(first.y, lastPoint.y)+.1)/1.2) * cutImageSize.h * surfaceScale));
@@ -3364,6 +3365,7 @@ export default function Home() {
         cutLiveRectRef.current.setAttribute("height", String((Math.abs(lastPoint.y - first.y)/1.2) * cutImageSize.h * surfaceScale));
         cutLiveRectRef.current.style.display = "block";
       } else if (cutLivePathRef.current) cutLivePathRef.current.setAttribute("points", shownPoints.map((point) => `${((point.x+.1)/1.2) * cutImageSize.w * surfaceScale},${((point.y+.1)/1.2) * cutImageSize.h * surfaceScale}`).join(" "));
+      if (current.tool === "smooth" && cutPreview) void selectedEdgeOverlay(cutPreview, { ...current, points: shownPoints }, "red").then(setCutEdgeOverlay);
     });
   };
   const endCutEdit = () => {
@@ -3377,6 +3379,7 @@ export default function Home() {
     if (completed) {
       const finalStroke = ["bridge","erase"].includes(completed.tool) ? {...completed,points:smoothBrushPoints(completed.points,cutEditor?.smoothing || 5)} : completed;
       setCutEditor((value) => (value ? { ...value, strokes: [...value.strokes, finalStroke], redoStrokes: [] } : value));
+      if (finalStroke.tool === "smooth" && cutPreview) void selectedEdgeOverlay(cutPreview, finalStroke, "green").then(setCutEdgeOverlay);
     }
     if (id) {
       setCutFinishedStroke(id);
@@ -4105,6 +4108,7 @@ export default function Home() {
     try {
       const parent = layers.find((l) => l.id === one.parentId),
         base = parent || one,
+        baseSrc = base.stickerOffset?.enabled ? (base.stickerOffset.previewSrc || (await renderStickerOffset(base, 1)).toDataURL("image/png")) : base.src,
         old = one.strokeCm,
         cm = strokeDraft,
         newW = Math.max(0.2, one.w + 2 * (cm - old)),
@@ -4112,7 +4116,7 @@ export default function Home() {
         x = one.x - (cm - old),
         y = one.y - (cm - old),
         previewColor = one.color,
-        rasterStroke = await strokeImage(base.src, cm, base.w, previewColor, fillGapsDraft),
+        rasterStroke = await strokeImage(baseSrc, cm, base.w, previewColor, fillGapsDraft),
         src = await smoothVectorCutout(rasterStroke, previewColor, true),
         invalid = x < SAFE.x || y < SAFE.y || x + newW > SAFE.x + SAFE.w || y + newH > SAFE.y + SAFE.h;
       mutate(one.id, (l) => {
@@ -5840,7 +5844,7 @@ export default function Home() {
                   height: SAFE.h * scale,
                 }}
               >
-                <span style={{fontSize:`${zoom<.5?Math.max(5,8*zoom/.5):zoom>5?Math.min(13,8+(zoom-5)*.8):8}px`}}>SAFE AREA · {unit === "cm" ? safeMargin : (safeMargin / 2.54).toFixed(2)} {unit.toUpperCase()}</span>
+                <span style={{fontSize:`${zoom<.5?Math.max(2.5,8*(zoom/.5)*.55):zoom>5?Math.min(13,8+(zoom-5)*.8):8}px`}}>SAFE AREA · {unit === "cm" ? safeMargin : (safeMargin / 2.54).toFixed(2)} {unit.toUpperCase()}</span>
               </div>
               {layers
                 .filter((l) => l.visible && !l.groupHidden)
@@ -6189,8 +6193,8 @@ export default function Home() {
                 </>
               ) : (
                 <>
-                  <i />
-                  All layers in safe area
+                  {lastAutosaveAt ? <Check /> : <i />}
+                  {lastAutosaveAt ? `Autosaved successfully · ${lastAutosaveAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "All layers in safe area"}
                 </>
               )}
             </span>
@@ -7382,10 +7386,10 @@ export default function Home() {
                       } as React.CSSProperties
                     }
                   >
-                    <img className={`cut-tool-${cutEditor.tool} cutout-edge-preview`} src={cutPreview} alt="Cutout edit preview" draggable={false} onLoad={(e) => setCutImageSize(fitEditorImage(e.currentTarget, cutPreviewRef.current))} />
+                    <img className={`cut-tool-${cutEditor.tool} cutout-edge-preview`} src={cutPreview} alt="Cutout edit preview" draggable={false} onLoad={(e) => { if (!cutImageSize.w) setCutImageSize(fitEditorImage(e.currentTarget, cutPreviewRef.current)); }} />
                     {cutEdgeOverlay && <img className="cut-selected-edge" src={cutEdgeOverlay} alt="" draggable={false} />}
-                    <svg className="cut-edit-overlay" viewBox={`0 0 ${(cutImageSize.w || 100) * (cutEditor.strokes.length ? 1 : 1.2)} ${(cutImageSize.h || 100) * (cutEditor.strokes.length ? 1 : 1.2)}`} preserveAspectRatio="none">
-                      <polyline ref={cutLivePathRef} points="" className="edit-brush-stroke" style={{ strokeWidth: (cutEditor.brush / cutEditor.zoom / 100) * Math.min(cutImageSize.w || 100, cutImageSize.h || 100) * (cutEditor.strokes.length ? 1 / 1.2 : 1) }} />
+                    <svg className="cut-edit-overlay" viewBox={`0 0 ${(cutImageSize.w || 100) * 1.2} ${(cutImageSize.h || 100) * 1.2}`} preserveAspectRatio="none">
+                      <polyline ref={cutLivePathRef} points="" className="edit-brush-stroke" style={{ strokeWidth: (cutEditor.brush / cutEditor.zoom / 100) * Math.min(cutImageSize.w || 100, cutImageSize.h || 100) }} />
                       <rect ref={cutLiveRectRef} className="eraser-selection" style={{ display: "none" }} />
                     </svg>
                     {cutCursor.visible && cutEditor.tool && ["bridge", "erase", "smooth"].includes(cutEditor.tool) && (
@@ -7395,7 +7399,7 @@ export default function Home() {
                         style={{
                           left: "50%",
                           top: "50%",
-                          width: `${(cutEditor.brush / cutEditor.zoom / 100) * Math.min(cutImageSize.w || 100, cutImageSize.h || 100) * (cutEditor.strokes.length ? 1 / 1.2 : 1)}px`,
+                          width: `${(cutEditor.brush / cutEditor.zoom / 100) * Math.min(cutImageSize.w || 100, cutImageSize.h || 100)}px`,
                           aspectRatio: "1",
                         }}
                       />
