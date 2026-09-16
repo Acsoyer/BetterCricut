@@ -84,7 +84,23 @@ export function prepareCutContour(
       }
     alpha = next;
   }
-  const cleaned = Uint8Array.from(alpha, (value) => (value >= 0.5 ? 1 : 0));
+  // Calibrate the smoothed isocontour to the original foreground coverage.
+  // This removes an outward bias without an unconditional erosion that could
+  // destroy thin strokes. The topology guard below still has the final say.
+  const originalArea = original.reduce((sum, value) => sum + value, 0);
+  let threshold = .5;
+  const count = (level: number) => alpha.reduce((sum, value) => sum + (value >= level ? 1 : 0), 0);
+  if (count(threshold) > originalArea) {
+    let low = .5, high = .65;
+    if (count(high) > originalArea) return original;
+    for (let step = 0; step < 12; step++) {
+      const middle = (low + high) / 2;
+      if (count(middle) > originalArea) low = middle;
+      else high = middle;
+    }
+    threshold = high;
+  }
+  const cleaned = Uint8Array.from(alpha, (value) => (value >= threshold ? 1 : 0));
   const before = cutMaskTopology(original, width, height),
     after = cutMaskTopology(cleaned, width, height);
   return before.pieces === after.pieces && before.holes === after.holes

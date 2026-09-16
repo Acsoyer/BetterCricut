@@ -5,6 +5,8 @@ import { AlignVerticalJustifyCenter, AlignEndHorizontal, AlignEndVertical, Align
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
 import { EDITOR_VERSION, editorDevLog } from "../editor-dev-log";
+import PickedColorControls from "./PickedColorControls";
+import { navigatePreview } from "./preview-navigation";
 import { getSVG, traceCanvas } from "@cadit-app/potrace-ts";
 import cutPreviewWorkerUrl from "./cut-preview.worker?worker&url";
 import { fittedCutSvg, detailedRecoveryScales } from "./cut-curve-fit";
@@ -2900,15 +2902,15 @@ export default function Home() {
         })) || [],
       mode: "remove",
       brush: 3,
-      sensitivity: 0,
-      connectedReach: 0,
+      sensitivity: 20,
+      connectedReach: 51,
       alphaView: false,
       zoom: 1,
       panX: 0,
       panY: 0,
       speckles: settings?.speckles || 0,
-      edgeRefine: settings?.edgeRefine || 0,
-      edgeSmooth: settings?.edgeSmooth || 0,
+      edgeRefine: settings?.edgeRefine ?? 3,
+      edgeSmooth: settings?.edgeSmooth ?? 5,
       optimizeAlpha: settings?.optimizeAlpha || false,
       eraseColors: settings?.eraseColors.map((entry) => ({ ...entry })) || [{ color: null, sensitivity: 30 }],
       pickingColor: null,
@@ -3237,7 +3239,6 @@ export default function Home() {
         ...colors[bgEditor.pickingColor],
         color,
       };
-      if (colors.every((entry) => entry.color) && colors.length < 6) colors.push({ color: null, sensitivity: 30 });
       setBgEditor({ ...bgEditor, eraseColors: colors, pickingColor: null });
       return;
     }
@@ -3310,6 +3311,43 @@ export default function Home() {
   const endBackgroundPan = () => {
     bgPanDrag.current = null;
   };
+  const previewModalOpen = !!imageEditor || !!cutEditor || !!bgEditor;
+  useEffect(() => {
+    if (!previewModalOpen) return;
+    let gestureTarget: Element | null = null, gestureScale = 1;
+    const route = (element: Element, dx: number, dy: number, zooming: boolean, clientX: number, clientY: number) => {
+      const rect = element.getBoundingClientRect();
+      const x = clientX - rect.left - rect.width / 2, y = clientY - rect.top - rect.height / 2;
+      if (element.classList.contains("cutout-preview")) setCutEditor(v => v ? navigatePreview(v, dx, dy, zooming, x, y, .5, 10) : v);
+      else if (element.classList.contains("image-edit-preview")) setImageEditor(v => v ? navigatePreview(v, dx, dy, zooming, x, y, .5, 5) : v);
+      else setBgEditor(v => v ? navigatePreview(v, dx, dy, zooming, x, y, .6, 5) : v);
+    };
+    const wheel = (e: WheelEvent) => {
+      const preview = e.target instanceof Element ? e.target.closest(".bg-preview") : null;
+      if (!preview) { if (e.ctrlKey) e.preventDefault(); return; }
+      e.preventDefault(); e.stopPropagation();
+      if (gestureTarget && e.ctrlKey) return;
+      const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? preview.clientHeight : 1;
+      route(preview, e.deltaX * unit, e.deltaY * unit, controlMode === "touchpad" ? e.ctrlKey : !e.ctrlKey, e.clientX, e.clientY);
+    };
+    const gesture = (event: Event) => {
+      event.preventDefault(); event.stopPropagation();
+      const e = event as Event & { scale: number; clientX: number; clientY: number };
+      if (event.type === "gesturestart") { gestureTarget = event.target instanceof Element ? event.target.closest(".bg-preview") : null; gestureScale = 1; }
+      if (event.type === "gesturechange" && gestureTarget && e.scale > 0) {
+        const rect = gestureTarget.getBoundingClientRect();
+        route(gestureTarget, 0, -Math.log(e.scale / gestureScale) / .002, true, Number.isFinite(e.clientX) ? e.clientX : rect.left + rect.width / 2, Number.isFinite(e.clientY) ? e.clientY : rect.top + rect.height / 2);
+        gestureScale = e.scale;
+      }
+      if (event.type === "gestureend") gestureTarget = null;
+    };
+    document.addEventListener("wheel", wheel, { passive: false, capture: true });
+    for (const name of ["gesturestart", "gesturechange", "gestureend"]) document.addEventListener(name, gesture, { passive: false, capture: true });
+    return () => {
+      document.removeEventListener("wheel", wheel, true);
+      for (const name of ["gesturestart", "gesturechange", "gestureend"]) document.removeEventListener(name, gesture, true);
+    };
+  }, [previewModalOpen, controlMode]);
   const zoomCutout = (e: RWheel<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
@@ -7320,52 +7358,10 @@ export default function Home() {
                             }
                           />
                         </section>
-                        <section>
-                          <label>All the Color with Eyedrop</label>
-                          <div className="erase-color-row">
-                            <input
-                              type="color"
-                              value={bgEditor.eraseColors[0]?.color || "#ffffff"}
-                              onChange={(e) =>
-                                setBgEditor({
-                                  ...bgEditor,
-                                  eraseColors: [
-                                    {
-                                      color: e.target.value,
-                                      sensitivity: bgEditor.eraseColors[0]?.sensitivity || 30,
-                                    },
-                                  ],
-                                })
-                              }
-                            />
-                            <button onClick={() => setBgEditor({ ...bgEditor, pickingColor: 0 })}>
-                              <Pipette /> Pick
-                            </button>
-                          </div>
-                          <label>
-                            Color Sensitivity <b>{bgEditor.eraseColors[0]?.sensitivity || 30}</b>
-                          </label>
-                          <input
-                            type="range"
-                            min="0"
-                            max="100"
-                            value={bgEditor.eraseColors[0]?.sensitivity || 30}
-                            onChange={(e) =>
-                              setBgEditor({
-                                ...bgEditor,
-                                eraseColors: [
-                                  {
-                                    color: bgEditor.eraseColors[0]?.color || null,
-                                    sensitivity: +e.target.value,
-                                  },
-                                ],
-                              })
-                            }
-                          />
-                        </section>
+                        <PickedColorControls entries={bgEditor.eraseColors} picking={bgEditor.pickingColor} onChange={(eraseColors) => setBgEditor((v) => v ? { ...v, eraseColors } : v)} onPick={(pickingColor) => setBgEditor((v) => v ? { ...v, pickingColor } : v)} />
                         <section>
                           <label>
-                            Edge Refinement <b>{bgEditor.edgeRefine}px</b>
+                            Edge Refine (&lt;Add edge - Carve edge&gt;) <b>{bgEditor.edgeRefine}px</b>
                           </label>
                           <input
                             type="range"
@@ -7766,72 +7762,10 @@ export default function Home() {
                   </div>
                   <small>Each stroke keeps the size, color bleed and distance used when it was drawn. Distance limits connected-color spread; Full follows the complete connected area.</small>
                 </section>
-                <section className="all-color-section">
-                  <label>All the Color with Eyedrop</label>
-                  {bgEditor.eraseColors.map((entry, index) => (
-                    <div className="erase-color-entry" key={index}>
-                      <div className="erase-color-row">
-                        <input
-                          type="color"
-                          value={entry.color || "#ffffff"}
-                          onChange={(e) => {
-                            const colors = [...bgEditor.eraseColors];
-                            colors[index] = { ...entry, color: e.target.value };
-                            if (colors.every((v) => v.color) && colors.length < 6) colors.push({ color: null, sensitivity: 30 });
-                            setBgEditor({ ...bgEditor, eraseColors: colors });
-                          }}
-                        />
-                        <button
-                          className={bgEditor.pickingColor === index ? "active" : ""}
-                          onClick={() =>
-                            setBgEditor({
-                              ...bgEditor,
-                              pickingColor: bgEditor.pickingColor === index ? null : index,
-                            })
-                          }
-                        >
-                          <Pipette /> Pick from Image
-                        </button>
-                        <button
-                          disabled={!entry.color}
-                          onClick={() => {
-                            const colors = bgEditor.eraseColors.filter((_, i) => i !== index);
-                            setBgEditor({
-                              ...bgEditor,
-                              eraseColors: colors.length ? colors : [{ color: null, sensitivity: 30 }],
-                              pickingColor: null,
-                            });
-                          }}
-                        >
-                          Clear
-                        </button>
-                      </div>
-                      <div className="compact-slider">
-                        <label>
-                          Color Sensitivity <b>{entry.sensitivity}</b>
-                        </label>
-                        <input
-                          type="range"
-                          min="0"
-                          max="100"
-                          value={entry.sensitivity}
-                          onChange={(e) => {
-                            const colors = [...bgEditor.eraseColors];
-                            colors[index] = {
-                              ...entry,
-                              sensitivity: +e.target.value,
-                            };
-                            setBgEditor({ ...bgEditor, eraseColors: colors });
-                          }}
-                        />
-                      </div>
-                    </div>
-                  ))}
-                  <small>Every selected color is removed throughout the entire image, whether its pixels are connected or not.</small>
-                </section>
+                <PickedColorControls entries={bgEditor.eraseColors} picking={bgEditor.pickingColor} onChange={(eraseColors) => setBgEditor((v) => v ? { ...v, eraseColors } : v)} onPick={(pickingColor) => setBgEditor((v) => v ? { ...v, pickingColor } : v)} />
                 <section>
                   <label>
-                    Edge Refinement{" "}
+                    Edge Refine (&lt;Add edge - Carve edge&gt;){" "}
                     <b>
                       {bgEditor.edgeRefine > 0 ? "+" : ""}
                       {bgEditor.edgeRefine} px
