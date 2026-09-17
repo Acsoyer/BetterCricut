@@ -19,6 +19,7 @@ test('weld preserves source SVG root attributes and rejects empty replacements',
   assert.ok(!weld.includes('vTracerCutout'));
   assert.ok(!weld.includes('const nested='));
   assert.ok(weld.includes('groupHidden: false'));
+  assert.ok(!weld.includes('root.setAttribute("xmlns"'));
   assert.ok(weld.includes('Original layers were preserved.'));
   assert.ok(weld.indexOf('Original layers were preserved.') < weld.lastIndexOf('setLayers('));
   assert.ok(code.includes('return isLayerVisible(l) && b.x < marquee'));

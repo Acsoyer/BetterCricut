@@ -1,6 +1,6 @@
 {
   "name": "better-cricut-editor",
-  "version": "1.14.10",
+  "version": "1.15.0",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
@@ -40,6 +40,7 @@
     "typescript": "5.9.3",
     "vinext": "1.0.0-beta.3",
     "vite": "8.0.13",
+    "weld-test-dom": "npm:jsdom@^30.1.0",
     "wrangler": "4.92.0"
   },
   "type": "module"
