@@ -14,8 +14,8 @@ test('hidden layers and hidden group members cannot enter scene operations', () 
 test('weld preserves source SVG root attributes and rejects empty replacements', () => {
   const code=readFileSync(new URL('../app/editor/page.tsx',import.meta.url),'utf8');
   const weld=code.slice(code.indexOf('const weldSelection ='),code.indexOf('const renderCanvas ='));
-  assert.ok(weld.includes('sourceRoot.attributes'));
-  assert.ok(weld.includes('content.appendChild(output.importNode(node,true))'));
+  assert.ok(weld.includes('output.importNode(sourceRoot,true)'));
+  assert.ok(weld.includes('group.appendChild(content)'));
   assert.ok(!weld.includes('vTracerCutout'));
   assert.ok(!weld.includes('const nested='));
   assert.ok(weld.includes('groupHidden: false'));
