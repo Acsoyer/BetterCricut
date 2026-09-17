@@ -1,4 +1,5 @@
 "use client";
+import { remapSvgReference } from "./svg-references";
 import { isLayerVisible } from "./layer-visibility";
 /* eslint-disable react-hooks/set-state-in-effect, react-hooks/refs, react-hooks/purity */
 import { ChangeEvent, Fragment, PointerEvent as RPointer, WheelEvent as RWheel, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -5309,42 +5310,23 @@ export default function Home() {
         const src=canvas.toDataURL("image/png"),raster:Layer={...picked[picked.length-1],id:uid(),name:`${picked[picked.length-1].name} Weld`,src,originalSrc:src,x:area.x,y:area.y,w:area.w,h:area.h,naturalW:canvas.width,naturalH:canvas.height,kind:"original",rotation:0,groupId:undefined,parentId:undefined,innerSrc:undefined,shapeImage:undefined,stickerOffset:undefined,steps:[],activeStep:-1,strokeCm:0,fillGapsMm:0,acetateOn:false,weldedSources:picked.map(layer=>({...layer}))};
         setLayers(items=>[...items.filter(layer=>!picked.some(source=>source.id===layer.id)),raster]);setSelected([raster.id]);addSessionLog("Raster layers welded",`${picked.length} layers became one full-resolution transparent PNG.`);setNotice("Selected layers welded into one PNG layer");return;
       }
-      const area = bounds(picked), top = [...picked].sort((a,b)=>layers.indexOf(b)-layers.indexOf(a))[0], boxes=picked.map(rotatedBounds), visited=new Set<number>(), clusters:number[][]=[];
-      const overlaps=(a:{x:number;y:number;w:number;h:number},b:{x:number;y:number;w:number;h:number})=>a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y;
-      const imageCache=new Map<string,HTMLImageElement>(),loadWeldImage=async(layer:Layer)=>{let image=imageCache.get(layer.id);if(!image){image=await getImage(layer.src);imageCache.set(layer.id,image)}return image};
-      const visiblyOverlaps=async(a:Layer,b:Layer)=>{
-        const ab=rotatedBounds(a),bb=rotatedBounds(b),left=Math.max(ab.x,bb.x),topEdge=Math.max(ab.y,bb.y),right=Math.min(ab.x+ab.w,bb.x+bb.w),bottom=Math.min(ab.y+ab.h,bb.y+bb.h);
-        if(right<=left||bottom<=topEdge)return false;
-        const width=right-left,height=bottom-topEdge,density=clamp(900/Math.max(width,height,.01),120,360),canvas=document.createElement("canvas");
-        canvas.width=Math.max(2,Math.ceil(width*density));canvas.height=Math.max(2,Math.ceil(height*density));
-        const context=canvas.getContext("2d",{willReadFrequently:true})!;context.imageSmoothingEnabled=true;context.imageSmoothingQuality="high";
-        const draw=async(layer:Layer)=>{const image=await loadWeldImage(layer),w=layer.w*density,h=layer.h*density;context.save();context.translate((layer.x-left)*density+w/2,(layer.y-topEdge)*density+h/2);context.rotate(layer.rotation*Math.PI/180);context.drawImage(image,-w/2,-h/2,w,h);context.restore()};
-        await draw(a);const first=context.getImageData(0,0,canvas.width,canvas.height).data;context.clearRect(0,0,canvas.width,canvas.height);await draw(b);const second=context.getImageData(0,0,canvas.width,canvas.height).data;
-        let shared=0;for(let pixel=3;pixel<first.length;pixel+=4)if(first[pixel]>=96&&second[pixel]>=96&&++shared>=2)return true;return false;
-      };
-      const adjacency=Array.from({length:picked.length},()=>new Set<number>());
-      for(let first=0;first<picked.length;first++)for(let second=first+1;second<picked.length;second++)if(overlaps(boxes[first],boxes[second])&&await visiblyOverlaps(picked[first],picked[second])){adjacency[first].add(second);adjacency[second].add(first)}
-      for(let seed=0;seed<picked.length;seed++){if(visited.has(seed))continue;const cluster:number[]=[],queue=[seed];visited.add(seed);while(queue.length){const current=queue.shift()!;cluster.push(current);for(const next of adjacency[current])if(!visited.has(next)){visited.add(next);queue.push(next)}}clusters.push(cluster)}
-      const components:{layer:Layer;src:string;box:{x:number;y:number;w:number;h:number}}[]=[];
-      for(const cluster of clusters){
-        if(cluster.length===1){const layer=picked[cluster[0]];components.push({layer,src:layer.src,box:{x:layer.x,y:layer.y,w:layer.w,h:layer.h}});continue}
-        const members=cluster.map(index=>picked[index]), clusterBox=bounds(members), pxPerCm=240, pad=6, canvas=document.createElement("canvas");canvas.width=Math.max(1,Math.ceil(clusterBox.w*pxPerCm)+pad*2);canvas.height=Math.max(1,Math.ceil(clusterBox.h*pxPerCm)+pad*2);const context=canvas.getContext("2d")!;
-        for(const layer of members){const image=await getImage(layer.src),w=layer.w*pxPerCm,h=layer.h*pxPerCm;context.save();context.translate(pad+(layer.x-clusterBox.x)*pxPerCm+w/2,pad+(layer.y-clusterBox.y)*pxPerCm+h/2);context.rotate(layer.rotation*Math.PI/180);context.drawImage(image,-w/2,-h/2,w,h);context.restore()}
-        const traced=await vTracerCutout(canvas.toDataURL("image/png"),top.color,clusterBox.w+pad*2/pxPerCm,1.15);components.push({layer:{...members[0],rotation:0},src:traced,box:{x:clusterBox.x-pad/pxPerCm,y:clusterBox.y-pad/pxPerCm,w:clusterBox.w+pad*2/pxPerCm,h:clusterBox.h+pad*2/pxPerCm}})
-      }
+      const area=bounds(picked),top=[...picked].sort((a,b)=>layers.indexOf(b)-layers.indexOf(a))[0],components=picked.map(layer=>({layer,src:layer.src,box:{x:layer.x,y:layer.y,w:layer.w,h:layer.h}}));
       const output=document.implementation.createDocument("http://www.w3.org/2000/svg","svg",null),root=output.documentElement;root.setAttribute("xmlns","http://www.w3.org/2000/svg");root.setAttribute("viewBox",`0 0 ${area.w*100} ${area.h*100}`);root.setAttribute("width",String(area.w*100));root.setAttribute("height",String(area.h*100));root.setAttribute("preserveAspectRatio","none");root.setAttribute("shape-rendering","geometricPrecision");
       for(const component of components){
         const sourceDoc=new DOMParser().parseFromString(decodeSvgData(component.src),"image/svg+xml"),sourceRoot=sourceDoc.documentElement,[vx,vy,vw,vh]=svgViewBox(sourceRoot),group=output.createElementNS("http://www.w3.org/2000/svg","g"),layer=component.layer,box=component.box,cx=(layer.x+layer.w/2-area.x)*100,cy=(layer.y+layer.h/2-area.y)*100,prefix=`w${uid()}_`,idMap=new Map<string,string>();
         sourceRoot.querySelectorAll("[id]").forEach(element=>{const oldId=element.id,newId=`${prefix}${oldId}`;idMap.set(oldId,newId);element.id=newId});
-        sourceRoot.querySelectorAll("*").forEach(element=>[...element.attributes].forEach(attribute=>{let value=attribute.value;for(const [oldId,newId] of idMap)value=value.replaceAll(`url(#${oldId})`,`url(#${newId})`).replaceAll(`#${oldId}`,`#${newId}`);if(value!==attribute.value)element.setAttribute(attribute.name,value)}));
+        [sourceRoot,...sourceRoot.querySelectorAll("*")].forEach(element=>[...element.attributes].forEach(attribute=>{const value=remapSvgReference(attribute.value,idMap);if(value!==attribute.value)element.setAttribute(attribute.name,value)}));
         group.setAttribute("transform",`translate(${(box.x-area.x)*100} ${(box.y-area.y)*100})${layer.rotation?` rotate(${layer.rotation} ${cx-(box.x-area.x)*100} ${cy-(box.y-area.y)*100})`:""} scale(${box.w*100/vw} ${box.h*100/vh}) translate(${-vx} ${-vy})`);
-        const nested=output.importNode(sourceRoot,true) as Element; nested.setAttribute("x",String(vx)); nested.setAttribute("y",String(vy)); nested.setAttribute("width",String(vw)); nested.setAttribute("height",String(vh)); group.appendChild(nested);
+        const content=output.createElementNS("http://www.w3.org/2000/svg","g"); group.appendChild(content);
+        for(const attribute of [...sourceRoot.attributes])if(!["xmlns","viewBox","width","height","x","y","preserveAspectRatio","overflow"].includes(attribute.name))content.setAttribute(attribute.name,attribute.value);
+        [...sourceRoot.childNodes].forEach(node=>content.appendChild(output.importNode(node,true)));
         const insideDefinition=(node:Element)=>{let parent=node.parentElement;while(parent&&parent!==group){if(["defs","mask","clippath","pattern","lineargradient","radialgradient","filter"].includes(parent.tagName.toLowerCase()))return true;parent=parent.parentElement}return false};
         group.querySelectorAll("path,rect,circle,ellipse,polygon,polyline").forEach(node=>{if(insideDefinition(node))return;if(node.getAttribute("fill")!=="none")node.setAttribute("fill",top.color);if(node.hasAttribute("stroke")&&node.getAttribute("stroke")!=="none")node.setAttribute("stroke",top.color)});
         root.appendChild(group)
       }
       const src=`data:image/svg+xml,${encodeURIComponent(new XMLSerializer().serializeToString(root))}`, safety=await analyzeCutSafety(src,area.w), welded: Layer = { ...top,...safety, id: uid(), name: `${top.name} Weld`, src, originalSrc: src, x: area.x, y: area.y, w: area.w, h: area.h, rotation: 0, groupId: undefined, groupHidden: false, groupCollapsed: false, visible: true, parentId: undefined, innerSrc: undefined, stickerOffset: undefined, kind: "vector", strokeCm: 0, fillGapsMm: 0, steps: [], activeStep: -1, weldedSources:picked.map(layer=>({...layer})) };
       const verification=await getImage(src),check=document.createElement("canvas");check.width=512;check.height=512;const verifyContext=check.getContext("2d",{willReadFrequently:true})!;verifyContext.drawImage(verification,0,0,512,512);if(!verifyContext.getImageData(0,0,512,512).data.some((value,index)=>index%4===3&&value>0))throw new Error("The combined SVG was empty. Original layers were preserved.");
+      const expected=document.createElement("canvas");expected.width=512;expected.height=512;const expectedContext=expected.getContext("2d",{willReadFrequently:true})!; for(const layer of picked){const image=await getImage(layer.src);expectedContext.save();expectedContext.translate((layer.x+layer.w/2-area.x)*512/area.w,(layer.y+layer.h/2-area.y)*512/area.h);expectedContext.scale(512/area.w,512/area.h);expectedContext.rotate(layer.rotation*Math.PI/180);expectedContext.drawImage(image,-layer.w/2,-layer.h/2,layer.w,layer.h);expectedContext.restore()} const expectedPixels=expectedContext.getImageData(0,0,512,512).data,actualPixels=verifyContext.getImageData(0,0,512,512).data;let foreground=0,missing=0;for(let index=3;index<expectedPixels.length;index+=4)if(expectedPixels[index]>=128){foreground++;if(actualPixels[index]<8)missing++}if(missing>Math.max(4,foreground*.005))throw new Error("Some SVG pieces were missing from the combined result. Original layers were preserved.");
       setLayers((items) => [...items.filter((layer) => !picked.some(source=>source.id===layer.id)), welded]); setSelected([welded.id]);
       addSessionLog("Cutouts welded", `${picked.length} cutouts became one SVG using ${top.name}'s colour.`); setNotice("Cutouts welded into one SVG layer");
     } catch (error) { setNotice(`Weld failed: ${error instanceof Error ? error.message : "Unknown error"}`); } finally { setWorking(false); }
