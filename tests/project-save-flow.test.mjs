@@ -50,6 +50,18 @@ test('failed updates preserve identity and release the lock for retry',async()=>
  assert.equal(calls.length,1);assert.equal(state.CurrentProjectId,undefined);
  assert.match(state.Notice,/another tab/);assert.equal(env.saveLock.current,false);
 });
+test('missing metadata columns retry save with legacy project fields',async()=>{
+ let attempt=0;
+ const {save,calls,state}=setup(call=>++attempt===1
+   ? {data:null,error:{message:"Could not find the 'byte_size' column of 'projects' in the schema cache"}}
+   : {data:{id:'recovery',name:call.fields.name,updated_at:call.fields.updated_at},error:null});
+ assert.equal(await save(false,undefined,'amandaCake',false),true);
+ assert.equal(calls.length,2);
+ assert.equal(calls[0].fields.byte_size>0,true);
+ assert.equal('byte_size' in calls[1].fields,false);
+ assert.equal(calls[1].filters.id,'recovery');
+ assert.equal(state.ProjectName,'amandaCake');
+});
 test('thumbnail failure is caught before cloud writes',async()=>{
  const {save,env,calls,state}=setup();env.createProjectThumbnail=async()=>{throw new Error('image unavailable');};
  assert.equal(await save(),false);assert.equal(calls.length,0);assert.equal(env.saveLock.current,false);assert.match(state.Notice,/image unavailable/);

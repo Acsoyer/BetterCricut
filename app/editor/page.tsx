@@ -2246,7 +2246,10 @@ export default function Home() {
     const next = ((data || []) as SavedProject[]).map((project) => ({ ...project, thumbnail: project.thumbnail || project.data?.thumbnail, byte_size: project.byte_size || projectBytes(project.data || {}), layer_count: project.layer_count ?? project.data?.layers?.length ?? 0 }));
     await Promise.all(next.map((project) => project.thumbnail || project.data?.thumbnail).filter((src): src is string => Boolean(src)).map((src)=>getImage(src).catch(()=>null)));
     setProjectsLoading(false);
-    setProjects(next);
+    setProjects(existing => next.map(project => {
+      const loaded = existing.find(item => item.id === project.id && item.updated_at === project.updated_at && item.data?.layers);
+      return loaded ? { ...project, data: loaded.data } : project;
+    }));
     if (process.env.NEXT_PUBLIC_PROJECT_FILE_STORAGE === "true" && session) void cleanUserProjectFiles(supabase, session.user.id).catch(() => {});
     setStorageBlocked(next.reduce((sum, project) => sum + (project.byte_size || projectBytes(project.data || {})), 0) > STORAGE_LIMIT);
     if (projectCacheKey) try { localStorage.setItem(projectCacheKey, JSON.stringify(next.map(({ id, name, updated_at, thumbnail, byte_size, layer_count, is_autosave }) => ({ id, name, updated_at, thumbnail, byte_size, layer_count, is_autosave })))); } catch {}
@@ -2318,7 +2321,7 @@ export default function Home() {
       return query.select().single();
     };
     let { data, error } = await write();
-    if (error && /column|schema cache/i.test(error.message || "") && process.env.NEXT_PUBLIC_PROJECT_FILE_STORAGE !== "true") ({ data, error } = await write(true));
+    if (error && /column|schema cache/i.test(error.message || "")) ({ data, error } = await write(true));
     if (error || !data) {
       if (!autosave) setSaveStatus(null);
       else setAutosaveStatus("failed");
@@ -2437,6 +2440,57 @@ export default function Home() {
       setNotice("Project duplicated. Your open project was not changed.");
     } catch (error) { setNotice(projectSaveError(error instanceof Error ? error.message : "Please retry")); }
     finally { saveLock.current = false; }
+  };
+  const updateStoredProject = async (project: SavedProject) => {
+    if (!session) return setNotice("Sign in before updating a project.");
+    if (saveLock.current) return setNotice("Please wait for the current save to finish.");
+    saveLock.current = true;
+    setProjectsLoading(true);
+    try {
+      const { data: current, error: readError } = await supabase.from("projects").select("id,name,updated_at,data").eq("id", project.id).eq("user_id", session.user.id).single();
+      if (readError || !current) throw new Error(readError?.message || "Project was not found");
+      const savedData = current.data as SavedProject["data"];
+      const sourceAssets = await loadProjectAssets(supabase, session.user.id, savedData.assets);
+      const packed = packLayers(unpackLayers({ ...savedData, assets: sourceAssets }));
+      const compactData = { ...savedData, layers: packed.layers, assets: packed.assets };
+      const previousBytes = project.byte_size || projectBytes(savedData);
+      let assetBytes = 0;
+      if (process.env.NEXT_PUBLIC_PROJECT_FILE_STORAGE === "true") {
+        const estimatedAssets = Object.fromEntries(Object.keys(packed.assets).map(id => [id, `storage://${session.user.id}/${project.id}/${"0".repeat(64)}`]));
+        const manifestBytes = projectBytes({ ...compactData, assets: estimatedAssets });
+        const ceiling = Math.max(STORAGE_LIMIT, projectsStorageBytes);
+        const stored = await storeProjectAssets(supabase, session.user.id, project.id, packed.assets, ceiling - projectsStorageBytes + previousBytes - manifestBytes);
+        compactData.assets = stored.assets;
+        assetBytes = stored.bytes;
+      }
+      const byteSize = projectBytes(compactData) + assetBytes;
+      if (projectsStorageBytes - previousBytes + byteSize > STORAGE_LIMIT && byteSize >= previousBytes) throw new Error("40 MB storage limit reached");
+      const updated_at = new Date().toISOString();
+      const write = (legacy: boolean) => supabase.from("projects")
+        .update(legacy ? { data: compactData, updated_at } : { data: compactData, updated_at, byte_size: byteSize, layer_count: packed.layers.length, thumbnail: savedData.thumbnail || project.thumbnail || "" })
+        .eq("id", project.id).eq("user_id", session.user.id).eq("updated_at", current.updated_at).select("id,name,updated_at").single();
+      let { data, error } = await write(false);
+      if (error && /column|schema cache/i.test(error.message || "")) ({ data, error } = await write(true));
+      if (error || !data) throw new Error(error?.message || "This project changed in another tab. Refresh and retry.");
+      if (currentProjectId === project.id) projectRevision.current = updated_at;
+      setProjects(items => items.map(item => item.id === project.id ? { ...item, updated_at, byte_size: byteSize, layer_count: packed.layers.length, data: { ...compactData, assets: packed.assets } } : item));
+      void refreshProjects(false);
+      setNotice(`Project updated: ${formatProjectSize(project)} → ${formatProjectSize({ ...project, byte_size: byteSize })}. Original artwork was preserved.`);
+    } catch (error) {
+      setNotice(projectSaveError(error instanceof Error ? error.message : "Project update failed"));
+    } finally { saveLock.current = false; setProjectsLoading(false); }
+  };
+  const toggleProjectAssets = async (project: SavedProject) => {
+    if (expandedProjectId === project.id) { setExpandedProjectId(null); return; }
+    setExpandedProjectId(project.id);
+    if (project.data?.layers || !session) return;
+    const { data, error } = await supabase.from("projects").select("id,data").eq("id", project.id).eq("user_id", session.user.id).single();
+    if (error || !data) { setExpandedProjectId(null); setNotice("Project assets could not be loaded."); return; }
+    try {
+      const savedData = data.data as SavedProject["data"];
+      const assets = await loadProjectAssets(supabase, session.user.id, savedData.assets);
+      setProjects(items => items.map(item => item.id === project.id ? { ...item, data: { ...savedData, assets } } : item));
+    } catch (error) { setExpandedProjectId(null); setNotice(projectSaveError(error instanceof Error ? error.message : "Assets unavailable")); }
   };
   const downloadProjectBackup = () => {
     const packed = packLayers(layers);
@@ -6476,7 +6530,7 @@ export default function Home() {
                   return (
                     <article key={project.id} className={`project-card ${project.id === currentProjectId ? "current" : ""} ${expanded ? "expanded" : ""}`}>
                       <div className="project-row">
-                        <button className="project-summary" onClick={() => setExpandedProjectId((value) => (value === project.id ? null : project.id))}>
+                        <button className="project-summary" onClick={() => requestOpenProject(project)} title={`Open ${project.name}`}>
                           <span className="project-composite-thumb">{project.thumbnail || project.data?.thumbnail ? <img src={project.thumbnail || project.data?.thumbnail} alt="" /> : <FolderOpen />}</span>
                           <span className="project-summary-copy">
                             <b>{project.name}</b>{project.is_autosave && <small>Unsaved project recovery</small>}
@@ -6485,9 +6539,9 @@ export default function Home() {
                               {project.layer_count ?? project.data?.layers?.length ?? 0} layers · {formatProjectSize(project)}
                             </em>
                           </span>
-                          <ChevronDown />
                         </button>
                         <div className="project-quick-actions">
+                          <button className="project-assets-toggle" onClick={() => void toggleProjectAssets(project)} aria-expanded={expanded} aria-label={`Assets for ${project.name}`}><span>Assets</span><ChevronDown /></button>
                           <button onClick={async () => {
                             const name = window.prompt("Project name", project.name)?.trim();
                             if (!name || name === project.name) return;
@@ -6495,16 +6549,14 @@ export default function Home() {
                             saveLock.current = true;
                             try {
                               const updated_at = new Date().toISOString();
-                              const { data, error } = await supabase.from("projects").update({ name, updated_at, is_autosave: false }).eq("id", project.id).eq("user_id", session?.user.id).eq("updated_at", project.updated_at).select("id").single();
+                              let { data, error } = await supabase.from("projects").update({ name, updated_at, is_autosave: false }).eq("id", project.id).eq("user_id", session?.user.id).eq("updated_at", project.updated_at).select("id").single();
+                              if (error && /column|schema cache/i.test(error.message || "")) ({ data, error } = await supabase.from("projects").update({ name, updated_at }).eq("id", project.id).eq("user_id", session?.user.id).eq("updated_at", project.updated_at).select("id").single());
                               if (error) return setNotice(projectSaveError(error.message));
                               if (!data) return setNotice("Project changed in another tab. Refresh and retry.");
                               if (currentProjectId === project.id) { setProjectName(name); setCurrentProjectAutosave(false); projectRevision.current = updated_at; }
                               setProjects(items => items.map(item => item.id === project.id ? { ...item, name, updated_at, is_autosave: false } : item));
                             } finally { saveLock.current = false; }
                           }}>Rename</button>
-                          <button className="open" onClick={() => requestOpenProject(project)} title="Open project">
-                            <FolderOpen /> <span>Open</span>
-                          </button>
                           <button onClick={() => void duplicateProject(project)} title="Duplicate saved project"><Copy /> <span>Duplicate</span></button>
                           <button className="delete" onClick={() => void deleteProject(project.id)} title="Delete project">
                             <Trash2 />
@@ -6520,16 +6572,10 @@ export default function Home() {
                               </span>
                             ))}
                             {(project.data?.layers?.length || 0) > 12 && <b>+{project.data.layers.length - 12}</b>}
-                            {!project.data?.layers && <small>Layer previews load when this project is opened.</small>}
+                            {!project.data?.layers && <small>Loading assets…</small>}
                           </div>
                           <div className="project-card-actions">
-                            <button className="open-saved-project" onClick={() => requestOpenProject(project)}>
-                              <FolderOpen /> Open Project
-                            </button>
-                            <button onClick={() => void duplicateProject(project)}><Copy /> Duplicate Project</button>
-                            <button className="project-delete" onClick={() => void deleteProject(project.id)} title="Delete project">
-                              <Trash2 /> Delete
-                            </button>
+                            <button className="project-update" onClick={() => void updateStoredProject(project)} title="Optimize and update the saved project"><Replace /> Update</button>
                           </div>
                         </div>
                       )}
