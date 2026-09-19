@@ -14,6 +14,8 @@ import { fillVectorGaps } from "./vector-gap-fill";
 import { localVectorEdit, reframeVector } from "./local-vector-edit";
 import ColorPickLens, { type PickPointer } from "./ColorPickLens";
 import { savedProjectDisplayName } from "./project-display-name";
+import { packProjectLayers, unpackProjectLayers, projectSaveError } from "./project-data";
+import { storeProjectAssets, loadProjectAssets, cleanProjectFiles, cleanUserProjectFiles } from "./project-files";
 import ColorControls from "./ColorControls";
 import { normalizePickedColors } from "./color-model";
 import { getSVG, traceCanvas } from "@cadit-app/potrace-ts";
@@ -70,6 +72,7 @@ type LayerStep = {
   type: "remove-bg" | "cutout" | "stroke" | "fill-gaps" | "acetate" | "edit-image" | "optimize-alpha";
   label: string;
   locked?: boolean;
+  baked?: boolean;
   before?: Pick<Layer, "src" | "x" | "y" | "w" | "h" | "kind" | "color" | "strokeCm" | "fillGapsMm" | "acetateOn">;
   backgroundColor?: string;
   removalSettings?: {
@@ -126,6 +129,7 @@ type Layer = {
   sourceFormat?: "JPG" | "PNG" | "WEBP" | "SVG" | "AI";
   rasterStatus?: "background" | "cleanup" | "ready";
   stickerOffset?: { enabled: boolean; sizeMm: number; color: string; smoothness: number; baseSrc: string; baseX: number; baseY: number; baseW: number; baseH: number; previewSrc: string; borders?: { id: string; sizeMm: number; color: string }[] };
+  weldedSources?: Layer[];
 };
 type AIGeneration = { id: string; mode: "text" | "image"; name: string; src: string; created_at: string };
 type SavedProject = {
@@ -143,6 +147,8 @@ type SavedProject = {
     pageSize?: PageSize;
     unit?: Unit;
     assets?: Record<string, string>;
+    pageColor?: PageColor;
+    customPageColor?: string;
   };
   byte_size?: number;
   layer_count?: number;
@@ -1733,23 +1739,14 @@ async function findOpaqueIslands(src: string) {
   });
   return { preview: preview.toDataURL("image/png"), parts };
 }
-const projectSignature = (layers: Layer[], pageMode: PageMode, safeMargin: number, cutSafetyEnabled = false, pageSize: PageSize = "a4", unit: Unit = "cm") => JSON.stringify({ layers, pageMode, safeMargin, cutSafetyEnabled, pageSize, unit });
+const projectSignature = (layers: Layer[], pageMode: PageMode, safeMargin: number, cutSafetyEnabled = false, pageSize: PageSize = "a4", unit: Unit = "cm", pageColor: PageColor = "white", customPageColor = "#ffffff") => JSON.stringify({ layers, pageMode, safeMargin, cutSafetyEnabled, pageSize, unit, pageColor, customPageColor });
 const PROJECT_LIMIT = 20, STORAGE_LIMIT = 40 * 1024 * 1024;
 const projectBytes = (data: unknown) => new Blob([JSON.stringify(data)]).size;
 const packLayers = (layers: Layer[]) => {
-  const assets: Record<string, string> = {}, bySource = new Map<string, string>();
-  const ref = (src?: string) => {
-    if (!src || !src.startsWith("data:")) return src;
-    let id = bySource.get(src);
-    if (!id) { id = `asset-${bySource.size + 1}`; bySource.set(src, id); assets[id] = src; }
-    return `asset://${id}`;
-  };
-  const packed = layers.map((layer) => ({ ...layer, src: ref(layer.src)!, originalSrc: ref(layer.originalSrc)!, innerSrc: ref(layer.innerSrc), shapeBaseSrc: ref(layer.shapeBaseSrc), stickerOffset: layer.stickerOffset ? { ...layer.stickerOffset, baseSrc: ref(layer.stickerOffset.baseSrc)!, previewSrc: ref(layer.stickerOffset.previewSrc)! } : undefined, steps: layer.steps.map((step) => ({ ...step, before: step.before ? { ...step.before, src: ref(step.before.src)! } : undefined, snapshot: { ...step.snapshot, src: ref(step.snapshot.src)! } })) }));
-  return { layers: packed, assets };
+  return packProjectLayers(layers);
 };
 const unpackLayers = (data: SavedProject["data"]) => {
-  const resolve = (src?: string) => src?.startsWith("asset://") ? data.assets?.[src.slice(8)] || "" : src;
-  return (data.layers || []).map((layer) => ({ ...layer, src: resolve(layer.src)!, originalSrc: resolve(layer.originalSrc)!, innerSrc: resolve(layer.innerSrc), shapeBaseSrc: resolve(layer.shapeBaseSrc), stickerOffset: layer.stickerOffset ? { ...layer.stickerOffset, baseSrc: resolve(layer.stickerOffset.baseSrc)!, previewSrc: resolve(layer.stickerOffset.previewSrc)! } : undefined, steps: (layer.steps || []).map((step) => ({ ...step, before: step.before ? { ...step.before, src: resolve(step.before.src)! } : undefined, snapshot: { ...step.snapshot, src: resolve(step.snapshot.src)! } })) }));
+  return unpackProjectLayers<Layer>(data).map(layer => ({ ...layer, steps: layer.steps || [] }));
 };
 const projectLayerPreview = (project: SavedProject, src: string) => src.startsWith("asset://") ? project.data?.assets?.[src.slice(8)] || "" : src;
 const formatProjectSize = (project: SavedProject) => {
@@ -1980,7 +1977,6 @@ export default function Home() {
     [projectsOpen, setProjectsOpen] = useState(false),
     [expandedProjectId, setExpandedProjectId] = useState<string | null>(null),
     [pendingOpenProject, setPendingOpenProject] = useState<SavedProject | null>(null),
-    [pendingOverwriteProject, setPendingOverwriteProject] = useState<SavedProject | null>(null),
     [pendingNewProject, setPendingNewProject] = useState(false),
     [saveAsMode, setSaveAsMode] = useState(false),
     [accountOpen, setAccountOpen] = useState(false),
@@ -2082,6 +2078,17 @@ export default function Home() {
     suppressLayerLog = useRef(false);
   const saveToastDismissed = useRef(false);
   const autosaveRunner = useRef<() => void>(()=>{});
+  const saveLock = useRef(false);
+  const projectRevision = useRef<string | null>(null);
+  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+  const [saveNameDraft, setSaveNameDraft] = useState("");
+  const saveContinuation = useRef<{ target: SavedProject | null } | null>(null);
+  const requestSaveDialog = (copy = false) => {
+    saveContinuation.current = null;
+    setSaveAsMode(copy);
+    setSaveNameDraft(copy ? `${projectName} Copy` : /^(Untitled Project|Autosave(?:-| - ))/.test(projectName) ? "" : projectName);
+    setSaveDialogOpen(true);
+  };
   const landscape = pageMode === "landscape",
     selectedPaper = PAGE_SIZES[pageMode === "full" ? "full" : pageSize],
     A4 = pageMode === "full" ? { w: 100, h: 100 } : landscape ? { w: selectedPaper.h, h: selectedPaper.w } : { w: selectedPaper.w, h: selectedPaper.h },
@@ -2098,7 +2105,7 @@ export default function Home() {
     scale = PPCM * zoom * calibration,
     vectorsOnly = picked.length > 0 && picked.every((l) => ["stroke", "vector"].includes(l.kind));
   useEffect(() => { setSelected(ids => { const next=ids.filter(id=>layers.some(layer=>layer.id===id&&isLayerVisible(layer))); return next.length===ids.length?ids:next; }); }, [layers]);
-  const currentSignature = useMemo(() => projectSignature(layers, pageMode, safeMargin, cutSafetyEnabled, pageSize, unit), [layers, pageMode, safeMargin, cutSafetyEnabled, pageSize, unit]),
+  const currentSignature = useMemo(() => projectSignature(layers, pageMode, safeMargin, cutSafetyEnabled, pageSize, unit, pageColor, customPageColor), [layers, pageMode, safeMargin, cutSafetyEnabled, pageSize, unit, pageColor, customPageColor]),
     projectDirty = currentSignature !== lastSavedSignature;
   const activeTextLines = textLines.slice(0, textLineCount).map((line) => line.trim()).filter(Boolean);
   const generateArtwork = async (mode: "text" | "image", variation = false) => {
@@ -2240,10 +2247,15 @@ export default function Home() {
     await Promise.all(next.map((project) => project.thumbnail || project.data?.thumbnail).filter((src): src is string => Boolean(src)).map((src)=>getImage(src).catch(()=>null)));
     setProjectsLoading(false);
     setProjects(next);
+    if (process.env.NEXT_PUBLIC_PROJECT_FILE_STORAGE === "true" && session) void cleanUserProjectFiles(supabase, session.user.id).catch(() => {});
     setStorageBlocked(next.reduce((sum, project) => sum + (project.byte_size || projectBytes(project.data || {})), 0) > STORAGE_LIMIT);
     if (projectCacheKey) try { localStorage.setItem(projectCacheKey, JSON.stringify(next.map(({ id, name, updated_at, thumbnail, byte_size, layer_count, is_autosave }) => ({ id, name, updated_at, thumbnail, byte_size, layer_count, is_autosave })))); } catch {}
   };
   const saveProject = async (asNew = false, targetId?: string, targetName?: string, closePanel = true, autosave = false) => {
+    if (saveLock.current) {
+      if (!autosave) setNotice("A save is already in progress. Please wait and retry.");
+      return false;
+    }
     if (!session?.user) {
       setNotice("Sign in to save a project");
       return false;
@@ -2252,6 +2264,8 @@ export default function Home() {
       setNotice("20 project limit reached. Please delete an old project first.");
       return false;
     }
+    saveLock.current = true;
+    try {
     saveToastDismissed.current = false;
     if (!autosave) setSaveStatus("saving");
     if (autosave) setAutosaveStatus("saving");
@@ -2261,9 +2275,22 @@ export default function Home() {
       saveEntry: SessionLogEntry = { id: uid(), at: new Date().toISOString(), action: "Project saved", details: `${name} was ${asNew ? "saved as a new project" : "saved"}.` },
       nextSessionLog = [...sessionLog, saveEntry].slice(-1000),
       packed = packLayers(layers),
-      projectData = { layers: packed.layers as Layer[], assets: packed.assets, landscape, pageMode, pageSize, unit, safeMargin, thumbnail, sessionLog: nextSessionLog, cutSafetyEnabled },
-      byteSize = projectBytes(projectData),
+      updateId = asNew ? undefined : targetId ?? currentProjectId,
+      recordId = updateId || crypto.randomUUID();
+    const projectData = { layers: packed.layers as Layer[], assets: packed.assets, landscape, pageMode, pageSize, unit, safeMargin, thumbnail, sessionLog: nextSessionLog, cutSafetyEnabled, pageColor, customPageColor };
+    let assetBytes = 0;
+    if (process.env.NEXT_PUBLIC_PROJECT_FILE_STORAGE === "true") {
+      const oldBytes = projects.find(project => project.id === updateId)?.byte_size || 0;
+      const estimatedAssets = Object.fromEntries(Object.keys(packed.assets).map(id => [id, `storage://${session.user.id}/${recordId}/${"0".repeat(64)}`]));
+      const manifestBytes = projectBytes({ ...projectData, assets: estimatedAssets });
+      const ceiling = updateId ? Math.max(STORAGE_LIMIT, projectsStorageBytes) : STORAGE_LIMIT;
+      const stored = await storeProjectAssets(supabase, session.user.id, recordId, packed.assets, ceiling - projectsStorageBytes + oldBytes - manifestBytes);
+      projectData.assets = stored.assets;
+      assetBytes = stored.bytes;
+    }
+    const byteSize = projectBytes(projectData) + assetBytes,
       payload = {
+        id: recordId,
         name,
         data: projectData,
         user_id: session.user.id,
@@ -2272,32 +2299,40 @@ export default function Home() {
         byte_size: byteSize,
         layer_count: layers.length,
         is_autosave: autosave && (currentProjectAutosave || !currentProjectId),
-      },
-      updateId = targetId ?? currentProjectId;
-    const previousBytes = projects.find((project)=>project.id===updateId)?.byte_size || Number.POSITIVE_INFINITY;
-    if (storageBlocked && (!updateId || byteSize >= previousBytes)) {
+      };
+    const previousBytes = projects.find((project)=>project.id===updateId)?.byte_size || 0;
+    if (projectsStorageBytes - previousBytes + byteSize > STORAGE_LIMIT && (!updateId || byteSize > previousBytes)) {
       setSaveStatus(null); setAutosaveStatus(autosave ? "failed" : null);
       setNotice(`${(projects.reduce((sum, project) => sum + (project.byte_size || projectBytes(project.data || {})), 0) / 1048576).toFixed(1)}/40 MB limit exceeded. Please delete old projects before saving again.`);
       return false;
     }
-    let { data, error } = updateId && !asNew ? await supabase.from("projects").update({ name, data: projectData, updated_at: payload.updated_at, thumbnail, byte_size: byteSize, layer_count: layers.length, is_autosave: autosave && currentProjectAutosave }).eq("id", updateId).eq("user_id", session.user.id).select("id,name,updated_at,data,thumbnail,byte_size,layer_count,is_autosave").single() : await supabase.from("projects").insert(payload).select("id,name,updated_at,data,thumbnail,byte_size,layer_count,is_autosave").single();
-    if (error && /column|schema cache/i.test(error.message || "")) ({ data, error } = updateId && !asNew ? await supabase.from("projects").update({ name, data: projectData, updated_at: payload.updated_at }).eq("id", updateId).eq("user_id", session.user.id).select("id,name,updated_at,data").single() : await supabase.from("projects").insert({ name, data: projectData, user_id: session.user.id, updated_at: payload.updated_at }).select("id,name,updated_at,data").single());
-    if ((error || !data) && updateId && !asNew) {
-      const listed = projects.find((project) => project.id === updateId) || projects.find((project) => project.name === name);
-      if (listed && listed.id !== updateId) ({ data, error } = await supabase.from("projects").update({ name, data: projectData, updated_at: payload.updated_at }).eq("id", listed.id).eq("user_id", session.user.id).select("id,name,updated_at,data").single());
-    }
+    const revision = targetId ? projects.find(project => project.id === targetId)?.updated_at : projectRevision.current;
+    const write = (legacy = false) => {
+      const fields = legacy ? { name, data: projectData, updated_at: payload.updated_at } : { name, data: projectData, updated_at: payload.updated_at, thumbnail, byte_size: byteSize, layer_count: layers.length, is_autosave: autosave && currentProjectAutosave };
+      if (!updateId) {
+        if (legacy) return supabase.from("projects").insert({ name, data: projectData, updated_at: payload.updated_at, id: recordId, user_id: session.user.id }).select().single();
+        return supabase.from("projects").insert(payload).select().single();
+      }
+      let query = supabase.from("projects").update(fields).eq("id", updateId).eq("user_id", session.user.id);
+      if (revision) query = query.eq("updated_at", revision);
+      return query.select().single();
+    };
+    let { data, error } = await write();
+    if (error && /column|schema cache/i.test(error.message || "") && process.env.NEXT_PUBLIC_PROJECT_FILE_STORAGE !== "true") ({ data, error } = await write(true));
     if (error || !data) {
       if (!autosave) setSaveStatus(null);
       else setAutosaveStatus("failed");
-      setNotice("Project could not be saved");
+      setNotice(error?.code === "PGRST116" ? "This project changed in another tab or was deleted. Save a Copy to preserve your current work." : projectSaveError(error?.message || "The saved project record was not returned."));
       return false;
     }
     setCurrentProjectId(data.id);
+    projectRevision.current = data.updated_at;
     setCurrentProjectAutosave(Boolean(autosave && (currentProjectAutosave || !currentProjectId)));
-    setSessionLog(nextSessionLog);
+    setSessionLog(items => [...items, saveEntry].slice(-1000));
     setProjectName(current => savedProjectDisplayName(current, data.name, autosave));
-    setLastSavedSignature(projectSignature(layers, pageMode, safeMargin, cutSafetyEnabled, pageSize, unit));
-    setProjects((items) => [data as SavedProject, ...items.filter((project) => project.id !== data.id)]);
+    setLastSavedSignature(projectSignature(layers, pageMode, safeMargin, cutSafetyEnabled, pageSize, unit, pageColor, customPageColor));
+    setProjects((items) => [{ ...data, data: { ...projectData, assets: packed.assets } } as SavedProject, ...items.filter((project) => project.id !== data.id)]);
+    if (process.env.NEXT_PUBLIC_PROJECT_FILE_STORAGE === "true") void cleanProjectFiles(supabase, session.user.id, recordId).catch(() => {});
     void refreshProjects(false);
     if (closePanel) setProjectsOpen(false);
     setSaveAsMode(false);
@@ -2307,14 +2342,25 @@ export default function Home() {
       setSavedCountdown(2);
     }
     return true;
+    } catch (error) {
+      setSaveStatus(null);
+      if (autosave) setAutosaveStatus("failed");
+      setNotice(projectSaveError(error instanceof Error ? error.message : "Unexpected connection error"));
+      return false;
+    } finally { saveLock.current = false; }
   };
   autosaveRunner.current = () => {
-    if (!session || !projectDirty || !layers.length || saveStatus === "saving" || storageBlocked) return;
+    if (!session || !projectDirty || !layers.length || saveLock.current || saveDialogOpen || storageBlocked) return;
     const stamp = new Date().toISOString().replace("T", "-").slice(0, 16).replace(/:/g, "-");
     const autosaveName = `Autosave - ${stamp}`;
-    void saveProject(false, undefined, currentProjectAutosave ? autosaveName : currentProjectId ? projectName : autosaveName, false, true).then((saved) => { if (!saved) setAutosaveStatus("failed"); });
+    const automaticName = /^(Untitled Project|Autosave(?:-| - ))/.test(projectName);
+    void saveProject(false, undefined, automaticName && (currentProjectAutosave || !currentProjectId) ? autosaveName : projectName, false, true).then((saved) => { if (!saved) setAutosaveStatus("failed"); });
   };
   const openProject = async (project: SavedProject) => {
+    if (saveLock.current) return setNotice("Please wait for the current save to finish before opening another project.");
+    saveLock.current = true;
+    setProjectsLoading(true);
+    try {
     let full = project;
     if (!project.data?.layers) {
       setProjectsLoading(true);
@@ -2323,6 +2369,7 @@ export default function Home() {
       if (error || !data) { setNotice("Project could not be opened. Please retry."); return; }
       full = { ...project, ...(data as SavedProject), loaded: true };
     }
+    full = { ...full, data: { ...full.data, assets: await loadProjectAssets(supabase, session!.user.id, full.data.assets) } };
     const restoredLayers = await Promise.all(unpackLayers(full.data).map(async (layer) => {
       if (["vector", "stroke", "acetate"].includes(layer.kind) || (layer.sourceFormat && layer.rasterStatus)) return layer;
       const sourceFormat: Layer["sourceFormat"] = /^data:image\/jpe?g/i.test(layer.src) ? "JPG" : /^data:image\/png/i.test(layer.src) ? "PNG" : /^data:image\/webp/i.test(layer.src) ? "WEBP" : "PNG";
@@ -2336,12 +2383,23 @@ export default function Home() {
     setCutSafetyEnabled(Boolean(full.data.cutSafetyEnabled));
     setSelected([]);
     setCurrentProjectId(full.id);
+    projectRevision.current = full.updated_at;
     setCurrentProjectAutosave(Boolean(full.is_autosave));
     setProjectName(full.name);
-    setLastSavedSignature(projectSignature(restoredLayers, pageMode, safeMargin, Boolean(full.data.cutSafetyEnabled), pageSize, unit));
+    const restoredMode = full.data.pageMode || (full.data.landscape ? "landscape" : "portrait");
+    const restoredSize = full.data.pageSize || "a4";
+    const restoredUnit = full.data.unit || "cm";
+    setPageMode(restoredMode); setPageSize(restoredSize); setUnit(restoredUnit); setSafeMargin(full.data.safeMargin);
+    if (full.data.pageColor && Object.hasOwn(PAGE_COLORS, full.data.pageColor)) setPageColor(full.data.pageColor);
+    if (full.data.customPageColor) setCustomPageColor(full.data.customPageColor);
+    setLastSavedSignature(full.id ? projectSignature(restoredLayers, restoredMode, full.data.safeMargin, Boolean(full.data.cutSafetyEnabled), restoredSize, restoredUnit, full.data.pageColor || pageColor, full.data.customPageColor || customPageColor) : "");
     history.current = [];
+    redoHistory.current = [];
     setProjectsOpen(false);
     setNotice(`${full.name} opened`);
+    } catch (error) {
+      setNotice(`Project could not be opened: ${error instanceof Error ? error.message : "Please retry"}`);
+    } finally { saveLock.current = false; setProjectsLoading(false); }
   };
   const requestOpenProject = (project: SavedProject) => {
     if (projectDirty && layers.length) {
@@ -2350,8 +2408,46 @@ export default function Home() {
     }
     void openProject(project);
   };
+  const duplicateProject = async (project: SavedProject) => {
+    const name = window.prompt("Name for the copy", `${project.name} Copy`)?.trim();
+    if (!name) return;
+    if (saveLock.current) return setNotice("Please wait for the current save to finish.");
+    saveLock.current = true;
+    try {
+      if (!session) throw new Error("Sign in before duplicating a project");
+      const { data: source, error: readError } = await supabase.from("projects").select().eq("id", project.id).eq("user_id", session.user.id).single();
+      if (readError || !source) throw new Error(readError?.message || "Original project was not found");
+      const sourceData = source.data as SavedProject["data"];
+      const sourceAssets = await loadProjectAssets(supabase, session.user.id, sourceData.assets);
+      const packed = packLayers(unpackLayers({ ...sourceData, assets: sourceAssets }));
+      const id = crypto.randomUUID();
+      const copyData = { ...sourceData, ...packed };
+      let bytes = 0;
+      if (process.env.NEXT_PUBLIC_PROJECT_FILE_STORAGE === "true") {
+        const estimatedAssets = Object.fromEntries(Object.keys(packed.assets).map(key => [key, `storage://${session.user.id}/${id}/${"0".repeat(64)}`]));
+        const stored = await storeProjectAssets(supabase, session.user.id, id, packed.assets, STORAGE_LIMIT - projectsStorageBytes - projectBytes({ ...copyData, assets: estimatedAssets }));
+        copyData.assets = stored.assets; bytes = stored.bytes;
+      }
+      const byteSize = projectBytes(copyData) + bytes;
+      if (projectsStorageBytes + byteSize > STORAGE_LIMIT) throw new Error("40 MB storage limit reached");
+      if (projects.filter(item => !item.is_autosave).length >= PROJECT_LIMIT) throw new Error("PROJECT_LIMIT_REACHED");
+      const { error } = await supabase.from("projects").insert({ id, user_id: session.user.id, name, data: copyData, thumbnail: source.thumbnail || sourceData.thumbnail, layer_count: packed.layers.length, byte_size: byteSize, is_autosave: false });
+      if (error) throw new Error(error.message);
+      await refreshProjects(false);
+      setNotice("Project duplicated. Your open project was not changed.");
+    } catch (error) { setNotice(projectSaveError(error instanceof Error ? error.message : "Please retry")); }
+    finally { saveLock.current = false; }
+  };
+  const downloadProjectBackup = () => {
+    const packed = packLayers(layers);
+    const backup = { format: "cake-topper-project", version: 1, name: projectName, data: { ...packed, pageMode, landscape, pageSize, unit, safeMargin, pageColor, customPageColor, cutSafetyEnabled, sessionLog } };
+    save(URL.createObjectURL(new Blob([JSON.stringify(backup)], { type: "application/json" })), `${projectName.replace(/[\\/:*?"<>|]/g, "_")}.cakeproject`);
+  };
   const deleteProject = async (id: string) => {
+    if (saveLock.current) return setNotice("Please wait for the current save to finish.");
+    saveLock.current = true;
     const previous = projects;
+    try {
     setProjects((items) => items.filter((project) => project.id !== id));
     const { error } = await supabase.from("projects").delete().eq("id", id);
     if (error) {
@@ -2360,22 +2456,31 @@ export default function Home() {
     }
     if (currentProjectId === id) {
       setCurrentProjectId(null);
+      projectRevision.current = null;
+      setCurrentProjectAutosave(false);
       setProjectName("Untitled Project");
     }
     await refreshProjects();
+    if (session) void cleanProjectFiles(supabase, session.user.id, id).catch(() => {});
     setNotice("Project deleted");
+    } catch (error) {
+      setProjects(previous);
+      setNotice(`Project could not be deleted: ${error instanceof Error ? error.message : "Please retry"}`);
+    } finally { saveLock.current = false; }
   };
   const createNewProject = () => {
+    if (saveLock.current) return setNotice("Please wait for the current save to finish.");
     suppressLayerLog.current = true;
     setLayers([]);
     setSessionLog([{ id: uid(), at: new Date().toISOString(), action: "Project started", details: "A new editing session was created." }]);
     setSelected([]);
     setCurrentProjectId(null);
+    projectRevision.current = null;
     setCurrentProjectAutosave(false);
     setProjectName("Untitled Project");
 
     setCutSafetyEnabled(false);
-    setLastSavedSignature(projectSignature([], pageMode, safeMargin, false, pageSize, unit));
+    setLastSavedSignature(projectSignature([], pageMode, safeMargin, false, pageSize, unit, pageColor, customPageColor));
     history.current = [];
     redoHistory.current = [];
     setProjectsOpen(false);
@@ -2400,6 +2505,12 @@ export default function Home() {
     const target = pendingOpenProject;
     const creating = pendingNewProject;
     if (!target && !creating) return;
+    if (!currentProjectId || currentProjectAutosave) {
+      setPendingOpenProject(null); setPendingNewProject(false);
+      requestSaveDialog();
+      saveContinuation.current = { target };
+      return;
+    }
     const saved = await saveProject(false, undefined, undefined, false);
     if (!saved) return;
     setPendingOpenProject(null);
@@ -2901,7 +3012,7 @@ export default function Home() {
     bgRedoStrokes.current = [];
     const latestStep = chosen.steps[chosen.activeStep] || chosen.steps[chosen.steps.length - 1],
       priorRemoval = latestStep?.type === "remove-bg" && latestStep.before ? latestStep : undefined,
-      base = priorRemoval?.before || snapshot(chosen),
+      base = priorRemoval?.baked ? snapshot(chosen) : priorRemoval?.before || snapshot(chosen),
       settings = priorRemoval?.removalSettings;
     // Paint the existing full-resolution layer immediately while refinement runs.
     setBgPreview(chosen.src);
@@ -2925,8 +3036,8 @@ export default function Home() {
       panX: 0,
       panY: 0,
       speckles: settings?.speckles || 0,
-      edgeRefine: settings?.edgeRefine ?? 3,
-      edgeSmooth: settings?.edgeSmooth ?? 5,
+      edgeRefine: settings?.edgeRefine ?? (priorRemoval?.baked ? 0 : 3),
+      edgeSmooth: settings?.edgeSmooth ?? (priorRemoval?.baked ? 0 : 5),
       optimizeAlpha: settings?.optimizeAlpha || false,
       eraseColors: normalizePickedColors(settings?.eraseColors),
       pickingColor: null,
@@ -2958,8 +3069,8 @@ export default function Home() {
               w: nextWidth,
               h: target.h * t.height,
               kind: "nobg" as Kind,
-          sourceFormat: "PNG",
-          rasterStatus: "ready",
+          sourceFormat: "PNG" as const,
+          rasterStatus: "ready" as const,
             };
           const step: LayerStep = {
             id: uid(),
@@ -2989,7 +3100,7 @@ export default function Home() {
     const latestStep = chosen.steps[chosen.activeStep] || chosen.steps[chosen.steps.length - 1],
       removalIndex = latestStep?.type === "remove-bg" ? chosen.steps.indexOf(latestStep) : -1,
       prior = removalIndex >= 0 ? latestStep : undefined,
-      before = prior?.before || snapshot(chosen),
+      before = prior?.baked ? snapshot(chosen) : prior?.before || snapshot(chosen),
       source = before.src;
     let strokes: BgStroke[] = [],
       colors: EraseColor[] = [];
@@ -3058,8 +3169,8 @@ export default function Home() {
         naturalW: finalImage.naturalWidth,
         naturalH: finalImage.naturalHeight,
         kind: "nobg" as Kind,
-        sourceFormat: "PNG",
-        rasterStatus: "ready",
+        sourceFormat: "PNG" as const,
+        rasterStatus: "ready" as const,
       },
       label = type === "image" ? "Image Remove Background" : type === "rim" ? "Image Background + Rim" : "Text Background Removal",
       removalSettings = {
@@ -3079,7 +3190,7 @@ export default function Home() {
         removalSettings,
         snapshot: snapshot(next),
       },
-      steps = removalIndex >= 0 ? chosen.steps.slice(0, removalIndex) : chosen.steps;
+      steps = chosen.steps;
     return {
       ...next,
       cutRisk: type === "rim" ? false : next.cutRisk,
@@ -3170,8 +3281,8 @@ export default function Home() {
           naturalW: finalImage.naturalWidth,
           naturalH: finalImage.naturalHeight,
           kind: "nobg" as Kind,
-          sourceFormat: "PNG",
-          rasterStatus: "ready",
+          sourceFormat: "PNG" as const,
+          rasterStatus: "ready" as const,
         };
       const selectedBackground = bgEditor.eraseColors.find((entry) => entry.color)?.color || [...target.steps].reverse().find((item) => item.type === "remove-bg")?.backgroundColor || "#ffffff";
       const step: LayerStep = {
@@ -3193,8 +3304,7 @@ export default function Home() {
         },
         snapshot: snapshot(next),
       };
-      const priorRemoval = target.steps.findIndex((item) => item.type === "remove-bg"),
-        steps = priorRemoval >= 0 ? target.steps.slice(0, priorRemoval) : target.steps;
+      const steps = target.steps;
       mutate(target.id, () => ({
         ...next,
         steps: [...steps, step],
@@ -4443,8 +4553,8 @@ export default function Home() {
             w: target.w * trimmed.width,
             h: target.h * trimmed.height,
             kind: "nobg",
-            sourceFormat: "PNG",
-            rasterStatus: "ready",
+            sourceFormat: "PNG" as const,
+            rasterStatus: "ready" as const,
           },
           finalLayer: Layer = {
             ...noBgLayer,
@@ -5320,12 +5430,12 @@ export default function Home() {
         const sourceImage=await getImage(component.src),viewportW=sourceImage.naturalWidth,viewportH=sourceImage.naturalHeight;
         if(!(viewportW>0&&viewportH>0))throw new Error("Source SVG viewport could not be decoded. Original layers were preserved.");
         group.setAttribute("transform",`translate(${(box.x-area.x)*100} ${(box.y-area.y)*100})${layer.rotation?` rotate(${layer.rotation} ${cx-(box.x-area.x)*100} ${cy-(box.y-area.y)*100})`:""} scale(${box.w*100/viewportW} ${box.h*100/viewportH})`);
-        const content=output.importNode(sourceRoot,true) as SVGSVGElement;
+        const content=output.importNode(sourceRoot,true) as unknown as SVGSVGElement;
         content.setAttribute("x","0");content.setAttribute("y","0");content.setAttribute("width",String(viewportW));content.setAttribute("height",String(viewportH));
         content.style.setProperty("width",`${viewportW}px`);content.style.setProperty("height",`${viewportH}px`);
         content.setAttribute("overflow","hidden");content.style.setProperty("overflow","hidden");
         group.appendChild(content);
-        const insideDefinition=(node:Element)=>{let parent=node.parentElement;while(parent&&parent!==group){if(["defs","mask","clippath","pattern","lineargradient","radialgradient","filter"].includes(parent.tagName.toLowerCase()))return true;parent=parent.parentElement}return false};
+        const insideDefinition=(node:Element)=>{let parent:Element|null=node.parentElement;while(parent&&parent!==group){if(["defs","mask","clippath","pattern","lineargradient","radialgradient","filter"].includes(parent.tagName.toLowerCase()))return true;parent=parent.parentElement}return false};
         group.querySelectorAll("path,rect,circle,ellipse,polygon,polyline").forEach(node=>{if(insideDefinition(node))return;if(node.getAttribute("fill")!=="none")node.setAttribute("fill",top.color);if(node.hasAttribute("stroke")&&node.getAttribute("stroke")!=="none")node.setAttribute("stroke",top.color)});
         root.appendChild(group)
       }
@@ -5735,20 +5845,18 @@ export default function Home() {
           </button>
         </div>
         <div className="save-actions">
-          <div className={`project-name-wrap ${projectDirty || (currentProjectId ? projects.find((project)=>project.id===currentProjectId)?.name !== projectName : projectName !== "Untitled Project") ? "dirty" : ""}`}><input className="top-project-name" value={projectName} maxLength={80} onChange={(event)=>setProjectName(event.target.value)} aria-label="Project name" /></div>
+          <div className={`project-name-wrap ${projectDirty || (currentProjectId ? projects.find((project)=>project.id===currentProjectId)?.name !== projectName : projectName !== "Untitled Project") ? "dirty" : ""}`}><input className="top-project-name" value={projectName} readOnly onClick={() => requestSaveDialog()} aria-label="Project name" title="Name and save this project" /></div>
           <button className="new-project" onClick={newProject} title="Start a new project">
             <Plus /> New Project
           </button>
-          <button className={currentProjectId ? "save-project save-update" : "save-project"} onClick={() => void saveProject(false, undefined, projectName, false)} title="Save current project">
+          <button className={currentProjectId ? "save-project save-update" : "save-project"} onClick={() => requestSaveDialog()} title="Save current project">
             <Download /> {currentProjectId ? "Save - Update" : "Save"}
           </button>
           <button
             className="save-as-project"
             disabled={!currentProjectId}
             onClick={() => {
-              setSaveAsMode(true);
-              setProjectName(currentProjectId ? `${projectName} Copy` : projectName);
-              setProjectsOpen(true);
+              requestSaveDialog(true);
             }}
             title="Create a new project copy"
           >
@@ -5950,7 +6058,7 @@ export default function Home() {
                 backgroundColor:pageColor === "custom" ? customPageColor : PAGE_COLORS[pageColor].color,
                 backgroundImage: canvasBackgroundImage,
                 backgroundSize: canvasBackgroundSize,
-                "--ui-inverse-zoom": String(Math.min(1 / zoom, 1.8)),
+                ...{ "--ui-inverse-zoom": String(Math.min(1 / zoom, 1.8)) },
               }}
             >
               <div
@@ -6344,27 +6452,17 @@ export default function Home() {
                 <X />
               </button>
             </header>
-            <div className="project-save-toolbar">
-              <label>
-                <span>{saveAsMode ? "Name for the new copy" : "Current project name"}</span>
-                <input value={projectName} maxLength={80} onChange={(e) => setProjectName(e.target.value)} />
-              </label>
-              <button onClick={() => void saveProject(false, undefined, undefined, false)}>
-                <Download /> Save Project
-              </button>
-              <button
-                className={saveAsMode ? "active" : ""}
-                onClick={() => {
-                  if (saveAsMode) void saveProject(true, undefined, undefined, false);
-                  else {
-                    setSaveAsMode(true);
-                    setProjectName(currentProjectId ? `${projectName} Copy` : projectName);
-                  }
-                }}
-              >
-                <Copy /> {saveAsMode ? "Confirm Save As" : "Save As Project"}
-              </button>
-            </div>
+            <label className="project-import-backup">Open a project backup<input type="file" accept=".cakeproject,application/json" onChange={async event => {
+              const file = event.target.files?.[0]; event.target.value = "";
+              if (!file) return;
+              try {
+                if (file.size > 80 * 1024 * 1024) throw new Error("Project backup is too large");
+                const backup = JSON.parse(await file.text());
+                if (backup.format !== "cake-topper-project" || backup.version !== 1 || !Array.isArray(backup.data?.layers)) throw new Error("This is not a supported project backup");
+                if (backup.data.layers.some((layer: Layer) => !layer.id || typeof layer.src !== "string" || !Number.isFinite(layer.w) || !Number.isFinite(layer.h))) throw new Error("Invalid layer data in project backup");
+                requestOpenProject({ id: "", name: String(backup.name || "Imported Project").slice(0, 80), updated_at: "", data: backup.data });
+              } catch (error) { setNotice(error instanceof Error ? error.message : "The backup could not be opened"); }
+            }} /></label>
             <div className="project-list">
               {projectsLoading ? (
                 <div className="projects-loading">
@@ -6381,7 +6479,7 @@ export default function Home() {
                         <button className="project-summary" onClick={() => setExpandedProjectId((value) => (value === project.id ? null : project.id))}>
                           <span className="project-composite-thumb">{project.thumbnail || project.data?.thumbnail ? <img src={project.thumbnail || project.data?.thumbnail} alt="" /> : <FolderOpen />}</span>
                           <span className="project-summary-copy">
-                            <b>{project.name}</b>
+                            <b>{project.name}</b>{project.is_autosave && <small>Unsaved project recovery</small>}
                             <small>Updated {new Date(project.updated_at).toLocaleString()}</small>
                             <em>
                               {project.layer_count ?? project.data?.layers?.length ?? 0} layers · {formatProjectSize(project)}
@@ -6390,12 +6488,24 @@ export default function Home() {
                           <ChevronDown />
                         </button>
                         <div className="project-quick-actions">
+                          <button onClick={async () => {
+                            const name = window.prompt("Project name", project.name)?.trim();
+                            if (!name || name === project.name) return;
+                            if (saveLock.current) return setNotice("Please wait for the current save to finish.");
+                            saveLock.current = true;
+                            try {
+                              const updated_at = new Date().toISOString();
+                              const { data, error } = await supabase.from("projects").update({ name, updated_at, is_autosave: false }).eq("id", project.id).eq("user_id", session?.user.id).eq("updated_at", project.updated_at).select("id").single();
+                              if (error) return setNotice(projectSaveError(error.message));
+                              if (!data) return setNotice("Project changed in another tab. Refresh and retry.");
+                              if (currentProjectId === project.id) { setProjectName(name); setCurrentProjectAutosave(false); projectRevision.current = updated_at; }
+                              setProjects(items => items.map(item => item.id === project.id ? { ...item, name, updated_at, is_autosave: false } : item));
+                            } finally { saveLock.current = false; }
+                          }}>Rename</button>
                           <button className="open" onClick={() => requestOpenProject(project)} title="Open project">
                             <FolderOpen /> <span>Open</span>
                           </button>
-                          <button onClick={() => setPendingOverwriteProject(project)} title="Overwrite with current">
-                            <Replace /> <span>Overwrite</span>
-                          </button>
+                          <button onClick={() => void duplicateProject(project)} title="Duplicate saved project"><Copy /> <span>Duplicate</span></button>
                           <button className="delete" onClick={() => void deleteProject(project.id)} title="Delete project">
                             <Trash2 />
                           </button>
@@ -6416,9 +6526,7 @@ export default function Home() {
                             <button className="open-saved-project" onClick={() => requestOpenProject(project)}>
                               <FolderOpen /> Open Project
                             </button>
-                            <button onClick={() => setPendingOverwriteProject(project)}>
-                              <Replace /> Overwrite with Current
-                            </button>
+                            <button onClick={() => void duplicateProject(project)}><Copy /> Duplicate Project</button>
                             <button className="project-delete" onClick={() => void deleteProject(project.id)} title="Delete project">
                               <Trash2 /> Delete
                             </button>
@@ -6505,9 +6613,7 @@ export default function Home() {
               <button
                 onClick={() => {
                   setPendingNewProject(false);
-                  setSaveAsMode(true);
-                  setProjectName(currentProjectId ? `${projectName} Copy` : projectName);
-                  setProjectsOpen(true);
+                  requestSaveDialog(true);
                 }}
               >
                 <Copy /> Save As
@@ -6525,29 +6631,28 @@ export default function Home() {
           </div>
         </div>
       )}
-      {pendingOverwriteProject && (
-        <div className="project-transition-modal" role="dialog" aria-modal="true">
-          <div>
-            <button className="modal-x" onClick={() => setPendingOverwriteProject(null)}>
-              <X />
-            </button>
-            <AlertTriangle />
-            <h3>Overwrite “{pendingOverwriteProject.name}”?</h3>
-            <p>Its saved canvas will be replaced with the layers currently open in the editor.</p>
+      {saveDialogOpen && (
+        <div className="project-transition-modal" role="dialog" aria-modal="true" aria-label={saveAsMode ? "Save a Copy" : "Save Project"}>
+          <form onSubmit={async event => {
+            event.preventDefault();
+            const saved = await saveProject(saveAsMode, undefined, saveNameDraft, false);
+            if (saved) {
+              setSaveDialogOpen(false);
+              const continuation = saveContinuation.current;
+              saveContinuation.current = null;
+              if (continuation?.target) await openProject(continuation.target);
+              else if (continuation) createNewProject();
+            }
+          }}>
+            <h3>{saveAsMode ? "Save a Copy" : "Save Project"}</h3>
+            <p>{saveAsMode ? "Create a separate project. The original will remain unchanged." : "Save this project with the name below. Autosave will keep updating the same project."}</p>
+            <label className="project-name-field">Project name<input autoFocus required maxLength={80} disabled={saveStatus === "saving"} value={saveNameDraft} onChange={event => setSaveNameDraft(event.target.value)} /></label>
             <footer>
-              <button onClick={() => setPendingOverwriteProject(null)}>Cancel</button>
-              <button
-                className="confirm"
-                onClick={async () => {
-                  const target = pendingOverwriteProject;
-                  setPendingOverwriteProject(null);
-                  await saveProject(false, target.id, target.name, false);
-                }}
-              >
-                Overwrite Project
-              </button>
+              <button type="button" onClick={downloadProjectBackup}>Download Backup</button>
+              <button type="button" disabled={saveStatus === "saving"} onClick={() => setSaveDialogOpen(false)}>Cancel</button>
+              <button type="submit" className="confirm" disabled={!saveNameDraft.trim() || saveStatus === "saving" || autosaveStatus === "saving"}>{autosaveStatus === "saving" ? "Finishing autosave…" : saveStatus === "saving" ? "Saving…" : saveAsMode ? "Save a Copy" : "Save"}</button>
             </footer>
-          </div>
+          </form>
         </div>
       )}
       {accountOpen && (

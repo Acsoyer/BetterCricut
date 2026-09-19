@@ -22,7 +22,7 @@ export async function fillVectorGaps(raw: string, widthCm: number, heightCm: num
   const host = document.createElement("div");
   host.style.cssText = "position:fixed;left:-100000px;top:0;visibility:hidden;pointer-events:none";
   const live = document.importNode(root, true) as unknown as SVGSVGElement;
-  host.append(live); document.body.append(host);
+  host.appendChild(live); document.body.appendChild(host);
   try {
     const bounds = live.getBoundingClientRect();
     let deadline = performance.now() + 8;

@@ -1,6 +1,6 @@
 import tailwindcss from '@tailwindcss/postcss';
 import vinext from 'vinext';
-import { defineConfig } from 'vite';
+import { defineConfig, loadEnv } from 'vite';
 
 // macOS Seatbelt blocks FSEvents, so Codex previews need polling for HMR.
 const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === 'seatbelt';
@@ -10,7 +10,8 @@ const localBindingConfig = {
   compatibility_flags: ['nodejs_compat'],
 };
 
-export default defineConfig(async () => {
+export default defineConfig(async ({ mode }) => {
+  const publicEnv = loadEnv(mode, process.cwd(), 'NEXT_PUBLIC_');
   // Keep Wrangler and Miniflare state project-local. These are non-secret tool
   // settings; application environment belongs in ignored `.env*` files.
   process.env.WRANGLER_WRITE_LOGS ??= 'false';
@@ -21,6 +22,9 @@ export default defineConfig(async () => {
   const { cloudflare } = await import('@cloudflare/vite-plugin');
 
   return {
+    define: {
+      'process.env.NEXT_PUBLIC_PROJECT_FILE_STORAGE': JSON.stringify(process.env.NEXT_PUBLIC_PROJECT_FILE_STORAGE ?? publicEnv.NEXT_PUBLIC_PROJECT_FILE_STORAGE ?? 'true'),
+    },
     css: { postcss: { plugins: [tailwindcss()] } },
     server: isCodexSeatbeltSandbox
       ? { watch: { useFsEvents: false, usePolling: true } }

@@ -32,7 +32,7 @@ test('generated cubic holes fill without browser length traversal or rewriting o
   const originals=new Map(['document','DOMParser','XMLSerializer','getComputedStyle'].map(key=>[key,Object.getOwnPropertyDescriptor(globalThis,key)]));
   const path={getAttribute:()=>d,getCTM:()=>({a:1,b:0,c:0,d:1,e:0,f:0}),setAttribute:(_,value)=>{d=value;}};
   const live={getBoundingClientRect:()=>({width:100,height:100}),querySelectorAll:()=>[path]};
-  globalThis.document={createElement:()=>({style:{},append(){},remove(){}}),importNode:()=>live,body:{append(){}},createElementNS(){throw new Error('Unexpected browser path-length sampling');}};
+  globalThis.document={createElement:()=>({style:{},append(){},appendChild(){},remove(){}}),importNode:()=>live,body:{append(){},appendChild(){}},createElementNS(){throw new Error('Unexpected browser path-length sampling');}};
   globalThis.DOMParser=class {parseFromString(){return {querySelector:()=>null,documentElement:live};}};
   globalThis.XMLSerializer=class {serializeToString(){return d;}};
   globalThis.getComputedStyle=()=>({fillRule:'evenodd'});
