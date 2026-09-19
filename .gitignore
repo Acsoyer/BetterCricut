@@ -37,6 +37,7 @@ next-env.d.ts
 /.wrangler/
 /outputs/
 /work/
+/private-assets/
 
 # Private diagnostic SVG copies are local-only, not public test assets.
 tests/fixtures/cakebox/

@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "vinext dev",
     "build": "vinext build",
-    "deploy": "node scripts/prepare-deploy.mjs && wrangler deploy --config dist/server/wrangler.json",
+    "deploy": "wrangler deploy --config dist/server/wrangler.json",
     "start": "vinext start",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next"
   },
