@@ -24,6 +24,7 @@ import { fittedCutSvg, detailedRecoveryScales } from "./cut-curve-fit";
 import { cutFitRetryPlan, losslessCutMaskSvg } from "./cut-fit-retry";
 import { smoothAlphaCoverage } from "./alpha-coverage";
 import { cutContourOptions, prepareCutContour, cutMaskTopology, type CutContourProfile } from "./cut-contour";
+import { circularDilateAlpha } from "./outline-mask";
 import { faStar, faHeart, faArrowRight, faBolt, faBurst, faCloud, faMoon, faSun, faDiamond, faShield, faDroplet, faLeaf, faCrown, faBell, faGift, faTag, faBookmark, faLocationPin, faComment, faPuzzlePiece } from "@fortawesome/free-solid-svg-icons";
 function OutlineIcon() { return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path strokeDasharray="3 2" d="M12 2 22 9 18 21H6L2 9Z"/><path d="m12 7 5.5 4-2 6h-7l-2-6Z"/></svg>; }
 const PAGE_SIZES = { a4: { label: "A4", w: 21, h: 29.7 }, letter: { label: "Letter", w: 21.59, h: 27.94 }, a5: { label: "A5", w: 14.8, h: 21 }, full: { label: "Large canvas", w: 100, h: 100 } } as const,
@@ -1413,24 +1414,24 @@ async function strokeImage(src: string, strokeCm: number, wCm: number, color: st
   const mx = mask.getContext("2d")!,
     x = c.getContext("2d")!;
   mx.drawImage(img, 0, 0, iw, ih);
-  mx.globalCompositeOperation = "source-in";
-  mx.fillStyle = "#000";
-  mx.fillRect(0, 0, iw, ih);
   const outer = color.startsWith("#") ? color : DARK;
-  x.fillStyle = outer;
-  const steps = Math.max(32, Math.min(96, Math.ceil(r * 2.4)));
-  for (let n = 0; n < steps; n++) {
-    const a = (n / steps) * Math.PI * 2;
-    x.drawImage(mask, pad + Math.cos(a) * r, pad + Math.sin(a) * r);
+  const source = mx.getImageData(0, 0, iw, ih).data,
+    alpha = new Uint8Array(c.width * c.height);
+  for (let py = 0; py < ih; py++)
+    for (let px = 0; px < iw; px++) alpha[(py + pad) * c.width + px + pad] = source[(py * iw + px) * 4 + 3];
+  const expanded = circularDilateAlpha(alpha, c.width, c.height, r),
+    outlined = x.createImageData(c.width, c.height),
+    red = parseInt(outer.slice(1, 3), 16),
+    green = parseInt(outer.slice(3, 5), 16),
+    blue = parseInt(outer.slice(5, 7), 16);
+  for (let p = 0; p < expanded.length; p++) if (expanded[p]) {
+    const q = p * 4;
+    outlined.data[q] = red;
+    outlined.data[q + 1] = green;
+    outlined.data[q + 2] = blue;
+    outlined.data[q + 3] = 255;
   }
-  x.globalCompositeOperation = "source-in";
-  x.fillStyle = outer;
-  x.fillRect(0, 0, c.width, c.height);
-  x.globalCompositeOperation = "source-over";
-  x.drawImage(mask, pad, pad);
-  x.globalCompositeOperation = "source-in";
-  x.fillStyle = outer;
-  x.fillRect(0, 0, c.width, c.height);
+  x.putImageData(outlined, 0, 0);
   if (fillGapsMm === "all" || fillGapsMm > 0) {
     const data = x.getImageData(0, 0, c.width, c.height),
       seen = new Uint8Array(c.width * c.height),
