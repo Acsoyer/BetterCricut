@@ -369,6 +369,20 @@ const safeSvgData = (raw: string) => {
   root.setAttribute("preserveAspectRatio", "none"); root.setAttribute("shape-rendering", "geometricPrecision");
   return `data:image/svg+xml,${encodeURIComponent(new XMLSerializer().serializeToString(root))}`;
 };
+const outlineComparisonMarkup = (src: string, color: string, dashed = false) => {
+  if (!src.startsWith("data:image/svg+xml")) return "";
+  const doc = new DOMParser().parseFromString(decodeSvgData(src), "image/svg+xml"), root = doc.documentElement;
+  root.querySelectorAll("script,foreignObject").forEach(node => node.remove());
+  root.setAttribute("width", "100%"); root.setAttribute("height", "100%");
+  root.setAttribute("preserveAspectRatio", "none"); root.setAttribute("overflow", "visible");
+  root.querySelectorAll("path,rect,circle,ellipse,polygon,polyline").forEach(node => {
+    node.setAttribute("fill", "none"); node.setAttribute("stroke", color);
+    node.setAttribute("stroke-width", "4.5"); node.setAttribute("stroke-linecap", "round");
+    node.setAttribute("stroke-linejoin", "round"); node.setAttribute("vector-effect", "non-scaling-stroke");
+    if (dashed) node.setAttribute("stroke-dasharray", "11 8"); else node.removeAttribute("stroke-dasharray");
+  });
+  return new XMLSerializer().serializeToString(root);
+};
 const flipSvgSource = (src: string, axis: "horizontal" | "vertical") => {
   const doc = new DOMParser().parseFromString(decodeSvgData(src), "image/svg+xml"), root = doc.documentElement,
     [x, y, w, h] = svgViewBox(root), group = doc.createElementNS("http://www.w3.org/2000/svg", "g");
@@ -1890,7 +1904,7 @@ export default function Home() {
     [drag, setDrag] = useState<Drag>(null),
     [cycle, setCycle] = useState({ key: "", index: 0, x: -9999, y: -9999 }),
     [strokeDraft, setStrokeDraft] = useState(DEFAULT_OUTLINE_CM),
-    [outlinePreview, setOutlinePreview] = useState<{ layerId: string; src: string; x: number; y: number; w: number; h: number } | null>(null),
+    [outlinePreview, setOutlinePreview] = useState<{ layerId: string; oldMarkup: string; newMarkup: string; oldBox: {x:number;y:number;w:number;h:number}; newBox: {x:number;y:number;w:number;h:number} } | null>(null),
     [fillGapsDraft, setFillGapsDraft] = useState(0),
     [fillAllGapsDraft, setFillAllGapsDraft] = useState(false),
     [stickerBackgroundPromptId, setStickerBackgroundPromptId] = useState<string | null>(null),
@@ -2758,9 +2772,12 @@ export default function Home() {
         baseWidth = one.kind === "stroke" && one.innerSrc && !parent ? Math.max(.1, one.w - one.strokeCm * 2) : base.w,
         delta = one.kind === "stroke" ? strokeDraft - one.strokeCm : strokeDraft,
         geometry = { x: one.x - delta, y: one.y - delta, w: one.w + delta * 2, h: one.h + delta * 2 };
-      void strokeImage(baseSrc, strokeDraft, baseWidth, one.kind === "stroke" ? one.color : lighten(one.color), fillGapsDraft).then(src => {
-        if (outlinePreviewRequest.current === request) setOutlinePreview({ layerId: one.id, src, ...geometry });
-      }).catch(() => {});
+      const previewColor = one.kind === "stroke" ? one.color : lighten(one.color);
+      void strokeImage(baseSrc, strokeDraft, baseWidth, previewColor, fillGapsDraft)
+        .then(src => smoothVectorCutout(src, previewColor, true, "smooth"))
+        .then(src => {
+          if (outlinePreviewRequest.current === request) setOutlinePreview({ layerId: one.id, oldMarkup: outlineComparisonMarkup(one.src, "#8b5b64", true), newMarkup: outlineComparisonMarkup(src, "#008f73"), oldBox: {x:one.x,y:one.y,w:one.w,h:one.h}, newBox: geometry });
+        }).catch(() => {});
     }, 70);
     return () => { window.clearTimeout(timer); outlinePreviewRequest.current++; };
   }, [one?.id, one?.src, one?.innerSrc, one?.strokeCm, strokeDraft, fillGapsDraft]);
@@ -5772,14 +5789,10 @@ export default function Home() {
             <Scissors />
           </span>
           <button className="brand-copy" onClick={() => setDevLogOpen(true)} title="Open development log">
-            <b>Cake Topper Maker</b>
+            <b>Kreya</b>
             <small>Personal workspace · {EDITOR_VERSION}</small>
           </button>
         </div>
-        <div className="main-history-actions"><button className="brand-undo" onClick={undo} title="Undo (Ctrl+Z)">
-          <Undo2 /><span>Undo</span>
-        </button>
-        <button className="brand-redo" disabled={!redoHistory.current.length} onClick={redo} title="Redo (Ctrl+Shift+Z)"><Redo2 /><span>Redo</span></button></div>
         <input hidden ref={fileRef} type="file" multiple accept=".jpg,.jpeg,.png,.svg,.webp" onChange={add} />
         <input hidden ref={clipFileRef} type="file" accept="image/png,image/jpeg,image/webp" onChange={chooseClipImage} />
         <span className="toolbar-divider" />
@@ -5790,7 +5803,7 @@ export default function Home() {
             <button type="button" disabled={one.rasterStatus === "background"} onClick={() => void openStickerBorder(one)}><Sparkles /> Add Sticker Border to Image</button>
             <button type="button" className={one.rasterStatus === "background" ? "" : "primary"} onClick={() => void addOutlineToPrintable()}><OutlineIcon /> Add Outline as Cut Shape</button>
           </>}
-          {one && ["vector", "stroke"].includes(one.kind) && <><button type="button" onClick={() => void addStroke(DEFAULT_OUTLINE_CM)}><OutlineIcon /> Add Outline</button><button type="button" onClick={() => void makeGapsPermanent()}><Sparkles /> Bake Cutout</button></>}
+          {one && ["vector", "stroke"].includes(one.kind) && <><button type="button" onClick={() => one.kind === "vector" ? setStrokeDraft(DEFAULT_OUTLINE_CM) : void addStroke(DEFAULT_OUTLINE_CM)}><OutlineIcon /> Add Outline</button><button type="button" onClick={() => void makeGapsPermanent()}><Sparkles /> Bake Cutout</button></>}
           {!one && <><button disabled><Sparkles/> Remove Background</button><button disabled><Scissors/> Convert to Cut Shape</button><button disabled><Sparkles/> Add Sticker Border to Image</button><button disabled><Scissors/> Add Outline as Cut Shape</button></>}
         </nav>
 
@@ -5828,6 +5841,10 @@ export default function Home() {
             <button className="settings-trigger" onClick={() => { setPageSetupOpen((value) => !value); setSettingsSection(null); }}>
               <SlidersHorizontal /> Settings <ChevronDown />
             </button>
+            <div className="sub-history-actions">
+              <button className="brand-undo" onClick={undo} title="Undo (Ctrl+Z)"><Undo2 /><span>Undo</span></button>
+              <button className="brand-redo" disabled={!redoHistory.current.length} onClick={redo} title="Redo (Ctrl+Shift+Z)"><Redo2 /><span>Redo</span></button>
+            </div>
             {pageSetupOpen && (
               <div className="pop page-setup-menu setup-root">
                 <div className="setup-group">
@@ -6227,7 +6244,7 @@ export default function Home() {
                 .map((l) => (
                   <div
                     key={l.id}
-                    className={`object ${selected.includes(l.id) ? "picked" : ""} ${["stroke", "vector"].includes(l.kind) ? "vector-shape" : ""} ${l.acetateOn ? "acetate" : ""}`}
+                    className={`object ${selected.includes(l.id) ? "picked" : ""} ${["stroke", "vector"].includes(l.kind) ? "vector-shape" : ""} ${l.acetateOn ? "acetate" : ""} ${outlinePreview?.layerId===l.id?"outline-comparing":""}`}
                     onPointerDown={(e) => choose(e, l)}
                     style={{
                       left: l.x * scale,
@@ -6241,11 +6258,10 @@ export default function Home() {
                     <img className={["vector", "stroke"].includes(l.kind) ? "cutout-edge-preview" : ""} src={["vector", "stroke"].includes(l.kind) ? scalableSvgPreview(l.src) : l.stickerOffset?.previewSrc || l.src} alt="" draggable={false} style={{ opacity: l.acetateOn ? 0.8 : 1 }} />
                   </div>
                 ))}
-              {outlinePreview && layers.some(layer => layer.id === outlinePreview.layerId) && (
-                <div className="outline-live-preview" aria-hidden="true" style={{ left:outlinePreview.x*scale, top:outlinePreview.y*scale, width:outlinePreview.w*scale, height:outlinePreview.h*scale, zIndex:layers.length+3 }}>
-                  <img src={outlinePreview.src} alt="" draggable={false}/>
-                </div>
-              )}
+              {outlinePreview && layers.some(layer => layer.id === outlinePreview.layerId) && <>
+                <div className="outline-live-preview old" aria-hidden="true" style={{left:outlinePreview.oldBox.x*scale,top:outlinePreview.oldBox.y*scale,width:outlinePreview.oldBox.w*scale,height:outlinePreview.oldBox.h*scale,zIndex:layers.length+3}} dangerouslySetInnerHTML={{__html:outlinePreview.oldMarkup}}/>
+                <div className="outline-live-preview next" aria-hidden="true" style={{left:outlinePreview.newBox.x*scale,top:outlinePreview.newBox.y*scale,width:outlinePreview.newBox.w*scale,height:outlinePreview.newBox.h*scale,zIndex:layers.length+4}} dangerouslySetInnerHTML={{__html:outlinePreview.newMarkup}}/>
+              </>}
               {shapeImageEditing &&
                 (() => {
                   const shape = layers.find((l) => l.id === shapeImageEditing),
@@ -6782,13 +6798,16 @@ export default function Home() {
         <div className="project-transition-modal" role="dialog" aria-modal="true" aria-label={saveAsMode ? "Save a Copy" : "Save Project"}>
           <form onSubmit={async event => {
             event.preventDefault();
+            const continuation = saveContinuation.current;
+            setSaveDialogOpen(false);
+            await new Promise<void>(resolve => window.requestAnimationFrame(() => resolve()));
             const saved = await saveProject(saveAsMode, undefined, saveNameDraft, false);
             if (saved) {
-              setSaveDialogOpen(false);
-              const continuation = saveContinuation.current;
               saveContinuation.current = null;
-              if (continuation?.target) await openProject(continuation.target);
-              else if (continuation) createNewProject();
+              setPendingOpenProject(null); setPendingNewProject(false);
+              if (continuation?.target) await openProject(continuation.target); else if (continuation) createNewProject();
+            } else {
+              saveContinuation.current = null;
             }
           }}>
             <h3>{saveAsMode ? "Save a Copy" : "Save Project"}</h3>
