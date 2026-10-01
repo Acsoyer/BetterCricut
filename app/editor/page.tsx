@@ -4,7 +4,7 @@ import { drawWeldReference, inspectWeldCoverage } from "./weld-preview";
 import { isLayerVisible } from "./layer-visibility";
 /* eslint-disable react-hooks/set-state-in-effect, react-hooks/refs, react-hooks/purity */
 import { ChangeEvent, Fragment, PointerEvent as RPointer, WheelEvent as RWheel, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { AlignVerticalJustifyCenter, AlignEndHorizontal, AlignEndVertical, AlignHorizontalJustifyCenter, AlignStartHorizontal, AlignStartVertical, AlertTriangle, BringToFront, ChevronDown, Check, Copy, Crosshair, Download, Eye, EyeOff, FileImage, File, FlipHorizontal2, FlipVertical2, ImagePlus, Laptop, Paintbrush, Eraser, GripVertical, Link as LinkIcon, Link2Off, Layers3, Maximize2, Minimize2, Palette, Pipette, Plus, Redo2, RotateCw, Replace, Ruler, Scissors, ShieldCheck, SlidersHorizontal, SendToBack, Sparkles, Star, Trash2, Type, Undo2, ZoomIn, ZoomOut, User, FolderOpen, Image as ImageIcon, LogOut, X } from "lucide-react";
+import { AlignVerticalJustifyCenter, AlignEndHorizontal, AlignEndVertical, AlignHorizontalJustifyCenter, AlignStartHorizontal, AlignStartVertical, AlertTriangle, BringToFront, ChevronDown, Check, Copy, Crosshair, Download, Eye, EyeOff, FileImage, File, FlipHorizontal2, FlipVertical2, ImagePlus, Laptop, Mouse, Paintbrush, Eraser, GripVertical, Link as LinkIcon, Link2Off, Layers3, Maximize2, Minimize2, Palette, Pipette, Plus, Redo2, RotateCw, Replace, Ruler, Scissors, ShieldCheck, SlidersHorizontal, SendToBack, Sparkles, Star, Trash2, Type, Undo2, ZoomIn, ZoomOut, User, FolderOpen, Image as ImageIcon, LogOut, X } from "lucide-react";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
 import { EDITOR_VERSION, editorDevLog } from "../editor-dev-log";
@@ -374,7 +374,7 @@ const cutShapeBorderMarkup = (src: string) => {
   root.setAttribute("preserveAspectRatio", "none"); root.setAttribute("overflow", "visible");
   root.querySelectorAll("path,rect,circle,ellipse,polygon,polyline").forEach(node => {
     node.setAttribute("fill", "none"); node.setAttribute("stroke", "#111715");
-    node.setAttribute("stroke-width", "3"); node.setAttribute("stroke-linecap", "round");
+    node.setAttribute("stroke-width", "2"); node.setAttribute("stroke-linecap", "round");
     node.setAttribute("stroke-linejoin", "round"); node.setAttribute("vector-effect", "non-scaling-stroke");
     node.removeAttribute("stroke-dasharray");
   });
@@ -2007,6 +2007,7 @@ export default function Home() {
     [session, setSession] = useState<Session | null>(null),
     [projects, setProjects] = useState<SavedProject[]>([]),
     [projectsLoading, setProjectsLoading] = useState(true),
+    [openingProjectId, setOpeningProjectId] = useState<string | null>(null),
     [storageBlocked, setStorageBlocked] = useState(false),
     [autosaveStatus, setAutosaveStatus] = useState<"saving" | "saved" | "failed" | null>(null),
     [lastAutosaveAt, setLastAutosaveAt] = useState<Date | null>(null),
@@ -2145,7 +2146,8 @@ export default function Home() {
     box = bounds(picked),
     displayBox = drag?.mode === "move" ? bounds(layers.filter(layer=>drag.start.some(start=>start.id===layer.id))) : one && drag?.mode === "rotate" ? { x: one.x, y: one.y, w: one.w, h: one.h } : one && one.rotation ? rotatedBounds(one) : box,
     scale = PPCM * zoom * calibration,
-    vectorsOnly = picked.length > 0 && picked.every((l) => ["stroke", "vector"].includes(l.kind));
+    vectorsOnly = picked.length > 0 && picked.every((l) => ["stroke", "vector"].includes(l.kind)),
+    safeMarginLabel = unit === "cm" ? `${safeMargin} cm` : safeMargin === 0 ? "0 in" : safeMargin < .7 ? "3/16 in" : "3/8 in";
   const cancelOutlineDraft = () => {
     setStrokeDraft(one?.kind === "stroke" ? one.strokeCm : 0);
     setOutlineEditing(false); setOutlinePreview(null); setOutlinePreviewBusy(false);
@@ -2408,14 +2410,11 @@ export default function Home() {
   };
   const openProject = async (project: SavedProject) => {
     if (saveLock.current) return setNotice("Please wait for the current save to finish before opening another project.");
-    saveLock.current = true;
-    setProjectsLoading(true);
+    saveLock.current = true; setOpeningProjectId(project.id);
     try {
     let full = project;
     if (!project.data?.layers) {
-      setProjectsLoading(true);
       const { data, error } = await supabase.from("projects").select("id,name,updated_at,data").eq("id", project.id).single();
-      setProjectsLoading(false);
       if (error || !data) { setNotice("Project could not be opened. Please retry."); return; }
       full = { ...project, ...(data as SavedProject), loaded: true };
     }
@@ -2449,7 +2448,7 @@ export default function Home() {
     setNotice(`${full.name} opened`);
     } catch (error) {
       setNotice(`Project could not be opened: ${error instanceof Error ? error.message : "Please retry"}`);
-    } finally { saveLock.current = false; setProjectsLoading(false); }
+    } finally { saveLock.current = false; setProjectsLoading(false); setOpeningProjectId(null); }
   };
   const requestOpenProject = (project: SavedProject) => {
     if (projectDirty && layers.length) {
@@ -2773,7 +2772,7 @@ export default function Home() {
   useEffect(() => {
     const request = ++outlinePreviewRequest.current;
     setOutlinePreviewBusy(false);
-    if (!outlineEditing || !one || !["vector", "stroke"].includes(one.kind) || strokeDraft <= 0) { setOutlinePreview(null); return; }
+    if (!outlineEditing || !one || one.kind === "acetate" || strokeDraft <= 0) { setOutlinePreview(null); return; }
     setOutlinePreview(current => current?.layerId === one.id ? current : null);
     const timer = window.setTimeout(() => {
       setOutlinePreviewBusy(true);
@@ -2783,7 +2782,7 @@ export default function Home() {
         baseWidth = one.kind === "stroke" && one.innerSrc && !parent ? Math.max(.1, one.w - one.strokeCm * 2) : base.w,
         delta = one.kind === "stroke" ? strokeDraft - one.strokeCm : strokeDraft,
         geometry = { x: one.x - delta, y: one.y - delta, w: one.w + delta * 2, h: one.h + delta * 2 };
-      const previewColor = one.kind === "stroke" ? one.color : lighten(one.color);
+      const previewColor = one.kind === "stroke" ? one.color : lighten(one.color || DARK);
       void strokeImage(baseSrc, strokeDraft, baseWidth, previewColor, fillGapsDraft, 420)
         .then(src => smoothVectorCutout(src, previewColor, true, "smooth"))
         .then(src => {
@@ -2838,7 +2837,7 @@ export default function Home() {
     return () => document.removeEventListener("pointerdown", close);
   }, []);
   useEffect(() => {
-    if (one && ["stroke", "vector"].includes(one.kind)) {
+    if (one) {
       setStrokeDraft(one.kind === "stroke" ? one.strokeCm : 0);
       setFillGapsDraft(one.fillGapsMm || 0);
     }
@@ -4375,7 +4374,7 @@ export default function Home() {
     try {
       const outlineSource = one.stickerOffset?.enabled ? (one.stickerOffset.previewSrc || (await renderStickerOffset(one, 1)).toDataURL("image/png")) : one.src,
         cutSrc = await smoothVectorCutout(outlineSource, DARK, true),
-        cm = DEFAULT_OUTLINE_CM,
+        cm = strokeDraft || DEFAULT_OUTLINE_CM,
         outlineColor = lighten(DARK),
         rasterStroke = await strokeImage(cutSrc, cm, one.w, outlineColor, fillGapsDraft),
         src = await smoothVectorCutout(rasterStroke, outlineColor, true, "smooth"),
@@ -4409,7 +4408,7 @@ export default function Home() {
       setLayers((items) => { const index = items.findIndex((item) => item.id === one.id), next = [...items]; next.splice(Math.max(0, index), 0, outline); return next; });
       setSelected([id]);
       setNotice("The printable image was preserved. An editable Cut Shape outline was added underneath it.");
-    } finally { setWorking(false); }
+    } finally { setOutlineEditing(false); setOutlinePreview(null); setOutlinePreviewBusy(false); setWorking(false); }
   };
   const addStroke = async (cmOverride?: number) => {
     if (!one || one.kind !== "vector") {
@@ -5431,6 +5430,22 @@ export default function Home() {
       setNotice(`Flip could not be applied: ${error instanceof Error ? error.message : "Please retry"}`);
     } finally { setWorking(false); }
   };
+  const beginOutlineForPrintable = async (continueWithCurrentEdges = false) => {
+    if (!one || ["vector", "stroke", "acetate"].includes(one.kind)) return;
+    if (one.rasterStatus === "cleanup" && !continueWithCurrentEdges) { setEdgeGuidanceLayerId(one.id); return; }
+    if (!(await hasTransparentCanvas(one.src))) {
+      setBgMenuOpen(true);
+      setNotice("This image still has a background. Remove it before creating an accurate Cut Shape outline.");
+      return;
+    }
+    setStrokeDraft(DEFAULT_OUTLINE_CM); setOutlineEditing(true);
+  };
+  const applyOutlineDraft = () => {
+    if (!one) return;
+    if (one.kind === "stroke") void updateStroke();
+    else if (one.kind === "vector") void addStroke();
+    else void addOutlineToPrintable(true);
+  };
   const showStep = (layer: Layer, index: number) => {
     const step = layer.steps[index];
     if (!step) return;
@@ -5773,16 +5788,17 @@ export default function Home() {
       setWorking(false);
     }
   };
-  const rulers = useMemo(
+  const rulerStep = unit === "in" ? 2.54 : 1,
+    rulers = useMemo(
       () => ({
-        x: Array.from({ length: Math.ceil(A4.w) + 1 }, (_, i) => i),
-        y: Array.from({ length: Math.ceil(A4.h) + 1 }, (_, i) => i),
+        x: Array.from({ length: Math.ceil(A4.w / rulerStep) + 1 }, (_, i) => ({ position: i * rulerStep, label: i })),
+        y: Array.from({ length: Math.ceil(A4.h / rulerStep) + 1 }, (_, i) => ({ position: i * rulerStep, label: i })),
       }),
-      [A4.w, A4.h],
+      [A4.w, A4.h, rulerStep],
     ),
     invalid = layers.some((l) => l.visible && l.invalid),
-    gridImage = zoom >= 2.3 ? "linear-gradient(#aeb6b066 1px,transparent 1px),linear-gradient(90deg,#aeb6b066 1px,transparent 1px),linear-gradient(#bec6c044 1px,transparent 1px),linear-gradient(90deg,#bec6c044 1px,transparent 1px),linear-gradient(#cbd2ce2b 1px,transparent 1px),linear-gradient(90deg,#cbd2ce2b 1px,transparent 1px)" : zoom >= 1.3 ? "linear-gradient(#aeb6b05c 1px,transparent 1px),linear-gradient(90deg,#aeb6b05c 1px,transparent 1px),linear-gradient(#c7ceca35 1px,transparent 1px),linear-gradient(90deg,#c7ceca35 1px,transparent 1px)" : "linear-gradient(#9fa8a255 1px,transparent 1px),linear-gradient(90deg,#9fa8a255 1px,transparent 1px),linear-gradient(#c7ceca33 1px,transparent 1px),linear-gradient(90deg,#c7ceca33 1px,transparent 1px)",
-    gridSize = zoom >= 2.3 ? `${scale}px ${scale}px,${scale}px ${scale}px,${scale / 2}px ${scale / 2}px,${scale / 2}px ${scale / 2}px,${scale / 10}px ${scale / 10}px,${scale / 10}px ${scale / 10}px` : zoom >= 1.3 ? `${scale}px ${scale}px,${scale}px ${scale}px,${scale / 2}px ${scale / 2}px,${scale / 2}px ${scale / 2}px` : `${scale * 10}px ${scale * 10}px,${scale * 10}px ${scale * 10}px,${scale}px ${scale}px,${scale}px ${scale}px`,
+    gridImage = unit === "in" ? "linear-gradient(#939e976b 1px,transparent 1px),linear-gradient(90deg,#939e976b 1px,transparent 1px),linear-gradient(#b5beb84b 1px,transparent 1px),linear-gradient(90deg,#b5beb84b 1px,transparent 1px),linear-gradient(#cbd2ce30 1px,transparent 1px),linear-gradient(90deg,#cbd2ce30 1px,transparent 1px)" : zoom >= 2.3 ? "linear-gradient(#aeb6b066 1px,transparent 1px),linear-gradient(90deg,#aeb6b066 1px,transparent 1px),linear-gradient(#bec6c044 1px,transparent 1px),linear-gradient(90deg,#bec6c044 1px,transparent 1px),linear-gradient(#cbd2ce2b 1px,transparent 1px),linear-gradient(90deg,#cbd2ce2b 1px,transparent 1px)" : zoom >= 1.3 ? "linear-gradient(#aeb6b05c 1px,transparent 1px),linear-gradient(90deg,#aeb6b05c 1px,transparent 1px),linear-gradient(#c7ceca35 1px,transparent 1px),linear-gradient(90deg,#c7ceca35 1px,transparent 1px)" : "linear-gradient(#9fa8a255 1px,transparent 1px),linear-gradient(90deg,#9fa8a255 1px,transparent 1px),linear-gradient(#c7ceca33 1px,transparent 1px),linear-gradient(90deg,#c7ceca33 1px,transparent 1px)",
+    gridSize = unit === "in" ? `${scale*2.54}px ${scale*2.54}px,${scale*2.54}px ${scale*2.54}px,${scale*1.27}px ${scale*1.27}px,${scale*1.27}px ${scale*1.27}px,${scale*.3175}px ${scale*.3175}px,${scale*.3175}px ${scale*.3175}px` : zoom >= 2.3 ? `${scale}px ${scale}px,${scale}px ${scale}px,${scale / 2}px ${scale / 2}px,${scale / 2}px ${scale / 2}px,${scale / 10}px ${scale / 10}px,${scale / 10}px ${scale / 10}px` : zoom >= 1.3 ? `${scale}px ${scale}px,${scale}px ${scale}px,${scale / 2}px ${scale / 2}px,${scale / 2}px ${scale / 2}px` : `${scale * 10}px ${scale * 10}px,${scale * 10}px ${scale * 10}px,${scale}px ${scale}px,${scale}px ${scale}px`,
     canvasBackgroundImage=pageColor==="canson"?`${gridImage},url("/textures/canson-paper-yellow.png")`:gridImage,
     canvasBackgroundSize=pageColor==="canson"?`${gridSize},640px 640px`:gridSize,
     labelBelow = box.y < 2.7;
@@ -5817,7 +5833,7 @@ export default function Home() {
             <button type="button" className={one.rasterStatus === "background" ? "remove-bg-main primary" : "remove-bg-main"} onClick={() => setBgMenuOpen(true)}><Sparkles /> Remove Background</button>
             <button type="button" onClick={() => setCutoutMenuOpen(true)}><Scissors /> Convert to Cut Shape</button>
             <button type="button" disabled={one.rasterStatus === "background"} onClick={() => void openStickerBorder(one)}><Sparkles /> Add Sticker Border to Image</button>
-            <button type="button" className={one.rasterStatus === "background" ? "" : "primary"} onClick={() => void addOutlineToPrintable()}><OutlineIcon /> Add Outline as Cut Shape</button>
+            <button type="button" className={one.rasterStatus === "background" ? "" : "primary"} onClick={() => void beginOutlineForPrintable()}><OutlineIcon /> Add Outline as Cut Shape</button>
           </>}
           {one && ["vector", "stroke"].includes(one.kind) && <><button type="button" onClick={() => { setStrokeDraft(one.kind === "stroke" ? one.strokeCm : DEFAULT_OUTLINE_CM); setOutlineEditing(true); }}><OutlineIcon /> Add Outline</button><button type="button" onClick={() => void makeGapsPermanent()}><Sparkles /> Bake Cutout</button></>}
           {!one && <><button disabled><Sparkles/> Remove Background</button><button disabled><Scissors/> Convert to Cut Shape</button><button disabled><Sparkles/> Add Sticker Border to Image</button><button disabled><Scissors/> Add Outline as Cut Shape</button></>}
@@ -5895,7 +5911,7 @@ export default function Home() {
                 <div className="setup-group">
                   <button onClick={()=>setSettingsSection(settingsSection === "units" ? null : "units")}>Units <small className="setting-current">{unit}</small><ChevronDown /></button>
                   <div className={`setup-submenu ${settingsSection === "units" ? "open" : ""}`}>
-                    {(["cm", "in"] as Unit[]).map((value) => <button key={value} className={unit === value ? "active" : ""} onClick={() => { setUnit(value); setPageSetupOpen(false); }}><b>{value === "cm" ? "Centimeters" : "Inches"}</b></button>)}
+                    {(["cm", "in"] as Unit[]).map((value) => <button key={value} className={unit === value ? "active" : ""} onClick={() => { setUnit(value); if(value==="in")setSafeMargin(.9525); setPageSetupOpen(false); }}><b>{value === "cm" ? "Centimeters" : "Inches"}</b></button>)}
                   </div>
                 </div>
                 <div className="setup-group page-color-group">
@@ -5940,10 +5956,10 @@ export default function Home() {
                 </div>
                 <div className="setup-group">
                   <button onClick={()=>setSettingsSection(settingsSection === "safe" ? null : "safe")}>
-                    Safe Area <small className="setting-current">{unit === "cm" ? `${safeMargin} cm` : `${(safeMargin/2.54).toFixed(2)} in`}</small><ChevronDown />
+                    Safe Area <small className="setting-current">{safeMarginLabel}</small><ChevronDown />
                   </button>
                   <div className={`setup-submenu ${settingsSection === "safe" ? "open" : ""}`}>
-                    {[0, 0.5, 1].map((margin) => (
+                    {(unit === "cm" ? [0, 0.5, 1] : [0, .47625, .9525]).map((margin) => (
                       <button
                         key={margin}
                         className={safeMargin === margin ? "active" : ""}
@@ -5952,7 +5968,7 @@ export default function Home() {
                           setPageSetupOpen(false);
                         }}
                       >
-                        {unit === "cm" ? `${margin} cm` : `${(margin / 2.54).toFixed(2)} in`}
+                        {unit === "cm" ? `${margin} cm` : margin === 0 ? "0 in" : margin < .7 ? "3/16 in" : "3/8 in"}
                       </button>
                     ))}
                   </div>
@@ -6114,18 +6130,18 @@ export default function Home() {
         </div>
         <div className={`stage ${pageMode === "full" ? "full-page" : "standard-page"}`} ref={stageRef} onScroll={updateRulers} onPointerDown={stageDown}>
           <div className="viewport-rulers">
-            <div className="viewport-corner" />
+            <div className="viewport-corner"><span>{unit}</span></div>
             <div className="viewport-ruler-x">
               {rulers.x.map((n) => (
-                <i key={n} style={{ left: rulerOrigin.x - 30 + n * scale }}>
-                  <span>{n}</span>
+                <i key={n.position} style={{ left: rulerOrigin.x - 30 + n.position * scale }}>
+                  <span>{n.label}</span>
                 </i>
               ))}
             </div>
             <div className="viewport-ruler-y">
               {rulers.y.map((n) => (
-                <i key={n} style={{ top: rulerOrigin.y - 30 + n * scale }}>
-                  <span>{n}</span>
+                <i key={n.position} style={{ top: rulerOrigin.y - 30 + n.position * scale }}>
+                  <span>{n.label}</span>
                 </i>
               ))}
             </div>
@@ -6195,18 +6211,18 @@ export default function Home() {
               </button>
             </div>
           </div>
-          {one && ["vector", "stroke"].includes(one.kind) && (
+          {one && (["vector", "stroke"].includes(one.kind) || outlineEditing) && (
             <section className={`cut-properties-floating ${cutPropertiesCollapsed?"collapsed":""}`} aria-label="Cut Shape properties" onPointerDown={(event)=>event.stopPropagation()}>
               <header><span><Scissors/><b>Cut Shape</b></span><small>{one.kind === "stroke" ? "Editable outline" : "Cutting geometry"}</small><button className="collapse-cut-properties" onClick={()=>setCutPropertiesCollapsed(value=>!value)} aria-label={cutPropertiesCollapsed?"Expand Cut Shape properties":"Collapse Cut Shape properties"}><ChevronDown/></button></header><div className="cut-properties-content">
               {<div className="floating-property-block">
                 <label>Outline {outlinePreviewBusy && <i className="outline-loading" aria-label="Updating outline"/>}<b>{(unit === "cm" ? strokeDraft : strokeDraft / 2.54).toFixed(unit === "cm" ? 1 : 2)} {unit}</b></label>
                 <input type="range" min="0" max="3" step=".05" value={strokeDraft} onChange={(event)=>{setStrokeDraft(+event.target.value);setOutlineEditing(true)}}/>
-                <div className="floating-property-actions outline-actions"><span className="outline-value"><input type="number" min="0" step={unit === "cm" ? ".1" : ".05"} value={(unit === "cm" ? strokeDraft : strokeDraft / 2.54).toFixed(unit === "cm" ? 1 : 2)} onChange={(event)=>{setStrokeDraft(Math.max(0,+event.target.value)*(unit === "cm" ? 1 : 2.54));setOutlineEditing(true)}}/><em>{unit}</em></span><button className="danger compact" disabled={!outlineEditing&&(one.kind!=="stroke"||strokeDraft<=0)} onClick={()=>outlineEditing?cancelOutlineDraft():(()=>{setStrokeDraft(0);const index=one.steps.findIndex(step=>step.type==="stroke");if(index>=0)removeStep(one,index)})()}>{outlineEditing?"Cancel":"Remove"}</button><button className={`primary-property ${outlineEditing?"attention":""}`} disabled={outlineEditing&&outlinePreviewBusy} onClick={()=>one.kind === "stroke" ? void updateStroke() : void addStroke()}>Apply Outline</button></div>
+                <div className="floating-property-actions outline-actions"><span className="outline-value"><input type="number" min="0" step={unit === "cm" ? ".1" : ".05"} value={(unit === "cm" ? strokeDraft : strokeDraft / 2.54).toFixed(unit === "cm" ? 1 : 2)} onChange={(event)=>{setStrokeDraft(Math.max(0,+event.target.value)*(unit === "cm" ? 1 : 2.54));setOutlineEditing(true)}}/><em>{unit}</em></span><button className="danger compact" disabled={!outlineEditing&&(one.kind!=="stroke"||strokeDraft<=0)} onClick={()=>outlineEditing?cancelOutlineDraft():(()=>{setStrokeDraft(0);const index=one.steps.findIndex(step=>step.type==="stroke");if(index>=0)removeStep(one,index)})()}>{outlineEditing?"Cancel":"Remove"}</button><button className={`primary-property ${outlineEditing?"attention":""}`} disabled={outlineEditing&&outlinePreviewBusy} onClick={applyOutlineDraft}>Apply Outline</button></div>
               </div>}
-              <div className="floating-property-block">
+              <div className={`floating-property-block ${outlineEditing?"disabled-property":""}`}>
                 <label>Fill Gaps <b>{fillGapsDraft.toFixed(fillGapsDraft < 5 ? 1 : 0)} mm²</b></label>
-                <input type="range" min="0" max="30" disabled={fillAllGapsDraft} step={fillGapsDraft < 5 ? ".5" : "1"} value={fillGapsDraft} onChange={(event)=>setFillGapsDraft(+event.target.value)}/>
-                <div className="floating-property-actions gap-actions"><label className="fill-all-check"><input type="checkbox" checked={fillAllGapsDraft} onChange={(event)=>setFillAllGapsDraft(event.target.checked)}/> Fill all the gaps</label><button className="primary-property" onClick={()=>fillAllGapsDraft?void fillEveryGap():void applyGapPreview()}>Apply Fill</button></div>
+                <input type="range" min="0" max="30" disabled={outlineEditing||fillAllGapsDraft} step={fillGapsDraft < 5 ? ".5" : "1"} value={fillGapsDraft} onChange={(event)=>setFillGapsDraft(+event.target.value)}/>
+                <div className="floating-property-actions gap-actions"><label className="fill-all-check"><input type="checkbox" disabled={outlineEditing} checked={fillAllGapsDraft} onChange={(event)=>setFillAllGapsDraft(event.target.checked)}/> Fill all the gaps</label><button disabled={outlineEditing} className="primary-property" onClick={()=>fillAllGapsDraft?void fillEveryGap():void applyGapPreview()}>Apply Fill</button></div>
                 <small>Only enclosed openings are filled; the outside edge is preserved.</small>
               </div>
               <footer style={{borderTop:"1px solid #dce5e1",paddingTop:10,marginTop:10}}>
@@ -6217,15 +6233,15 @@ export default function Home() {
           <div className="board" style={{ width: A4.w * scale + 42, height: A4.h * scale + 42 }}>
             <div className="ruler rx" style={{ left: 42, width: A4.w * scale }}>
               {rulers.x.map((n) => (
-                <i key={n} style={{ left: n * scale }}>
-                  <span>{n}</span>
+                <i key={n.position} style={{ left: n.position * scale }}>
+                  <span>{n.label}</span>
                 </i>
               ))}
             </div>
             <div className="ruler ry" style={{ top: 42, height: A4.h * scale }}>
               {rulers.y.map((n) => (
-                <i key={n} style={{ top: n * scale }}>
-                  <span>{n}</span>
+                <i key={n.position} style={{ top: n.position * scale }}>
+                  <span>{n.label}</span>
                 </i>
               ))}
             </div>
@@ -6253,7 +6269,7 @@ export default function Home() {
                   height: SAFE.h * scale,
                 }}
               >
-                <span style={{fontSize:`${zoom<.5?Math.max(2.5,8*(zoom/.5)*.55):zoom>5?Math.min(13,8+(zoom-5)*.8):8}px`}}>SAFE AREA · {unit === "cm" ? safeMargin : (safeMargin / 2.54).toFixed(2)} {unit.toUpperCase()}</span>
+                <span style={{fontSize:`${zoom<.5?Math.max(2.5,8*(zoom/.5)*.55):zoom>5?Math.min(13,8+(zoom-5)*.8):8}px`}}>SAFE AREA · {safeMarginLabel.toUpperCase()}</span>
               </div>
               {layers
                 .filter((l) => l.visible && !l.groupHidden)
@@ -6338,7 +6354,7 @@ export default function Home() {
                   }
                 >
                   <div className={`measure ${labelBelow ? "below" : ""}`}>
-                    {outlineEditing && one ? <><span>{(unit === "cm" ? strokeDraft : strokeDraft / 2.54).toFixed(unit === "cm" ? 1 : 2)} {unit} - </span><button className="outline-apply-badge" disabled={outlinePreviewBusy} onPointerDown={event=>event.stopPropagation()} onClick={()=>one.kind === "stroke" ? void updateStroke() : void addStroke()}>Apply Outline</button></> : <>{fmt(displayBox.w)} × {fmt(displayBox.h)} cm{one && one.rotation !== 0 && ` · ${Math.round(one.rotation)}°`}</>}
+                    {outlineEditing && one ? <><span>{(unit === "cm" ? strokeDraft : strokeDraft / 2.54).toFixed(unit === "cm" ? 1 : 2)} {unit} - </span><button className="outline-apply-badge" disabled={outlinePreviewBusy} onPointerDown={event=>event.stopPropagation()} onClick={applyOutlineDraft}>Apply Outline</button></> : <>{fmt(displayBox.w)} × {fmt(displayBox.h)} cm{one && one.rotation !== 0 && ` · ${Math.round(one.rotation)}°`}</>}
                     {cutSafetyEnabled && picked.some((layer) => layer.cutRisk) && (
                       <button
                         className="measure-warning"
@@ -6659,9 +6675,9 @@ export default function Home() {
                 projects.map((project) => {
                   const expanded = expandedProjectId === project.id;
                   return (
-                    <article key={project.id} className={`project-card ${project.id === currentProjectId ? "current" : ""} ${expanded ? "expanded" : ""}`}>
+                    <article key={project.id} className={`project-card ${project.id === currentProjectId ? "current" : ""} ${expanded ? "expanded" : ""} ${openingProjectId===project.id?"opening":""}`}>
                       <div className="project-row">
-                        <button className="project-summary" onClick={() => requestOpenProject(project)} title={`Open ${project.name}`}>
+                        <button className="project-summary" disabled={Boolean(openingProjectId)} onClick={() => requestOpenProject(project)} title={`Open ${project.name}`}>
                           <span className="project-composite-thumb">{project.thumbnail || project.data?.thumbnail ? <img src={project.thumbnail || project.data?.thumbnail} alt="" /> : <FolderOpen />}</span>
                           <span className="project-summary-copy">
                             <b>{project.name}</b>{project.is_autosave && <small>Unsaved project recovery</small>}
@@ -6670,6 +6686,7 @@ export default function Home() {
                               {project.layer_count ?? project.data?.layers?.length ?? 0} layers · {formatProjectSize(project)}
                             </em>
                           </span>
+                          {openingProjectId===project.id&&<span className="project-opening"><i/><b>Opening project…</b></span>}
                         </button>
                         <div className="project-quick-actions">
                           <button className="project-assets-toggle" onClick={() => void toggleProjectAssets(project)} aria-expanded={expanded} aria-label={`Assets for ${project.name}`}><span>Assets</span><ChevronDown /></button>
@@ -6937,7 +6954,7 @@ export default function Home() {
       {edgeGuidanceLayerId && (() => {
         const guided = layers.find((layer) => layer.id === edgeGuidanceLayerId);
         if (!guided) return null;
-        return <div className="project-transition-modal edge-guidance-modal" role="dialog" aria-modal="true" aria-label="Edge preparation recommended" onPointerDown={()=>setEdgeGuidanceLayerId(null)}><div onPointerDown={(event)=>event.stopPropagation()}><header><span><Sparkles/></span><div><h3>Prepare the image edge</h3><p>This transparent image may have low-resolution or uneven edges. Your printable image will not be changed unless you choose an editing option.</p></div></header><div className="edge-guidance-actions"><button onClick={()=>{setEdgeGuidanceLayerId(null);openImageEditor(guided)}}><ImageIcon/><span><b>Clean Edges</b><small>Open image cleanup tools</small></span></button><button onClick={()=>{setEdgeGuidanceLayerId(null);openImageEditor(guided);window.setTimeout(()=>setImageTab("sticker"),0)}}><Sparkles/><span><b>Add Sticker Border</b><small>Create a forgiving printable edge</small></span></button><button className="continue" onClick={()=>{setEdgeGuidanceLayerId(null);setSelected([guided.id]);window.setTimeout(()=>void addOutlineToPrintable(true),0)}}><Scissors/><span><b>Continue Anyway</b><small>Keep these edges and create the Cut Shape</small></span></button></div><button className="cancel" onClick={()=>setEdgeGuidanceLayerId(null)}>Cancel</button></div></div>;
+        return <div className="project-transition-modal edge-guidance-modal" role="dialog" aria-modal="true" aria-label="Edge preparation recommended" onPointerDown={()=>setEdgeGuidanceLayerId(null)}><div onPointerDown={(event)=>event.stopPropagation()}><header><span><Sparkles/></span><div><h3>Prepare the image edge</h3><p>This transparent image may have low-resolution or uneven edges. Your printable image will not be changed unless you choose an editing option.</p></div></header><div className="edge-guidance-actions"><button onClick={()=>{setEdgeGuidanceLayerId(null);openImageEditor(guided)}}><ImageIcon/><span><b>Clean Edges</b><small>Open image cleanup tools</small></span></button><button onClick={()=>{setEdgeGuidanceLayerId(null);openImageEditor(guided);window.setTimeout(()=>setImageTab("sticker"),0)}}><Sparkles/><span><b>Add Sticker Border</b><small>Create a forgiving printable edge</small></span></button><button className="continue" onClick={()=>{setEdgeGuidanceLayerId(null);setSelected([guided.id]);window.setTimeout(()=>void beginOutlineForPrintable(true),0)}}><Scissors/><span><b>Continue Anyway</b><small>Keep these edges and preview the Cut Shape</small></span></button></div><button className="cancel" onClick={()=>setEdgeGuidanceLayerId(null)}>Cancel</button></div></div>;
       })()}
       {cutoutMenuOpen && (
         <div className="preset-modal cutout-choice-modal" role="dialog" aria-modal="true" aria-label="Convert to Cut Shape" onPointerDown={() => setCutoutMenuOpen(false)}>
@@ -7073,13 +7090,14 @@ export default function Home() {
             <article><span>3</span><b>Download ready to use images in Cricut projects</b></article>
           </div>
           <section className="welcome-quick-settings" aria-label="Quick page setup">
-            <label><span>Units</span><select value={unit} onChange={event=>setUnit(event.target.value as Unit)}><option value="cm">CM</option><option value="in">INCH</option></select></label>
+            <label><span>Units</span><select value={unit} onChange={event=>{const value=event.target.value as Unit;setUnit(value);if(value==="in")setSafeMargin(.9525)}}><option value="cm">cm</option><option value="in">inch</option></select></label>
             <label><span>Page</span><select value={pageSize} onChange={event=>{const value=event.target.value as PageSize;setPageSize(value);setPageMode(value==="full"?"full":"portrait")}}><option value="full">Endless</option><option value="a4">A4</option><option value="letter">Letter</option></select></label>
-            <label><span>Page color</span><select value={pageColor} onChange={event=>setPageColor(event.target.value as PageColor)}>{(Object.keys(PAGE_COLORS) as PageColor[]).filter(value=>value!=="custom").map(value=><option key={value} value={value}>{PAGE_COLORS[value].label}</option>)}</select></label>
-            <label className="welcome-toggle"><span>Grid</span><input type="checkbox" checked={gridVisible} onChange={event=>setGridVisible(event.target.checked)}/><b>{gridVisible?"On":"Off"}</b></label>
-            <label><span>Control</span><select value={controlMode} onChange={event=>setControlMode(event.target.value as "touchpad"|"mouse")}><option value="touchpad">Touchpad</option><option value="mouse">Mouse</option></select></label>
+            <div className="welcome-color-setting"><span>Page color</span><div>{(Object.keys(PAGE_COLORS) as PageColor[]).filter(value=>value!=="custom").map(value=><button key={value} type="button" className={pageColor===value?"active":""} onClick={()=>setPageColor(value)} title={PAGE_COLORS[value].label}><i style={{background:PAGE_COLORS[value].color}}/><b>{PAGE_COLORS[value].label}</b></button>)}</div></div>
+            <label><span>Grid</span><select value={gridVisible?"on":"off"} onChange={event=>setGridVisible(event.target.value==="on")}><option value="on">Grid on</option><option value="off">Grid off</option></select></label>
+            <div className="welcome-control-setting"><span>Control</span><div><button type="button" className={controlMode==="touchpad"?"active":""} onClick={()=>setControlMode("touchpad")} data-tip="Zoom and pan with touchpad gestures"><Laptop/><b>Touchpad</b></button><button type="button" className={controlMode==="mouse"?"active":""} onClick={()=>setControlMode("mouse")} data-tip="Zoom and pan with the mouse wheel"><Mouse/><b>Mouse</b></button></div></div>
           </section>
           <button className="welcome-start" onClick={dismissSplash}>Start Now</button>
+          <small className="welcome-settings-note">You can change additional options in the Settings menu.</small>
           <label className="welcome-hide"><input type="checkbox" checked={hideSplashOnStartup} onChange={(event)=>setHideSplashOnStartup(event.target.checked)}/> Don&apos;t show this on Startup</label>
         </div>
       </div>}
@@ -7230,15 +7248,15 @@ export default function Home() {
             <header>
               <div>
                 <b>Calibrate Screen Size</b>
-                <small>Place a physical ruler against the screen and match its 10 cm length.</small>
+                <small>Place a physical ruler against the screen and match its {unit === "in" ? "4 inch" : "10 cm"} length.</small>
               </div>
               <button onClick={() => setCalibrationOpen(false)}>
                 <X />
               </button>
             </header>
             <div className="calibration-body">
-              <div className="screen-ruler" style={{ width: 10 * PPCM * calibrationDraft }}>
-                {Array.from({ length: 101 }, (_, i) => (
+              <div className={`screen-ruler ${unit === "in" ? "inch-ruler" : ""}`} style={{ width: (unit === "in" ? 4 * 2.54 : 10) * PPCM * calibrationDraft }}>
+                {unit === "in" ? Array.from({ length: 65 }, (_, i) => <i key={i} className={i%16===0?"inch":i%8===0?"half":i%2===0?"eighth":"sixteenth"} style={{left:`${i/64*100}%`}}>{i%16===0&&<span>{i/16}</span>}</i>) : Array.from({ length: 101 }, (_, i) => (
                   <i key={i} className={i % 10 === 0 ? "cm" : i % 5 === 0 ? "half" : "mm"} style={{ left: `${i}%` }}>
                     {i % 10 === 0 && <span>{i / 10}</span>}
                   </i>

@@ -17,10 +17,10 @@ test('outline preview is solid blue, 3.5px, and deferred until slider motion set
   assert.doesNotMatch(effect,/oldMarkup/);
 });
 
-test('every normal Cut Shape receives an unclipped 3px black vector overlay',()=>{
+test('every normal Cut Shape receives an unclipped 2px black vector overlay',()=>{
   const helper=source.slice(source.indexOf('const cutShapeBorderMarkup'),source.indexOf('const flipSvgSource'));
   assert.match(helper,/stroke", "#111715"/);
-  assert.match(helper,/stroke-width", "3"/);
+  assert.match(helper,/stroke-width", "2"/);
   assert.match(helper,/vector-effect", "non-scaling-stroke"/);
   assert.match(source,/className="cut-shape-border"/);
 });
@@ -30,4 +30,6 @@ test('outline edit mode exposes cancel, loading feedback and direct apply',()=>{
   assert.match(source,/outlineEditing\?"Cancel":"Remove"/);
   assert.match(source,/className="outline-apply-badge"/);
   assert.match(source,/saveOrOpenDialog/);
+  assert.match(source,/beginOutlineForPrintable/);
+  assert.match(source,/disabled-property/);
 });
