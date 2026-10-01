@@ -28,6 +28,7 @@ import { circularDilateAlpha } from "./outline-mask";
 import { flippedLayerBox } from "./layer-flip";
 import { faStar, faHeart, faArrowRight, faBolt, faBurst, faCloud, faMoon, faSun, faDiamond, faShield, faDroplet, faLeaf, faCrown, faBell, faGift, faTag, faBookmark, faLocationPin, faComment, faPuzzlePiece } from "@fortawesome/free-solid-svg-icons";
 function OutlineIcon() { return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path strokeDasharray="3 2" d="M12 2 22 9 18 21H6L2 9Z"/><path d="m12 7 5.5 4-2 6h-7l-2-6Z"/></svg>; }
+function TouchpadIcon() { return <svg viewBox="0 0 28 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><rect x="2" y="2" width="24" height="20" rx="4"/><path d="M2 15h24M14 15v7"/></svg>; }
 const PAGE_SIZES = { a4: { label: "A4", w: 21, h: 29.7 }, letter: { label: "Letter", w: 21.59, h: 27.94 }, full: { label: "Endless", w: 100, h: 100 } } as const,
   PPCM = 34,
   DPI = 150,
@@ -344,6 +345,14 @@ const decodeSvgData = (src: string) => {
   const comma = src.indexOf(","), payload = src.slice(comma + 1);
   return /;base64/i.test(src.slice(0, comma)) ? atob(payload) : decodeURIComponent(payload);
 };
+const recolorSvgSource = (src: string, color: string) => {
+  const doc = new DOMParser().parseFromString(decodeSvgData(src), "image/svg+xml"), root = doc.documentElement;
+  root.querySelectorAll("path,rect,circle,ellipse,polygon,polyline").forEach(node => {
+    node.setAttribute("fill", color);
+    if (node.getAttribute("stroke") && node.getAttribute("stroke") !== "none") node.setAttribute("stroke", color);
+  });
+  return safeSvgData(new XMLSerializer().serializeToString(root));
+};
 const safeSvgData = (raw: string) => {
   const doc = new DOMParser().parseFromString(raw, "image/svg+xml"), root = doc.documentElement;
   if (root.tagName.toLowerCase() !== "svg" || doc.querySelector("parsererror")) throw new Error("The SVG file is invalid");
@@ -359,7 +368,7 @@ const outlineComparisonMarkup = (src: string, color: string) => {
   root.setAttribute("width", "100%"); root.setAttribute("height", "100%");
   root.setAttribute("preserveAspectRatio", "none"); root.setAttribute("overflow", "visible");
   root.querySelectorAll("path,rect,circle,ellipse,polygon,polyline").forEach(node => {
-    node.setAttribute("fill", "none"); node.setAttribute("stroke", color);
+    node.setAttribute("fill", color); node.setAttribute("fill-opacity", ".1"); node.setAttribute("stroke", color);
     node.setAttribute("stroke-width", "3.5"); node.setAttribute("stroke-linecap", "round");
     node.setAttribute("stroke-linejoin", "round"); node.setAttribute("vector-effect", "non-scaling-stroke");
     node.removeAttribute("stroke-dasharray");
@@ -1813,15 +1822,18 @@ async function createProjectThumbnail(layers: Layer[]) {
   }
   return canvas.toDataURL("image/webp", 0.62);
 }
-async function renderStickerOffset(layer: Layer, multiplier = 1) {
+async function renderStickerOffset(layer: Layer, multiplier = 1, preserveSourceResolution = false) {
   const style = layer.stickerOffset!;
   const borders = style.borders?.length ? style.borders : [{ id: "legacy", sizeMm: style.sizeMm, color: style.color }];
-  const scale = DPI * multiplier / 2.54;
   const totalMm = borders.reduce((sum, border) => sum + border.sizeMm, 0);
-  const totalPad = Math.max(1, Math.round((totalMm / 10) * scale));
   const baseW = style.baseW || Math.max(.01, layer.w - totalMm / 5), baseH = style.baseH || Math.max(.01, layer.h - totalMm / 5);
+  const source = await getImage(style.baseSrc || layer.src);
+  const scale = preserveSourceResolution
+    ? Math.max(DPI * multiplier / 2.54, source.naturalWidth / baseW, source.naturalHeight / baseH)
+    : DPI * multiplier / 2.54;
+  const totalPad = Math.max(1, Math.round((totalMm / 10) * scale));
   const w = Math.max(1, Math.round(baseW * scale)), h = Math.max(1, Math.round(baseH * scale));
-  const source = await getImage(style.baseSrc || layer.src), output = document.createElement("canvas");
+  const output = document.createElement("canvas");
   output.width = w + totalPad * 2; output.height = h + totalPad * 2;
   const context = output.getContext("2d")!; context.imageSmoothingEnabled = true; context.imageSmoothingQuality = "high";
   const paintDilated = (radius: number, color: string) => {
@@ -2145,6 +2157,7 @@ export default function Home() {
     one = picked.length === 1 ? picked[0] : null,
     box = bounds(picked),
     displayBox = drag?.mode === "move" ? bounds(layers.filter(layer=>drag.start.some(start=>start.id===layer.id))) : one && drag?.mode === "rotate" ? { x: one.x, y: one.y, w: one.w, h: one.h } : one && one.rotation ? rotatedBounds(one) : box,
+    selectionDisplayBox = outlineEditing && outlinePreview && outlinePreview.layerId === one?.id ? outlinePreview.box : displayBox,
     scale = PPCM * zoom * calibration,
     vectorsOnly = picked.length > 0 && picked.every((l) => ["stroke", "vector"].includes(l.kind)),
     safeMarginLabel = unit === "cm" ? `${safeMargin} cm` : safeMargin === 0 ? "0 in" : safeMargin < .7 ? "3/16 in" : "3/8 in";
@@ -4740,14 +4753,11 @@ export default function Home() {
           }));
           continue;
         }
-        const base = layers.find((l) => l.id === item.parentId) || item;
-        const raster = item.kind === "stroke" ? await strokeImage(base.src, item.strokeCm, base.w, color, item.fillGapsMm || 0) : await silhouette(item.src, color, item.kind === "acetate" ? 77 : 255),
-          src = item.kind === "stroke" ? await vTracerCutout(raster, color, base.w + item.strokeCm * 2, 1.25) : raster;
+        const src = item.src.startsWith("data:image/svg+xml") ? recolorSvgSource(item.src, color) : await silhouette(item.src, color, item.kind === "acetate" ? 77 : 255);
         mutate(item.id, (l) => ({ ...l, src, color }));
         if (item.kind === "vector")
           for (const child of layers.filter((l) => l.kind === "stroke" && l.parentId === item.id)) {
-            const strokeRaster = await strokeImage(src, child.strokeCm, item.w, lighten(color), child.fillGapsMm || 0),
-              strokeSrc = await vTracerCutout(strokeRaster, lighten(color), item.w + child.strokeCm * 2, 1.25);
+            const strokeSrc = child.src.startsWith("data:image/svg+xml") ? recolorSvgSource(child.src, lighten(color)) : await silhouette(child.src, lighten(color));
             mutate(child.id, (l) => ({
               ...l,
               src: strokeSrc,
@@ -5576,13 +5586,13 @@ export default function Home() {
     const target = layers.find((layer) => layer.id === imageEditor.layerId); if (!target) return;
     const borders=stickerBorders.map((border,index)=>index===activeStickerBorder?{...border,sizeMm:stickerSizeMm,color:stickerColor}:border), previous = target.stickerOffset, baseSrc = previous?.baseSrc || target.src, baseX = previous?.baseX ?? target.x, baseY = previous?.baseY ?? target.y, baseW = previous?.baseW || target.w, baseH = previous?.baseH || target.h,
       totalMm=borders.reduce((sum,border)=>sum+border.sizeMm,0), draft: Layer = { ...target, src: baseSrc, x: baseX, y: baseY, w: baseW, h: baseH, stickerOffset: { enabled: true, sizeMm: totalMm, color: borders[borders.length-1]?.color || stickerColor, smoothness: 0.7, baseSrc, baseX, baseY, baseW, baseH, previewSrc: "", borders } },
-      previewSrc = (await renderStickerOffset(draft, 1)).toDataURL("image/png"), padCm = totalMm / 10;
+      previewSrc = (await renderStickerOffset(draft, 1, true)).toDataURL("image/png"), padCm = totalMm / 10;
     mutate(target.id, (layer) => ({ ...layer, src: baseSrc, x: baseX - padCm, y: baseY - padCm, w: baseW + padCm * 2, h: baseH + padCm * 2, stickerOffset: { ...draft.stickerOffset!, previewSrc } }));
     addSessionLog("Sticker borders applied", `${target.name} · ${borders.length} border${borders.length===1?"":"s"}`); setImageEditor(null); setBgEditor(null); setNotice("Editable sticker borders applied");
   };
   const bakeStickerImage = async () => {
     if (!one?.stickerOffset?.enabled) return;
-    const src = one.stickerOffset.previewSrc || (await renderStickerOffset(one, 1)).toDataURL("image/png"), image = await getImage(src);
+    const src = one.stickerOffset.previewSrc || (await renderStickerOffset(one, 1, true)).toDataURL("image/png"), image = await getImage(src);
     mutate(one.id, (layer) => ({ ...layer, src, originalSrc: src, naturalW: image.naturalWidth, naturalH: image.naturalHeight, stickerOffset: undefined }));
     addSessionLog("Sticker offset baked", `${one.name} became one transparent PNG.`); setNotice("Sticker offset baked into image");
   };
@@ -5801,7 +5811,7 @@ export default function Home() {
     gridSize = unit === "in" ? `${scale*2.54}px ${scale*2.54}px,${scale*2.54}px ${scale*2.54}px,${scale*1.27}px ${scale*1.27}px,${scale*1.27}px ${scale*1.27}px,${scale*.3175}px ${scale*.3175}px,${scale*.3175}px ${scale*.3175}px` : zoom >= 2.3 ? `${scale}px ${scale}px,${scale}px ${scale}px,${scale / 2}px ${scale / 2}px,${scale / 2}px ${scale / 2}px,${scale / 10}px ${scale / 10}px,${scale / 10}px ${scale / 10}px` : zoom >= 1.3 ? `${scale}px ${scale}px,${scale}px ${scale}px,${scale / 2}px ${scale / 2}px,${scale / 2}px ${scale / 2}px` : `${scale * 10}px ${scale * 10}px,${scale * 10}px ${scale * 10}px,${scale}px ${scale}px,${scale}px ${scale}px`,
     canvasBackgroundImage=pageColor==="canson"?`${gridImage},url("/textures/canson-paper-yellow.png")`:gridImage,
     canvasBackgroundSize=pageColor==="canson"?`${gridSize},640px 640px`:gridSize,
-    labelBelow = box.y < 2.7;
+    labelBelow = selectionDisplayBox.y < 2.7;
   return (
     <main
       className={`app ${outlineEditing ? "outline-edit-mode" : ""}`}
@@ -6214,10 +6224,11 @@ export default function Home() {
           {one && (["vector", "stroke"].includes(one.kind) || outlineEditing) && (
             <section className={`cut-properties-floating ${cutPropertiesCollapsed?"collapsed":""}`} aria-label="Cut Shape properties" onPointerDown={(event)=>event.stopPropagation()}>
               <header><span><Scissors/><b>Cut Shape</b></span><small>{one.kind === "stroke" ? "Editable outline" : "Cutting geometry"}</small><button className="collapse-cut-properties" onClick={()=>setCutPropertiesCollapsed(value=>!value)} aria-label={cutPropertiesCollapsed?"Expand Cut Shape properties":"Collapse Cut Shape properties"}><ChevronDown/></button></header><div className="cut-properties-content">
-              {<div className="floating-property-block">
-                <label>Outline {outlinePreviewBusy && <i className="outline-loading" aria-label="Updating outline"/>}<b>{(unit === "cm" ? strokeDraft : strokeDraft / 2.54).toFixed(unit === "cm" ? 1 : 2)} {unit}</b></label>
+              {<div className="floating-property-block outline-property-block">
+                <label>Outline <b>{(unit === "cm" ? strokeDraft : strokeDraft / 2.54).toFixed(unit === "cm" ? 1 : 2)} {unit}</b></label>
                 <input type="range" min="0" max="3" step=".05" value={strokeDraft} onChange={(event)=>{setStrokeDraft(+event.target.value);setOutlineEditing(true)}}/>
                 <div className="floating-property-actions outline-actions"><span className="outline-value"><input type="number" min="0" step={unit === "cm" ? ".1" : ".05"} value={(unit === "cm" ? strokeDraft : strokeDraft / 2.54).toFixed(unit === "cm" ? 1 : 2)} onChange={(event)=>{setStrokeDraft(Math.max(0,+event.target.value)*(unit === "cm" ? 1 : 2.54));setOutlineEditing(true)}}/><em>{unit}</em></span><button className="danger compact" disabled={!outlineEditing&&(one.kind!=="stroke"||strokeDraft<=0)} onClick={()=>outlineEditing?cancelOutlineDraft():(()=>{setStrokeDraft(0);const index=one.steps.findIndex(step=>step.type==="stroke");if(index>=0)removeStep(one,index)})()}>{outlineEditing?"Cancel":"Remove"}</button><button className={`primary-property ${outlineEditing?"attention":""}`} disabled={outlineEditing&&outlinePreviewBusy} onClick={applyOutlineDraft}>Apply Outline</button></div>
+                {outlinePreviewBusy && <div className="outline-loading-overlay" aria-label="Updating outline"><i className="outline-loading"/></div>}
               </div>}
               <div className={`floating-property-block ${outlineEditing?"disabled-property":""}`}>
                 <label>Fill Gaps <b>{fillGapsDraft.toFixed(fillGapsDraft < 5 ? 1 : 0)} mm²</b></label>
@@ -6342,10 +6353,10 @@ export default function Home() {
                   onPointerDown={(e) => void startSelectionMove(e)}
                   style={
                     {
-                      left: displayBox.x * scale,
-                      top: displayBox.y * scale,
-                      width: displayBox.w * scale,
-                      height: displayBox.h * scale,
+                      left: selectionDisplayBox.x * scale,
+                      top: selectionDisplayBox.y * scale,
+                      width: selectionDisplayBox.w * scale,
+                      height: selectionDisplayBox.h * scale,
                       zIndex: layers.length + 5,
                       "--handle": `${clamp(11 * zoom, 11, 15)}px`,
                       "--rotation": `${one?.rotation || 0}deg`,
@@ -6354,7 +6365,7 @@ export default function Home() {
                   }
                 >
                   <div className={`measure ${labelBelow ? "below" : ""}`}>
-                    {outlineEditing && one ? <><span>{(unit === "cm" ? strokeDraft : strokeDraft / 2.54).toFixed(unit === "cm" ? 1 : 2)} {unit} - </span><button className="outline-apply-badge" disabled={outlinePreviewBusy} onPointerDown={event=>event.stopPropagation()} onClick={applyOutlineDraft}>Apply Outline</button></> : <>{fmt(displayBox.w)} × {fmt(displayBox.h)} cm{one && one.rotation !== 0 && ` · ${Math.round(one.rotation)}°`}</>}
+                    {outlineEditing && one ? <><span>{(unit === "cm" ? strokeDraft : strokeDraft / 2.54).toFixed(unit === "cm" ? 1 : 2)} {unit} - </span><button className="outline-apply-badge" disabled={outlinePreviewBusy} onPointerDown={event=>event.stopPropagation()} onClick={applyOutlineDraft}>Apply Outline</button></> : <>{fmt(selectionDisplayBox.w)} × {fmt(selectionDisplayBox.h)} cm{one && one.rotation !== 0 && ` · ${Math.round(one.rotation)}°`}</>}
                     {cutSafetyEnabled && picked.some((layer) => layer.cutRisk) && (
                       <button
                         className="measure-warning"
@@ -7081,7 +7092,6 @@ export default function Home() {
       {splashOpen && <div className="welcome-splash" role="dialog" aria-modal="true" aria-label="Welcome to Kreya" onPointerDown={dismissSplash}>
         <div onPointerDown={(event)=>event.stopPropagation()}>
           <button className="welcome-close" onClick={dismissSplash} aria-label="Close welcome screen"><X/></button>
-          <div className="welcome-mark"><Sparkles/></div>
           <h1>Welcome to Kreya</h1>
           <p>Everything you need to turn an idea into a Cricut-ready design.</p>
           <div className="welcome-steps">
@@ -7092,9 +7102,9 @@ export default function Home() {
           <section className="welcome-quick-settings" aria-label="Quick page setup">
             <label><span>Units</span><select value={unit} onChange={event=>{const value=event.target.value as Unit;setUnit(value);if(value==="in")setSafeMargin(.9525)}}><option value="cm">cm</option><option value="in">inch</option></select></label>
             <label><span>Page</span><select value={pageSize} onChange={event=>{const value=event.target.value as PageSize;setPageSize(value);setPageMode(value==="full"?"full":"portrait")}}><option value="full">Endless</option><option value="a4">A4</option><option value="letter">Letter</option></select></label>
-            <div className="welcome-color-setting"><span>Page color</span><div>{(Object.keys(PAGE_COLORS) as PageColor[]).filter(value=>value!=="custom").map(value=><button key={value} type="button" className={pageColor===value?"active":""} onClick={()=>setPageColor(value)} title={PAGE_COLORS[value].label}><i style={{background:PAGE_COLORS[value].color}}/><b>{PAGE_COLORS[value].label}</b></button>)}</div></div>
+            <div className="welcome-color-setting"><span>Page color</span><details className="welcome-color-dropdown"><summary><i style={{background:pageColor === "custom" ? customPageColor : PAGE_COLORS[pageColor].color}}/><b>{pageColor === "custom" ? "Custom" : PAGE_COLORS[pageColor].label}</b><ChevronDown/></summary><div>{(Object.keys(PAGE_COLORS) as PageColor[]).filter(value=>value!=="custom").map(value=><button key={value} type="button" className={pageColor===value?"active":""} onClick={(event)=>{setPageColor(value);event.currentTarget.closest("details")?.removeAttribute("open")}}><i style={{background:PAGE_COLORS[value].color}}/><b>{PAGE_COLORS[value].label}</b>{pageColor===value&&<Check/>}</button>)}</div></details></div>
             <label><span>Grid</span><select value={gridVisible?"on":"off"} onChange={event=>setGridVisible(event.target.value==="on")}><option value="on">Grid on</option><option value="off">Grid off</option></select></label>
-            <div className="welcome-control-setting"><span>Control</span><div><button type="button" className={controlMode==="touchpad"?"active":""} onClick={()=>setControlMode("touchpad")} data-tip="Zoom and pan with touchpad gestures"><Laptop/><b>Touchpad</b></button><button type="button" className={controlMode==="mouse"?"active":""} onClick={()=>setControlMode("mouse")} data-tip="Zoom and pan with the mouse wheel"><Mouse/><b>Mouse</b></button></div></div>
+            <div className="welcome-control-setting"><span>Control</span><div><button type="button" className={controlMode==="touchpad"?"active":""} onClick={()=>setControlMode("touchpad")} data-tip="Zoom and pan with touchpad gestures"><TouchpadIcon/><b>Touchpad</b></button><button type="button" className={controlMode==="mouse"?"active":""} onClick={()=>setControlMode("mouse")} data-tip="Zoom and pan with the mouse wheel"><Mouse/><b>Mouse</b></button></div></div>
           </section>
           <button className="welcome-start" onClick={dismissSplash}>Start Now</button>
           <small className="welcome-settings-note">You can change additional options in the Settings menu.</small>
@@ -7530,13 +7540,16 @@ export default function Home() {
                 ) : imageTab === "sticker" ? (
                   <>
                     <div className="sticker-offset-body">
-                      <div className="sticker-offset-preview"><img src={stickerPreviewSrc || imageEditor.source} alt="Sticker offset preview" /></div>
+                      <div className={`sticker-offset-preview ${bgEditor?.alphaView ? "alpha-view" : ""}`} onWheel={zoomImageEditor} onPointerDown={startImagePan} onPointerMove={moveImagePan} onPointerUp={endImagePan} onPointerCancel={endImagePan}>
+                        <div className="sticker-preview-transform" style={{transform:`translate(${imageEditor.panX}px,${imageEditor.panY}px) scale(${imageEditor.zoom})`}}><img src={stickerPreviewSrc || imageEditor.source} alt="Sticker offset preview" draggable={false}/></div>
+                        <div className="bg-zoom-controls"><button onClick={()=>setImageEditor({...imageEditor,zoom:clamp(imageEditor.zoom/1.2,.5,5)})}>−</button><span>{Math.round(imageEditor.zoom*100)}%</span><button onClick={()=>setImageEditor({...imageEditor,zoom:clamp(imageEditor.zoom*1.2,.5,5)})}>+</button><button onClick={()=>setImageEditor({...imageEditor,zoom:1,panX:0,panY:0})}>Fit</button></div>
+                      </div>
                       <aside className="sticker-offset-controls">
                         <h3>Add Sticker Border to Image</h3><p>Add up to three smooth, editable borders. They remain parametric until export or Bake Image.</p>
-                        <div className="sticker-border-stack">{stickerBorders.map((border,index)=><section key={border.id} className={`sticker-border-card ${activeStickerBorder===index?"open":""}`}><button className="sticker-border-heading" onClick={()=>selectStickerBorder(index)}><span><i style={{background:border.color}}/><b>Border {index+1}</b></span><small>{(activeStickerBorder===index?stickerSizeMm:border.sizeMm).toFixed(1)} mm</small><ChevronDown/></button>{activeStickerBorder===index&&<div className="sticker-border-fields"><label>Offset width <b>{stickerSizeMm.toFixed(1)} mm</b></label><input type="range" min="0.5" max="15" step="0.5" value={stickerSizeMm} onChange={(event)=>setStickerSizeMm(+event.target.value)} /><label>Offset color</label><div className="sticker-color-palette">{COLORS.map((color)=><button key={color} className={stickerColor.toLowerCase()===color.toLowerCase()?"active":""} style={{background:color}} onClick={()=>setStickerColor(color)} aria-label={`Use ${color}`}/>)}</div><ColorControls color={stickerColor} advanced={stickerAdvancedColor} onAdvanced={()=>setStickerAdvancedColor(value=>!value)} onChange={setStickerColor} onPick={()=>void pickStickerColor()}/><div className="sticker-border-actions"><button className="remove-sticker-style" onClick={()=>removeStickerBorder(index)}><Trash2/> Remove Offset</button>{stickerBorders.length<3&&<button className="add-sticker-border" onClick={addStickerBorder}><Plus/> Add Offset</button>}</div></div>}</section>)}</div>
+                        <div className="sticker-border-stack">{stickerBorders.map((border,index)=><section key={border.id} className={`sticker-border-card ${activeStickerBorder===index?"open":""}`}><button className="sticker-border-heading" onClick={()=>selectStickerBorder(index)}><span><i style={{background:border.color}}/><b>Border {index+1}</b></span><small>{(activeStickerBorder===index?stickerSizeMm:border.sizeMm).toFixed(1)} mm</small><ChevronDown/></button>{activeStickerBorder===index&&<div className="sticker-border-fields"><label>Offset width <b>{stickerSizeMm.toFixed(1)} mm</b></label><input type="range" min="0.5" max="15" step="0.5" value={stickerSizeMm} onChange={(event)=>setStickerSizeMm(+event.target.value)} /><label>Offset color</label><div className="sticker-color-palette">{COLORS.map((color)=><button key={color} className={stickerColor.toLowerCase()===color.toLowerCase()?"active":""} style={{background:color}} onClick={()=>setStickerColor(color)} aria-label={`Use ${color}`}/>)}</div><ColorControls color={stickerColor} advanced={stickerAdvancedColor} onAdvanced={()=>setStickerAdvancedColor(value=>!value)} onChange={setStickerColor} onPick={()=>void pickStickerColor()}/><div className="sticker-border-actions"><button className="remove-sticker-style" onClick={()=>removeStickerBorder(index)}><Trash2/> Remove Offset</button>{stickerBorders.length<3&&<button className="add-sticker-border" onClick={addStickerBorder}><Plus/> Add Color</button>}</div></div>}</section>)}</div>
                       </aside>
                     </div>
-                    <footer><span className="footer-spacer"/><button className="cancel" onClick={()=>setImageTab("edit")}>Back</button><button className="confirm" onClick={()=>void applyStickerStyle()}><Sparkles/> Apply Border</button></footer>
+                    <footer><span className="footer-spacer"/><button className="cancel" onClick={()=>setImageTab("edit")}>Back</button><button className="confirm" onClick={()=>void applyStickerStyle()}><Sparkles/> Apply Sticker Border</button></footer>
                   </>
                 ) : imageTab === "preset" ? (
                   <>
