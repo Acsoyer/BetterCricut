@@ -1316,10 +1316,9 @@ async function renderCutoutEdit(editor: CutoutEditor, applyCrop = false, preview
       const from = Math.max(0, index - 3),
         to = Math.min(points.length - 1, index + 3),
         window = points.slice(from, to + 1);
-      return {
-        x: window.reduce((sum, p) => sum + p.x, 0) / window.length,
-        y: window.reduce((sum, p) => sum + p.y, 0) / window.length,
-      };
+      const average={x:window.reduce((sum,p)=>sum+p.x,0)/window.length,y:window.reduce((sum,p)=>sum+p.y,0)/window.length},
+        blend=Math.min(1,index/6,(points.length-1-index)/6);
+      return {x:point.x+(average.x-point.x)*blend,y:point.y+(average.y-point.y)*blend};
     });
     maskContext.beginPath();
     maskContext.moveTo((trajectory[0].x + .1) * baseWidth, (trajectory[0].y + .1) * baseHeight);
@@ -1632,7 +1631,7 @@ async function selectedEdgeOverlay(src: string, stroke: EditStroke, color: strin
     selection = mx.getImageData(0, 0, c.width, c.height),
     out = cx.createImageData(c.width, c.height),
     rgb = color === "green" ? [22, 163, 74] : [239, 43, 45],
-    radius = 0;
+    radius = 1;
   for (let y = 1; y < c.height - 1; y++)
     for (let x = 1; x < c.width - 1; x++) {
       const p = y * c.width + x,
@@ -2065,6 +2064,7 @@ export default function Home() {
     } | null>(null),
     cutDrawing = useRef<string | null>(null),
     cutDraftStroke = useRef<EditStroke | null>(null),
+    cutLastBrushPoint = useRef<{tool:EditTool;point:{x:number;y:number}}|null>(null),
     cutCursorRef = useRef<HTMLElement>(null),
     imageCursorRef = useRef<HTMLElement>(null),
     cutEdgeBusy = useRef(false),
@@ -2100,6 +2100,7 @@ export default function Home() {
       rect: DOMRect;
     } | null>(null),
     imageDrawing = useRef<string | null>(null),
+    imageLastBrushPoint = useRef<{tool:ImageEditTool;point:{x:number;y:number}}|null>(null),
     clipDrag = useRef<{
       x: number;
       y: number;
@@ -3684,7 +3685,7 @@ export default function Home() {
     if (!cutEditor.tool) {setToolReminder(true);return;}
     e.preventDefault();
     e.currentTarget.setPointerCapture(e.pointerId);
-    const id = uid();
+    const point=cutPoint(e), previous=cutLastBrushPoint.current, id = uid();
     cutDrawing.current = id;
     setCutFinishedStroke(null);
     setCutEdgeOverlay("");
@@ -3693,8 +3694,9 @@ export default function Home() {
       id,
       tool: cutEditor.tool,
       brush: cutEditor.brush / cutEditor.zoom,
-      points: [cutPoint(e)],
+      points: e.shiftKey && previous?.tool===cutEditor.tool && ["bridge","erase"].includes(cutEditor.tool) ? [previous.point,point] : [point],
     };
+    if(["bridge","erase"].includes(cutEditor.tool)) cutLastBrushPoint.current={tool:cutEditor.tool,point};
     cutDraftStroke.current = stroke;
     if (cutLivePathRef.current) {
       cutLivePathRef.current.setAttribute("class", `edit-brush-stroke ${stroke.tool}`);
@@ -3716,6 +3718,7 @@ export default function Home() {
     const last = draft.points.at(-1);
     if (last && Math.hypot(cursor.x - last.x, cursor.y - last.y) < 0.0012) return;
     draft.points.push(cursor);
+    if(["bridge","erase"].includes(draft.tool)) cutLastBrushPoint.current={tool:draft.tool,point:cursor};
     if (cutFrame.current !== null) return;
     const smoothing = cutEditor.smoothing;
     cutFrame.current = window.requestAnimationFrame(() => {
@@ -3989,15 +3992,17 @@ export default function Home() {
     if (imageEditor.tool === "crop" || imageEditor.tool === null) return;
     e.preventDefault();
     e.currentTarget.setPointerCapture(e.pointerId);
-    const id = uid(),
+    const point=imageEditPoint(e), previous=imageLastBrushPoint.current,
+      id = uid(),
       stroke: ImageEditStroke = {
         id,
         tool: imageEditor.tool,
         brush: imageEditor.brush / imageEditor.zoom,
         color: imageEditor.paintColor,
-        points: [imageEditPoint(e)],
+        points: e.shiftKey && previous?.tool===imageEditor.tool && ["add","erase"].includes(imageEditor.tool) ? [previous.point,point] : [point],
       };
     imageDrawing.current = id;
+    if(["add","erase"].includes(imageEditor.tool)) imageLastBrushPoint.current={tool:imageEditor.tool,point};
     setImageEditor({
       ...imageEditor,
       strokes: [...imageEditor.strokes, stroke],
@@ -4013,6 +4018,7 @@ export default function Home() {
       imageCursorRef.current.style.top = `${(latest.clientY - rect.top) / imageEditor.zoom}px`;
     }
     if (!imageDrawing.current || e.buttons !== 1) return;
+    if(imageEditor.tool&&["add","erase"].includes(imageEditor.tool)) imageLastBrushPoint.current={tool:imageEditor.tool,point:cursor};
     const p = cursor,
       id = imageDrawing.current;
     setImageEditor((v) =>
@@ -4193,6 +4199,8 @@ export default function Home() {
     });
   };
   const endImageEdit = () => {
+    const id=imageDrawing.current;
+    if(id&&imageEditor){const stroke=imageEditor.strokes.find(item=>item.id===id);if(stroke&&["add","erase"].includes(stroke.tool)&&stroke.points.length)imageLastBrushPoint.current={tool:stroke.tool,point:stroke.points.at(-1)!};}
     imageDrawing.current = null;
     void commitImageStage();
   };
@@ -7695,8 +7703,7 @@ export default function Home() {
                             }
                           />
                         </section>
-                        <div className="background-pick-mode"><span>Pick Color to remove on whole image</span><div><label><input type="radio" checked={backgroundPickMode==="text"} onChange={()=>{setBackgroundPickMode("text");setBgEditor(v=>v?{...v,edgeRefine:3,edgeSmooth:5}:v)}}/> Text</label><label><input type="radio" checked={backgroundPickMode==="image"} onChange={()=>{setBackgroundPickMode("image");setBgEditor(v=>v?{...v,edgeRefine:0,edgeSmooth:1}:v)}}/> Image</label></div></div>
-                        <PickedColorControls entries={bgEditor.eraseColors} picking={bgEditor.pickingColor} onChange={(eraseColors) => setBgEditor((v) => v ? { ...v, eraseColors } : v)} onPick={(pickingColor) => setBgEditor((v) => v ? { ...v, pickingColor } : v)} />
+                        <PickedColorControls entries={bgEditor.eraseColors} picking={bgEditor.pickingColor} onChange={(eraseColors) => setBgEditor((v) => v ? { ...v, eraseColors } : v)} onPick={(pickingColor) => setBgEditor((v) => v ? { ...v, pickingColor } : v)} modeControl={<div className="background-pick-mode"><label><input type="radio" checked={backgroundPickMode==="text"} onChange={()=>{setBackgroundPickMode("text");setBgEditor(v=>v?{...v,edgeRefine:3,edgeSmooth:5}:v)}}/> Text</label><label><input type="radio" checked={backgroundPickMode==="image"} onChange={()=>{setBackgroundPickMode("image");setBgEditor(v=>v?{...v,edgeRefine:0,edgeSmooth:1}:v)}}/> Image</label></div>} />
                         <section>
                           <label className="edge-refine-label"><span>Edge Refine<small>&lt;Add edge - Carve edge&gt;</small></span><b>{bgEditor.edgeRefine > 0 ? "+" : ""}{bgEditor.edgeRefine}px</b></label>
                           <input
@@ -8099,8 +8106,7 @@ export default function Home() {
                   </div>
                   <small>Each stroke keeps the size, color bleed and distance used when it was drawn. Distance limits connected-color spread; Full follows the complete connected area.</small>
                 </section>
-                <div className="background-pick-mode"><span>Pick Color to remove on whole image</span><div><label><input type="radio" checked={backgroundPickMode==="text"} onChange={()=>{setBackgroundPickMode("text");setBgEditor(v=>v?{...v,edgeRefine:3,edgeSmooth:5}:v)}}/> Text</label><label><input type="radio" checked={backgroundPickMode==="image"} onChange={()=>{setBackgroundPickMode("image");setBgEditor(v=>v?{...v,edgeRefine:0,edgeSmooth:1}:v)}}/> Image</label></div></div>
-                <PickedColorControls entries={bgEditor.eraseColors} picking={bgEditor.pickingColor} onChange={(eraseColors) => setBgEditor((v) => v ? { ...v, eraseColors } : v)} onPick={(pickingColor) => setBgEditor((v) => v ? { ...v, pickingColor } : v)} />
+                <PickedColorControls entries={bgEditor.eraseColors} picking={bgEditor.pickingColor} onChange={(eraseColors) => setBgEditor((v) => v ? { ...v, eraseColors } : v)} onPick={(pickingColor) => setBgEditor((v) => v ? { ...v, pickingColor } : v)} modeControl={<div className="background-pick-mode"><label><input type="radio" checked={backgroundPickMode==="text"} onChange={()=>{setBackgroundPickMode("text");setBgEditor(v=>v?{...v,edgeRefine:3,edgeSmooth:5}:v)}}/> Text</label><label><input type="radio" checked={backgroundPickMode==="image"} onChange={()=>{setBackgroundPickMode("image");setBgEditor(v=>v?{...v,edgeRefine:0,edgeSmooth:1}:v)}}/> Image</label></div>} />
                 <section>
                   <label className="edge-refine-label"><span>Edge Refine<small>&lt;Add edge - Carve edge&gt;</small></span><b>{bgEditor.edgeRefine > 0 ? "+" : ""}{bgEditor.edgeRefine}px</b></label>
                   <input type="range" min="-25" max="25" step="1" value={bgEditor.edgeRefine} onChange={(e) => setBgEditor({ ...bgEditor, edgeRefine: +e.target.value })} />
