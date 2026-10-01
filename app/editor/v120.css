@@ -1,0 +1,4 @@
+/* v1.15.6 stable high-resolution editor coordinates */
+.cut-edit-overlay .edit-brush-stroke.smooth{stroke:transparent!important;fill:none!important;filter:none!important}
+.image-edit-wrap.paint-extended .image-round-cursor,.cut-image-wrap .cut-round-cursor{transition:none!important;will-change:left,top!important}
+.image-edit-overlay .image-brush-mark{stroke-linecap:round;stroke-linejoin:round}

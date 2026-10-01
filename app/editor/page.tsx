@@ -1320,11 +1320,16 @@ async function renderCutoutEdit(editor: CutoutEditor, applyCrop = false, preview
         blend=Math.min(1,index/6,(points.length-1-index)/6);
       return {x:point.x+(average.x-point.x)*blend,y:point.y+(average.y-point.y)*blend};
     });
-    maskContext.beginPath();
-    maskContext.moveTo((trajectory[0].x + .1) * baseWidth, (trajectory[0].y + .1) * baseHeight);
-    for (const point of trajectory.slice(1)) maskContext.lineTo((point.x + .1) * baseWidth, (point.y + .1) * baseHeight);
-    if (stroke.points.length === 1) maskContext.lineTo((stroke.points[0].x + .1) * baseWidth + 0.01, (stroke.points[0].y + .1) * baseHeight);
-    maskContext.stroke();
+    for(let index=1;index<trajectory.length;index++){
+      const progress=index/(trajectory.length-1), feather=Math.min(1,progress/.16,(1-progress)/.16);
+      if(feather<=0)continue;
+      maskContext.globalAlpha=feather;
+      maskContext.beginPath();
+      maskContext.moveTo((trajectory[index-1].x+.1)*baseWidth,(trajectory[index-1].y+.1)*baseHeight);
+      maskContext.lineTo((trajectory[index].x+.1)*baseWidth,(trajectory[index].y+.1)*baseHeight);
+      maskContext.stroke();
+    }
+    maskContext.globalAlpha=1;
     softContext.filter = `blur(${Math.max(4, maskContext.lineWidth * 0.2)}px)`;
     softContext.drawImage(c, 0, 0);
     softContext.filter = "none";
@@ -1333,7 +1338,8 @@ async function renderCutoutEdit(editor: CutoutEditor, applyCrop = false, preview
       selected = maskContext.getImageData(0, 0, c.width, c.height);
     for (let q = 0; q < current.data.length; q += 4)
       if (selected.data[q + 3] > 20) {
-        const alpha = blurred.data[q + 3] >= 128 ? 255 : 0;
+        const strength=selected.data[q+3]/255, targetAlpha=blurred.data[q+3]>=128?255:0,
+          alpha=Math.round(current.data[q+3]+(targetAlpha-current.data[q+3])*strength);
         if (current.data[q + 3] < 96) {
           current.data[q] = parseInt(editor.color.slice(1, 3), 16);
           current.data[q + 1] = parseInt(editor.color.slice(3, 5), 16);
@@ -3715,8 +3721,8 @@ export default function Home() {
     }
     const draft = cutDraftStroke.current;
     if (!draft || !cutDrawing.current || e.buttons !== 1) return;
-    const last = draft.points.at(-1);
-    if (last && Math.hypot(cursor.x - last.x, cursor.y - last.y) < 0.0012) return;
+    const last = draft.points.at(-1), minStep=.15*1.2/Math.max(pointerRect.width,pointerRect.height,1);
+    if (last && Math.hypot(cursor.x - last.x, cursor.y - last.y) < minStep) return;
     draft.points.push(cursor);
     if(["bridge","erase"].includes(draft.tool)) cutLastBrushPoint.current={tool:draft.tool,point:cursor};
     if (cutFrame.current !== null) return;
@@ -3970,13 +3976,14 @@ export default function Home() {
   const endImagePan = () => {
     imagePanDrag.current = null;
   };
-  const imageEditPoint = (e: RPointer<HTMLElement>) => {
-    const r = e.currentTarget.getBoundingClientRect();
+  const imagePointFromClient=(element:HTMLElement,clientX:number,clientY:number)=>{
+    const r=element.getBoundingClientRect(), expanded=element.classList.contains("paint-extended"), span=expanded?1.2:1, origin=expanded?-.1:0;
     return {
-      x: clamp(((e.clientX - r.left) / r.width) * 1.2 - .1, -.1, 1.1),
-      y: clamp(((e.clientY - r.top) / r.height) * 1.2 - .1, -.1, 1.1),
+      x:clamp(((clientX-r.left)/r.width)*span+origin,origin,origin+span),
+      y:clamp(((clientY-r.top)/r.height)*span+origin,origin,origin+span),
     };
   };
+  const imageEditPoint = (e: RPointer<HTMLElement>) => imagePointFromClient(e.currentTarget,e.clientX,e.clientY);
   const startImageEdit = async (e: RPointer<HTMLElement>) => {
     if (!imageEditor || e.button !== 0) return;
     if (imageEditor.pickingColor) {
@@ -4012,7 +4019,7 @@ export default function Home() {
     if (!imageEditor) return;
     const latest = e.nativeEvent.getCoalescedEvents?.().at(-1) || e.nativeEvent,
       rect = e.currentTarget.getBoundingClientRect(),
-      cursor = {x:clamp(((latest.clientX-rect.left)/rect.width)*1.2-.1,-.1,1.1),y:clamp(((latest.clientY-rect.top)/rect.height)*1.2-.1,-.1,1.1)};
+      cursor = imagePointFromClient(e.currentTarget,latest.clientX,latest.clientY);
     if (imageCursorRef.current) {
       imageCursorRef.current.style.left = `${(latest.clientX - rect.left) / imageEditor.zoom}px`;
       imageCursorRef.current.style.top = `${(latest.clientY - rect.top) / imageEditor.zoom}px`;
@@ -4028,7 +4035,8 @@ export default function Home() {
             strokes: v.strokes.map((s) => {
               if (s.id !== id) return s;
               const last = s.points[s.points.length - 1];
-              if (last && Math.hypot(p.x - last.x, p.y - last.y) < Math.max(.0015, s.brush / 800)) return s;
+              const minStep=.15*1.2/Math.max(rect.width,rect.height,1);
+              if (last && Math.hypot(p.x - last.x, p.y - last.y) < minStep) return s;
               return { ...s, points: [...s.points, p] };
             }),
           }
@@ -4164,6 +4172,7 @@ export default function Home() {
   };
   const undoImageStage = () =>
     setImageEditor((v) => {
+      if(v?.strokes.length)return {...v,strokes:v.strokes.slice(0,-1)};
       if (!v || !v.history.length) return v;
       const prior = v.history[v.history.length - 1];
       imageRedoHistory.current.push({ source: v.source, offsetX: v.offsetX, offsetY: v.offsetY, widthScale: v.widthScale, heightScale: v.heightScale });
@@ -4202,7 +4211,6 @@ export default function Home() {
     const id=imageDrawing.current;
     if(id&&imageEditor){const stroke=imageEditor.strokes.find(item=>item.id===id);if(stroke&&["add","erase"].includes(stroke.tool)&&stroke.points.length)imageLastBrushPoint.current={tool:stroke.tool,point:stroke.points.at(-1)!};}
     imageDrawing.current = null;
-    void commitImageStage();
   };
   const applyImageEdit = async (createLayer = false) => {
     if (!imageEditor) return;
@@ -7335,7 +7343,7 @@ export default function Home() {
                     <div className="refine-quick-tools image-refine-tools"><div className="cut-header-history image-header-history">
                       <button
                         title="Undo"
-                        disabled={imageTab === "edit" ? !imageEditor.history.length : !bgEditor.strokes.length}
+                        disabled={imageTab === "edit" ? !imageEditor.history.length&&!imageEditor.strokes.length : !bgEditor.strokes.length}
                         onClick={() =>
                           imageTab === "edit"
                             ? undoImageStage()
@@ -7411,7 +7419,7 @@ export default function Home() {
                     <div className="bg-editor-body">
                       <div className={`bg-preview image-edit-preview ${bgEditor?.alphaView ? "alpha-view" : ""}`} onWheel={zoomImageEditor} onPointerDown={startImagePan} onPointerMove={moveImagePan} onPointerUp={endImagePan} onPointerCancel={endImagePan}>
                         <div
-                          className={`image-edit-wrap ${imageEditor.tool==="add"||imageEditor.strokes.some(stroke=>stroke.tool==="add")?"paint-extended":""}`}
+                          className={`image-edit-wrap ${["add","erase","lasso"].includes(imageEditor.tool||"")||imageEditor.strokes.length?"paint-extended":""}`}
                           onPointerDown={(event)=>void startImageEdit(event)} onPointerMove={moveImageEdit} onPointerUp={endImageEdit} onPointerCancel={endImageEdit} onPointerEnter={()=>setImageCursor((value)=>({...value,visible:true}))} onPointerLeave={()=>setImageCursor((value)=>({...value,visible:false}))}
                           style={
                             {
