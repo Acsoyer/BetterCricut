@@ -2065,6 +2065,7 @@ export default function Home() {
     cutDrawing = useRef<string | null>(null),
     cutDraftStroke = useRef<EditStroke | null>(null),
     cutCursorRef = useRef<HTMLElement>(null),
+    imageCursorRef = useRef<HTMLElement>(null),
     cutEdgeBusy = useRef(false),
     cutLivePathRef = useRef<SVGPolylineElement>(null),
     cutLiveRectRef = useRef<SVGRectElement>(null),
@@ -2684,7 +2685,7 @@ export default function Home() {
     let cancelled = false;
     const timer = window.setTimeout(() => {
       const draft: Layer = { ...target, src: baseSrc, w: baseW, h: baseH, stickerOffset: { enabled: true, sizeMm: borders.reduce((sum,border)=>sum+border.sizeMm,0), color: borders[borders.length-1]?.color || stickerColor, smoothness: .7, baseSrc, baseX: prior?.baseX ?? target.x, baseY: prior?.baseY ?? target.y, baseW, baseH, previewSrc: "", borders } };
-      void renderStickerOffset(draft, 1).then((canvas) => { if (!cancelled) setStickerPreviewSrc(canvas.toDataURL("image/png")); });
+      void renderStickerOffset(draft, 1, true).then((canvas) => { if (!cancelled) setStickerPreviewSrc(canvas.toDataURL("image/png")); });
     }, 70);
     return () => { cancelled = true; window.clearTimeout(timer); };
   }, [imageEditor?.layerId, imageTab, stickerSizeMm, stickerColor, stickerBorders, activeStickerBorder]);
@@ -3704,8 +3705,9 @@ export default function Home() {
     if (!cutEditor) return;
     const cursor = cutPoint(e);
     if (cutCursorRef.current) {
-      cutCursorRef.current.style.left = `${((cursor.x + .1) / 1.2) * 100}%`;
-      cutCursorRef.current.style.top = `${((cursor.y + .1) / 1.2) * 100}%`;
+      const rect = e.currentTarget.getBoundingClientRect();
+      cutCursorRef.current.style.left = `${(e.clientX - rect.left) / cutEditor.zoom}px`;
+      cutCursorRef.current.style.top = `${(e.clientY - rect.top) / cutEditor.zoom}px`;
     }
     const draft = cutDraftStroke.current;
     if (!draft || !cutDrawing.current || e.buttons !== 1) return;
@@ -4000,9 +4002,14 @@ export default function Home() {
     });
   };
   const moveImageEdit = (e: RPointer<HTMLImageElement>) => {
+    if (!imageEditor) return;
     const cursor = imageEditPoint(e);
-    setImageCursor({ ...cursor, visible: true });
-    if (!imageDrawing.current || !imageEditor || e.buttons !== 1) return;
+    if (imageCursorRef.current) {
+      const rect = e.currentTarget.getBoundingClientRect();
+      imageCursorRef.current.style.left = `${(e.clientX - rect.left) / imageEditor.zoom}px`;
+      imageCursorRef.current.style.top = `${(e.clientY - rect.top) / imageEditor.zoom}px`;
+    }
+    if (!imageDrawing.current || e.buttons !== 1) return;
     const p = cursor,
       id = imageDrawing.current;
     setImageEditor((v) =>
@@ -4388,7 +4395,7 @@ export default function Home() {
       const outlineSource = one.stickerOffset?.enabled ? (one.stickerOffset.previewSrc || (await renderStickerOffset(one, 1)).toDataURL("image/png")) : one.src,
         cutSrc = await smoothVectorCutout(outlineSource, DARK, true),
         cm = strokeDraft || DEFAULT_OUTLINE_CM,
-        outlineColor = lighten(DARK),
+        outlineColor = COLORS[Math.floor(Math.random() * 21)],
         rasterStroke = await strokeImage(cutSrc, cm, one.w, outlineColor, fillGapsDraft),
         src = await smoothVectorCutout(rasterStroke, outlineColor, true, "smooth"),
         id = uid(),
@@ -4604,6 +4611,7 @@ export default function Home() {
           h: one.h * trimmed.height,
           visible: true,
           invalid: false,
+          weldedSources: undefined,
         };
       const cutoutStep: LayerStep = {
         id: uid(),
@@ -4616,7 +4624,7 @@ export default function Home() {
       finalLayer.activeStep = 0;
       mutate(one.id, () => finalLayer);
       setFillGapsDraft(0);
-      setNotice("Cutout baked. Editable modifiers were merged into the shape");
+      setNotice("Cut Shape baked. Editable modifiers and prior operation history were merged into the shape");
     } finally {
       setWorking(false);
     }
@@ -4653,6 +4661,7 @@ export default function Home() {
           h: one.h * t.height,
           color,
           kind: "vector" as Kind,
+          weldedSources: undefined,
         };
       const step: LayerStep = {
         id: uid(),
@@ -4704,6 +4713,7 @@ export default function Home() {
             src: vectorSrc,
             color,
             kind: "vector",
+            weldedSources: undefined,
           },
           removeStep: LayerStep = {
             id: uid(),
@@ -5615,7 +5625,7 @@ export default function Home() {
       if(!picked.every(layer=>["vector","stroke"].includes(layer.kind))){
         const area=bounds(picked),nativeDensity=Math.max(...picked.map(layer=>(layer.naturalW||600)/Math.max(layer.w,.01))),pxPerCm=clamp(nativeDensity,80,Math.min(600,6000/Math.max(area.w,area.h))),canvas=document.createElement("canvas");canvas.width=Math.max(1,Math.round(area.w*pxPerCm));canvas.height=Math.max(1,Math.round(area.h*pxPerCm));const context=canvas.getContext("2d")!;context.imageSmoothingEnabled=true;context.imageSmoothingQuality="high";
         for(const layer of picked){const image=await getImage(layer.stickerOffset?.previewSrc||layer.src),w=layer.w*pxPerCm,h=layer.h*pxPerCm;context.save();context.translate((layer.x-area.x)*pxPerCm+w/2,(layer.y-area.y)*pxPerCm+h/2);context.rotate(layer.rotation*Math.PI/180);context.drawImage(image,-w/2,-h/2,w,h);context.restore()}
-        const src=canvas.toDataURL("image/png"),raster:Layer={...picked[picked.length-1],id:uid(),name:`${picked[picked.length-1].name} Weld`,src,originalSrc:src,x:area.x,y:area.y,w:area.w,h:area.h,naturalW:canvas.width,naturalH:canvas.height,kind:"original",rotation:0,groupId:undefined,parentId:undefined,innerSrc:undefined,shapeImage:undefined,stickerOffset:undefined,steps:[],activeStep:-1,strokeCm:0,fillGapsMm:0,acetateOn:false,weldedSources:picked.map(layer=>({...layer}))};
+        const src=canvas.toDataURL("image/png"),raster:Layer={...picked[picked.length-1],id:uid(),name:`${picked[picked.length-1].name} Weld`,src,originalSrc:src,x:area.x,y:area.y,w:area.w,h:area.h,naturalW:canvas.width,naturalH:canvas.height,kind:"original",rotation:0,groupId:undefined,parentId:undefined,innerSrc:undefined,shapeImage:undefined,stickerOffset:undefined,steps:[],activeStep:-1,strokeCm:0,fillGapsMm:0,acetateOn:false,weldedSources:undefined};
         setLayers(items=>[...items.filter(layer=>!picked.some(source=>source.id===layer.id)),raster]);setSelected([raster.id]);addSessionLog("Raster layers welded",`${picked.length} layers became one full-resolution transparent PNG.`);setNotice("Selected layers welded into one PNG layer");return;
       }
       const area=bounds(picked),top=[...picked].sort((a,b)=>layers.indexOf(b)-layers.indexOf(a))[0],components=picked.map(layer=>({layer,src:layer.src,box:{x:layer.x,y:layer.y,w:layer.w,h:layer.h}}));
@@ -5636,7 +5646,7 @@ export default function Home() {
         group.querySelectorAll("path,rect,circle,ellipse,polygon,polyline").forEach(node=>{if(insideDefinition(node))return;if(node.getAttribute("fill")!=="none")node.setAttribute("fill",top.color);if(node.hasAttribute("stroke")&&node.getAttribute("stroke")!=="none")node.setAttribute("stroke",top.color)});
         root.appendChild(group)
       }
-      const src=`data:image/svg+xml,${encodeURIComponent(new XMLSerializer().serializeToString(root))}`, safety=await analyzeCutSafety(src,area.w), welded: Layer = { ...top,...safety, id: uid(), name: `${top.name} Weld`, src, originalSrc: src, x: area.x, y: area.y, w: area.w, h: area.h, rotation: 0, groupId: undefined, groupHidden: false, groupCollapsed: false, visible: true, parentId: undefined, innerSrc: undefined, stickerOffset: undefined, kind: "vector", strokeCm: 0, fillGapsMm: 0, steps: [], activeStep: -1, weldedSources:picked.map(layer=>({...layer})) };
+      const src=`data:image/svg+xml,${encodeURIComponent(new XMLSerializer().serializeToString(root))}`, safety=await analyzeCutSafety(src,area.w), welded: Layer = { ...top,...safety, id: uid(), name: `${top.name} Weld`, src, originalSrc: src, x: area.x, y: area.y, w: area.w, h: area.h, rotation: 0, groupId: undefined, groupHidden: false, groupCollapsed: false, visible: true, parentId: undefined, innerSrc: undefined, stickerOffset: undefined, kind: "vector", strokeCm: 0, fillGapsMm: 0, steps: [], activeStep: -1, weldedSources:undefined };
       const verification=await getImage(src),check=document.createElement("canvas");check.width=512;check.height=512;const verifyContext=check.getContext("2d",{willReadFrequently:true})!;verifyContext.drawImage(verification,0,0,512,512);if(!verifyContext.getImageData(0,0,512,512).data.some((value,index)=>index%4===3&&value>0))throw new Error("The combined SVG was empty. Original layers were preserved.");
       const expected=document.createElement("canvas");expected.width=512;expected.height=512;const expectedContext=expected.getContext("2d",{willReadFrequently:true})!; await drawWeldReference(expectedContext,picked,area,getImage); const expectedPixels=expectedContext.getImageData(0,0,512,512).data,actualPixels=verifyContext.getImageData(0,0,512,512).data;const coverage=inspectWeldCoverage(expectedPixels,actualPixels,512,512);if(!coverage.valid)throw new Error("Some SVG pieces were missing from the combined result. Original layers were preserved.");
       setLayers((items) => [...items.filter((layer) => !picked.some(source=>source.id===layer.id)), welded]); setSelected([welded.id]);
@@ -5827,11 +5837,8 @@ export default function Home() {
     >
       <header className="topbar">
         <div className="brand">
-          <span>
-            <Scissors />
-          </span>
           <button className="brand-copy" onClick={() => setDevLogOpen(true)} title="Open development log">
-            <b>Kreya</b>
+            <span className="brand-logo" role="img" aria-label="Kreya" />
             <small>Personal workspace · {EDITOR_VERSION}</small>
           </button>
         </div>
@@ -5845,7 +5852,7 @@ export default function Home() {
             <button type="button" disabled={one.rasterStatus === "background"} onClick={() => void openStickerBorder(one)}><Sparkles /> Add Sticker Border to Image</button>
             <button type="button" className={one.rasterStatus === "background" ? "" : "primary"} onClick={() => void beginOutlineForPrintable()}><OutlineIcon /> Add Outline as Cut Shape</button>
           </>}
-          {one && ["vector", "stroke"].includes(one.kind) && <><button type="button" onClick={() => { setStrokeDraft(one.kind === "stroke" ? one.strokeCm : DEFAULT_OUTLINE_CM); setOutlineEditing(true); }}><OutlineIcon /> Add Outline</button><button type="button" onClick={() => void makeGapsPermanent()}><Sparkles /> Bake Cutout</button></>}
+          {one && ["vector", "stroke"].includes(one.kind) && <><button type="button" onClick={() => { setStrokeDraft(one.kind === "stroke" ? one.strokeCm : DEFAULT_OUTLINE_CM); setOutlineEditing(true); }}><OutlineIcon /> Add Outline</button><button type="button" onClick={() => void makeGapsPermanent()}><Sparkles /> Bake Cut Shape</button></>}
           {!one && <><button disabled><Sparkles/> Remove Background</button><button disabled><Scissors/> Convert to Cut Shape</button><button disabled><Sparkles/> Add Sticker Border to Image</button><button disabled><Scissors/> Add Outline as Cut Shape</button></>}
         </nav>
 
@@ -7092,6 +7099,7 @@ export default function Home() {
       {splashOpen && <div className="welcome-splash" role="dialog" aria-modal="true" aria-label="Welcome to Kreya" onPointerDown={dismissSplash}>
         <div onPointerDown={(event)=>event.stopPropagation()}>
           <button className="welcome-close" onClick={dismissSplash} aria-label="Close welcome screen"><X/></button>
+          <span className="welcome-logo" role="img" aria-label="Kreya" />
           <h1>Welcome to Kreya</h1>
           <p>Everything you need to turn an idea into a Cricut-ready design.</p>
           <div className="welcome-steps">
@@ -7410,7 +7418,7 @@ export default function Home() {
                               return s.tool === "lasso" ? <polygon key={s.id} points={pts} className="image-lasso-mark" /> : <polyline key={s.id} points={pts} className={`image-brush-mark ${s.tool}`} style={{ stroke: s.tool === "add" ? s.color || imageEditor.paintColor : undefined, strokeWidth: (s.brush / 100) * Math.min(imageEditorSize.w || 100,imageEditorSize.h || 100) }} />;
                             })}
                           </svg>
-                          {imageCursor.visible && ["add","erase"].includes(imageEditor.tool || "") && <i className="image-round-cursor" style={{left:`${imageCursor.x*100}%`,top:`${imageCursor.y*100}%`,width:`${(imageEditor.brush/imageEditor.zoom/100)*Math.min(imageEditorSize.w||100,imageEditorSize.h||100)}px`,aspectRatio:"1"}}/>}
+                          {imageCursor.visible && ["add","erase"].includes(imageEditor.tool || "") && <i ref={imageCursorRef} className="image-round-cursor" style={{left:"50%",top:"50%",width:`${(imageEditor.brush/imageEditor.zoom/100)*Math.min(imageEditorSize.w||100,imageEditorSize.h||100)}px`,height:`${(imageEditor.brush/imageEditor.zoom/100)*Math.min(imageEditorSize.w||100,imageEditorSize.h||100)}px`}}><svg width="100%" height="100%" style={{overflow:"visible",display:"block"}}><circle cx="50%" cy="50%" r="50%" fill="#ffffff20" stroke="#17211c" strokeWidth={1/imageEditor.zoom}/></svg></i>}
                           {imageEditor.tool === "crop" && (
                             <div
                               className="crop-guide"
@@ -7549,7 +7557,7 @@ export default function Home() {
                         <div className="sticker-border-stack">{stickerBorders.map((border,index)=><section key={border.id} className={`sticker-border-card ${activeStickerBorder===index?"open":""}`}><button className="sticker-border-heading" onClick={()=>selectStickerBorder(index)}><span><i style={{background:border.color}}/><b>Border {index+1}</b></span><small>{(activeStickerBorder===index?stickerSizeMm:border.sizeMm).toFixed(1)} mm</small><ChevronDown/></button>{activeStickerBorder===index&&<div className="sticker-border-fields"><label>Offset width <b>{stickerSizeMm.toFixed(1)} mm</b></label><input type="range" min="0.5" max="15" step="0.5" value={stickerSizeMm} onChange={(event)=>setStickerSizeMm(+event.target.value)} /><label>Offset color</label><div className="sticker-color-palette">{COLORS.map((color)=><button key={color} className={stickerColor.toLowerCase()===color.toLowerCase()?"active":""} style={{background:color}} onClick={()=>setStickerColor(color)} aria-label={`Use ${color}`}/>)}</div><ColorControls color={stickerColor} advanced={stickerAdvancedColor} onAdvanced={()=>setStickerAdvancedColor(value=>!value)} onChange={setStickerColor} onPick={()=>void pickStickerColor()}/><div className="sticker-border-actions"><button className="remove-sticker-style" onClick={()=>removeStickerBorder(index)}><Trash2/> Remove Offset</button>{stickerBorders.length<3&&<button className="add-sticker-border" onClick={addStickerBorder}><Plus/> Add Color</button>}</div></div>}</section>)}</div>
                       </aside>
                     </div>
-                    <footer><span className="footer-spacer"/><button className="cancel" onClick={()=>setImageTab("edit")}>Back</button><button className="confirm" onClick={()=>void applyStickerStyle()}><Sparkles/> Apply Sticker Border</button></footer>
+                    <footer><span className="footer-spacer"/><button className="cancel" onClick={()=>{setImageEditor(null);setBgEditor(null)}}>Back</button><button className="confirm" onClick={()=>void applyStickerStyle()}><Sparkles/> Apply Sticker Border</button></footer>
                   </>
                 ) : imageTab === "preset" ? (
                   <>
