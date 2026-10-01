@@ -4,7 +4,7 @@ import { drawWeldReference, inspectWeldCoverage } from "./weld-preview";
 import { isLayerVisible } from "./layer-visibility";
 /* eslint-disable react-hooks/set-state-in-effect, react-hooks/refs, react-hooks/purity */
 import { ChangeEvent, Fragment, PointerEvent as RPointer, WheelEvent as RWheel, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { AlignVerticalJustifyCenter, AlignEndHorizontal, AlignEndVertical, AlignHorizontalJustifyCenter, AlignStartHorizontal, AlignStartVertical, AlertTriangle, BringToFront, ChevronDown, Check, Copy, Crosshair, Download, Eye, EyeOff, FileImage, File, ImagePlus, Laptop, Paintbrush, Eraser, GripVertical, Link as LinkIcon, Link2Off, Layers3, Maximize2, Minimize2, Palette, Pipette, Plus, Redo2, RotateCw, Replace, Ruler, Scissors, ShieldCheck, SlidersHorizontal, SendToBack, Sparkles, Star, Trash2, Type, Undo2, ZoomIn, ZoomOut, User, FolderOpen, Image as ImageIcon, LogOut, X } from "lucide-react";
+import { AlignVerticalJustifyCenter, AlignEndHorizontal, AlignEndVertical, AlignHorizontalJustifyCenter, AlignStartHorizontal, AlignStartVertical, AlertTriangle, BringToFront, ChevronDown, Check, Copy, Crosshair, Download, Eye, EyeOff, FileImage, File, FlipHorizontal2, FlipVertical2, ImagePlus, Laptop, Paintbrush, Eraser, GripVertical, Link as LinkIcon, Link2Off, Layers3, Maximize2, Minimize2, Palette, Pipette, Plus, Redo2, RotateCw, Replace, Ruler, Scissors, ShieldCheck, SlidersHorizontal, SendToBack, Sparkles, Star, Trash2, Type, Undo2, ZoomIn, ZoomOut, User, FolderOpen, Image as ImageIcon, LogOut, X } from "lucide-react";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
 import { EDITOR_VERSION, editorDevLog } from "../editor-dev-log";
@@ -25,6 +25,7 @@ import { cutFitRetryPlan, losslessCutMaskSvg } from "./cut-fit-retry";
 import { smoothAlphaCoverage } from "./alpha-coverage";
 import { cutContourOptions, prepareCutContour, cutMaskTopology, type CutContourProfile } from "./cut-contour";
 import { circularDilateAlpha } from "./outline-mask";
+import { flippedLayerBox } from "./layer-flip";
 import { faStar, faHeart, faArrowRight, faBolt, faBurst, faCloud, faMoon, faSun, faDiamond, faShield, faDroplet, faLeaf, faCrown, faBell, faGift, faTag, faBookmark, faLocationPin, faComment, faPuzzlePiece } from "@fortawesome/free-solid-svg-icons";
 function OutlineIcon() { return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path strokeDasharray="3 2" d="M12 2 22 9 18 21H6L2 9Z"/><path d="m12 7 5.5 4-2 6h-7l-2-6Z"/></svg>; }
 const PAGE_SIZES = { a4: { label: "A4", w: 21, h: 29.7 }, letter: { label: "Letter", w: 21.59, h: 27.94 }, a5: { label: "A5", w: 14.8, h: 21 }, full: { label: "Large canvas", w: 100, h: 100 } } as const,
@@ -367,6 +368,25 @@ const safeSvgData = (raw: string) => {
   root.querySelectorAll("*").forEach((node) => [...node.attributes].forEach((attribute) => { if (/^on/i.test(attribute.name)) node.removeAttribute(attribute.name); }));
   root.setAttribute("preserveAspectRatio", "none"); root.setAttribute("shape-rendering", "geometricPrecision");
   return `data:image/svg+xml,${encodeURIComponent(new XMLSerializer().serializeToString(root))}`;
+};
+const flipSvgSource = (src: string, axis: "horizontal" | "vertical") => {
+  const doc = new DOMParser().parseFromString(decodeSvgData(src), "image/svg+xml"), root = doc.documentElement,
+    [x, y, w, h] = svgViewBox(root), group = doc.createElementNS("http://www.w3.org/2000/svg", "g");
+  [...root.childNodes].filter(node => !(node instanceof Element) || !["defs", "style", "title", "desc", "metadata"].includes(node.tagName.toLowerCase())).forEach(node => group.appendChild(node));
+  group.setAttribute("transform", axis === "horizontal" ? `translate(${2 * x + w} 0) scale(-1 1)` : `translate(0 ${2 * y + h}) scale(1 -1)`);
+  root.appendChild(group);
+  root.setAttribute("shape-rendering", "geometricPrecision");
+  return `data:image/svg+xml,${encodeURIComponent(new XMLSerializer().serializeToString(root))}`;
+};
+const flipImageSource = async (src: string, axis: "horizontal" | "vertical") => {
+  if (src.startsWith("data:image/svg+xml")) return flipSvgSource(src, axis);
+  const img = await getImage(src), canvas = document.createElement("canvas");
+  canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+  const context = canvas.getContext("2d")!;
+  context.translate(axis === "horizontal" ? canvas.width : 0, axis === "vertical" ? canvas.height : 0);
+  context.scale(axis === "horizontal" ? -1 : 1, axis === "vertical" ? -1 : 1);
+  context.drawImage(img, 0, 0);
+  return canvas.toDataURL("image/png");
 };
 const svgViewBox = (root: Element) => {
   const values = (root.getAttribute("viewBox") || "").trim().split(/[ ,]+/).map(Number);
@@ -1861,6 +1881,7 @@ export default function Home() {
     [calibrationOpen, setCalibrationOpen] = useState(false),
     [locked, setLocked] = useState(true),
     [alignOpen, setAlignOpen] = useState(false),
+    [flipOpen, setFlipOpen] = useState(false),
     [colorOpen, setColorOpen] = useState(false),
     [working, setWorking] = useState(false),
     [vTracerStartedAt, setVTracerStartedAt] = useState<number | null>(null),
@@ -1869,6 +1890,7 @@ export default function Home() {
     [drag, setDrag] = useState<Drag>(null),
     [cycle, setCycle] = useState({ key: "", index: 0, x: -9999, y: -9999 }),
     [strokeDraft, setStrokeDraft] = useState(DEFAULT_OUTLINE_CM),
+    [outlinePreview, setOutlinePreview] = useState<{ layerId: string; src: string; x: number; y: number; w: number; h: number } | null>(null),
     [fillGapsDraft, setFillGapsDraft] = useState(0),
     [fillAllGapsDraft, setFillAllGapsDraft] = useState(false),
     [stickerBackgroundPromptId, setStickerBackgroundPromptId] = useState<string | null>(null),
@@ -2005,6 +2027,7 @@ export default function Home() {
     bgRedoStrokes = useRef<BgStroke[]>([]),
     lastLayers = useRef<Layer[]>([]),
     lastChange = useRef(0),
+    outlinePreviewRequest = useRef(0),
     undoing = useRef(false),
     bgDrawing = useRef<string | null>(null),
     bgPanDrag = useRef<{
@@ -2725,6 +2748,23 @@ export default function Home() {
     }
   }, [layers]);
   useEffect(() => {
+    const request = ++outlinePreviewRequest.current;
+    setOutlinePreview(null);
+    if (!one || !["vector", "stroke"].includes(one.kind) || strokeDraft <= 0 || (one.kind === "stroke" && Math.abs(strokeDraft - one.strokeCm) < .001)) return;
+    const timer = window.setTimeout(() => {
+      const parent = one.parentId ? layers.find(layer => layer.id === one.parentId) : undefined,
+        base = parent || one,
+        baseSrc = base.stickerOffset?.previewSrc || (one.kind === "stroke" && one.innerSrc ? one.innerSrc : base.src),
+        baseWidth = one.kind === "stroke" && one.innerSrc && !parent ? Math.max(.1, one.w - one.strokeCm * 2) : base.w,
+        delta = one.kind === "stroke" ? strokeDraft - one.strokeCm : strokeDraft,
+        geometry = { x: one.x - delta, y: one.y - delta, w: one.w + delta * 2, h: one.h + delta * 2 };
+      void strokeImage(baseSrc, strokeDraft, baseWidth, one.kind === "stroke" ? one.color : lighten(one.color), fillGapsDraft).then(src => {
+        if (outlinePreviewRequest.current === request) setOutlinePreview({ layerId: one.id, src, ...geometry });
+      }).catch(() => {});
+    }, 70);
+    return () => { window.clearTimeout(timer); outlinePreviewRequest.current++; };
+  }, [one?.id, one?.src, one?.innerSrc, one?.strokeCm, strokeDraft, fillGapsDraft]);
+  useEffect(() => {
     if (!notice) return;
     const timer = window.setTimeout(() => setNotice(""), /VTracer|Smooth Cutout/i.test(notice) ? 15000 : 5000);
     return () => window.clearTimeout(timer);
@@ -2762,6 +2802,7 @@ export default function Home() {
       if (!(e.target as HTMLElement).closest(".page-setup-slot")) { setPageSetupOpen(false); setSettingsSection(null); }
       if (!(e.target as HTMLElement).closest(".wrap")) {
         setAlignOpen(false);
+        setFlipOpen(false);
         setColorOpen(false);
       }
     };
@@ -4308,7 +4349,7 @@ export default function Home() {
         cm = DEFAULT_OUTLINE_CM,
         outlineColor = lighten(DARK),
         rasterStroke = await strokeImage(cutSrc, cm, one.w, outlineColor, fillGapsDraft),
-        src = await smoothVectorCutout(rasterStroke, outlineColor, true),
+        src = await smoothVectorCutout(rasterStroke, outlineColor, true, "smooth"),
         id = uid(),
         outline: Layer = {
           ...one,
@@ -4350,7 +4391,7 @@ export default function Home() {
     try {
       const cm = cmOverride ?? strokeDraft,
         rasterStroke = await strokeImage(one.src, cm, one.w, lighten(one.color), fillGapsDraft),
-        src = await smoothVectorCutout(rasterStroke, lighten(one.color), true),
+        src = await smoothVectorCutout(rasterStroke, lighten(one.color), true, "smooth"),
         x = one.x - cm,
         y = one.y - cm,
         w = one.w + cm * 2,
@@ -4406,7 +4447,9 @@ export default function Home() {
     try {
       const parent = layers.find((l) => l.id === one.parentId),
         base = parent || one,
-        baseSrc = base.stickerOffset?.enabled ? (base.stickerOffset.previewSrc || (await renderStickerOffset(base, 1)).toDataURL("image/png")) : base.src,
+        detachedInner = !parent && one.innerSrc,
+        baseSrc = detachedInner || (base.stickerOffset?.enabled ? (base.stickerOffset.previewSrc || (await renderStickerOffset(base, 1)).toDataURL("image/png")) : base.src),
+        baseWidth = detachedInner ? Math.max(.1, one.w - one.strokeCm * 2) : base.w,
         old = one.strokeCm,
         cm = strokeDraft,
         newW = Math.max(0.2, one.w + 2 * (cm - old)),
@@ -4414,8 +4457,8 @@ export default function Home() {
         x = one.x - (cm - old),
         y = one.y - (cm - old),
         previewColor = one.color,
-        rasterStroke = await strokeImage(baseSrc, cm, base.w, previewColor, fillGapsDraft),
-        src = await smoothVectorCutout(rasterStroke, previewColor, true),
+        rasterStroke = await strokeImage(baseSrc, cm, baseWidth, previewColor, fillGapsDraft),
+        src = await smoothVectorCutout(rasterStroke, previewColor, true, "smooth"),
         invalid = x < SAFE.x || y < SAFE.y || x + newW > SAFE.x + SAFE.w || y + newH > SAFE.y + SAFE.h;
       mutate(one.id, (l) => {
         const next = {
@@ -5314,6 +5357,47 @@ export default function Home() {
       }),
     );
   };
+  const flipSelection = async (axis: "horizontal" | "vertical") => {
+    if (!picked.length || working) return;
+    setWorking(true);
+    setFlipOpen(false);
+    try {
+      const area = bounds(picked), replacements = new Map<string, Layer>();
+      for (const layer of picked) {
+        const cache = new Map<string, string>();
+        const flipSource = async (source?: string) => {
+          if (!source) return source;
+          const existing = cache.get(source);
+          if (existing) return existing;
+          const flipped = await flipImageSource(source, axis);
+          cache.set(source, flipped);
+          return flipped;
+        };
+        const steps = await Promise.all(layer.steps.map(async step => ({
+          ...step,
+          before: step.before ? { ...step.before, src: (await flipSource(step.before.src))! } : undefined,
+          snapshot: { ...step.snapshot, src: (await flipSource(step.snapshot.src))! },
+        })));
+        replacements.set(layer.id, {
+          ...flippedLayerBox(layer, area, axis),
+          src: (await flipSource(layer.src))!,
+          originalSrc: (await flipSource(layer.originalSrc))!,
+          innerSrc: await flipSource(layer.innerSrc),
+          parentId: layer.kind === "stroke" ? undefined : layer.parentId,
+          stickerOffset: layer.stickerOffset ? {
+            ...layer.stickerOffset,
+            baseSrc: (await flipSource(layer.stickerOffset.baseSrc))!,
+            previewSrc: (await flipSource(layer.stickerOffset.previewSrc))!,
+          } : undefined,
+          steps,
+        });
+      }
+      setLayers(items => items.map(layer => replacements.get(layer.id) || layer));
+      setNotice(axis === "horizontal" ? "Selection flipped horizontally" : "Selection flipped vertically");
+    } catch (error) {
+      setNotice(`Flip could not be applied: ${error instanceof Error ? error.message : "Please retry"}`);
+    } finally { setWorking(false); }
+  };
   const showStep = (layer: Layer, index: number) => {
     const step = layer.steps[index];
     if (!step) return;
@@ -5888,6 +5972,17 @@ export default function Home() {
               </div>
             )}
           </div>
+          <div className="wrap flip-slot">
+            <button disabled={!picked.length} onClick={() => setFlipOpen(value => !value)}>
+              <FlipHorizontal2 /> Flip <ChevronDown className="tiny-chevron" />
+            </button>
+            {flipOpen && (
+              <div className="pop flip-menu">
+                <button onClick={() => void flipSelection("horizontal")}><FlipHorizontal2 /> Flip Horizontal</button>
+                <button onClick={() => void flipSelection("vertical")}><FlipVertical2 /> Flip Vertical</button>
+              </div>
+            )}
+          </div>
           {one && ["vector", "stroke"].includes(one.kind) && <button onClick={() => openCutoutEditor()}><Scissors /> Edit Cut Shape</button>}
           {one && !["vector", "stroke", "acetate"].includes(one.kind) && <button onClick={() => openImageEditor()}><ImageIcon /> Edit Image</button>}
           {one?.isShape && <button className={imageOnShapeTarget || shapeImageEditing ? "active-action" : ""} onClick={startImageOnShape}><ImagePlus /> Image on Shape</button>}
@@ -6146,6 +6241,11 @@ export default function Home() {
                     <img className={["vector", "stroke"].includes(l.kind) ? "cutout-edge-preview" : ""} src={["vector", "stroke"].includes(l.kind) ? scalableSvgPreview(l.src) : l.stickerOffset?.previewSrc || l.src} alt="" draggable={false} style={{ opacity: l.acetateOn ? 0.8 : 1 }} />
                   </div>
                 ))}
+              {outlinePreview && layers.some(layer => layer.id === outlinePreview.layerId) && (
+                <div className="outline-live-preview" aria-hidden="true" style={{ left:outlinePreview.x*scale, top:outlinePreview.y*scale, width:outlinePreview.w*scale, height:outlinePreview.h*scale, zIndex:layers.length+3 }}>
+                  <img src={outlinePreview.src} alt="" draggable={false}/>
+                </div>
+              )}
               {shapeImageEditing &&
                 (() => {
                   const shape = layers.find((l) => l.id === shapeImageEditing),
