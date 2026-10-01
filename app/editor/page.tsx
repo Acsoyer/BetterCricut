@@ -28,7 +28,7 @@ import { circularDilateAlpha } from "./outline-mask";
 import { flippedLayerBox } from "./layer-flip";
 import { faStar, faHeart, faArrowRight, faBolt, faBurst, faCloud, faMoon, faSun, faDiamond, faShield, faDroplet, faLeaf, faCrown, faBell, faGift, faTag, faBookmark, faLocationPin, faComment, faPuzzlePiece } from "@fortawesome/free-solid-svg-icons";
 function OutlineIcon() { return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path strokeDasharray="3 2" d="M12 2 22 9 18 21H6L2 9Z"/><path d="m12 7 5.5 4-2 6h-7l-2-6Z"/></svg>; }
-const PAGE_SIZES = { a4: { label: "A4", w: 21, h: 29.7 }, letter: { label: "Letter", w: 21.59, h: 27.94 }, a5: { label: "A5", w: 14.8, h: 21 }, full: { label: "Large canvas", w: 100, h: 100 } } as const,
+const PAGE_SIZES = { a4: { label: "A4", w: 21, h: 29.7 }, letter: { label: "Letter", w: 21.59, h: 27.94 }, full: { label: "Endless", w: 100, h: 100 } } as const,
   PPCM = 34,
   DPI = 150,
   DEFAULT_OUTLINE_CM = 0.4,
@@ -340,23 +340,6 @@ const save = (url: string, name: string) => {
   a.click();
   if (url.startsWith("blob:")) setTimeout(() => URL.revokeObjectURL(url), 1000);
 };
-// Add a display-only vector contour. The stored/exported SVG remains fill-only,
-// so the outline never changes the Cricut cutting geometry.
-const scalableSvgPreview = (src: string) => {
-  if (!src.startsWith("data:image/svg+xml,")) return src;
-  try {
-    const doc = new DOMParser().parseFromString(decodeURIComponent(src.slice(src.indexOf(",") + 1)), "image/svg+xml");
-    doc.querySelectorAll("path,rect,ellipse,circle,polygon").forEach((node) => {
-      node.setAttribute("stroke", "#141715");
-      node.setAttribute("stroke-width", "2.5");
-      node.setAttribute("stroke-linecap", "round");
-      node.setAttribute("stroke-linejoin", "round");
-      node.setAttribute("vector-effect", "non-scaling-stroke");
-      node.setAttribute("paint-order", "stroke fill");
-    });
-    return `data:image/svg+xml,${encodeURIComponent(new XMLSerializer().serializeToString(doc.documentElement))}`;
-  } catch { return src; }
-};
 const decodeSvgData = (src: string) => {
   const comma = src.indexOf(","), payload = src.slice(comma + 1);
   return /;base64/i.test(src.slice(0, comma)) ? atob(payload) : decodeURIComponent(payload);
@@ -377,7 +360,21 @@ const outlineComparisonMarkup = (src: string, color: string) => {
   root.setAttribute("preserveAspectRatio", "none"); root.setAttribute("overflow", "visible");
   root.querySelectorAll("path,rect,circle,ellipse,polygon,polyline").forEach(node => {
     node.setAttribute("fill", "none"); node.setAttribute("stroke", color);
-    node.setAttribute("stroke-width", "2.5"); node.setAttribute("stroke-linecap", "round");
+    node.setAttribute("stroke-width", "3.5"); node.setAttribute("stroke-linecap", "round");
+    node.setAttribute("stroke-linejoin", "round"); node.setAttribute("vector-effect", "non-scaling-stroke");
+    node.removeAttribute("stroke-dasharray");
+  });
+  return new XMLSerializer().serializeToString(root);
+};
+const cutShapeBorderMarkup = (src: string) => {
+  if (!src.startsWith("data:image/svg+xml")) return "";
+  const doc = new DOMParser().parseFromString(decodeSvgData(src), "image/svg+xml"), root = doc.documentElement;
+  root.querySelectorAll("script,foreignObject").forEach(node => node.remove());
+  root.setAttribute("width", "100%"); root.setAttribute("height", "100%");
+  root.setAttribute("preserveAspectRatio", "none"); root.setAttribute("overflow", "visible");
+  root.querySelectorAll("path,rect,circle,ellipse,polygon,polyline").forEach(node => {
+    node.setAttribute("fill", "none"); node.setAttribute("stroke", "#111715");
+    node.setAttribute("stroke-width", "3"); node.setAttribute("stroke-linecap", "round");
     node.setAttribute("stroke-linejoin", "round"); node.setAttribute("vector-effect", "non-scaling-stroke");
     node.removeAttribute("stroke-dasharray");
   });
@@ -1430,10 +1427,10 @@ async function bakeRotation(layer: Layer) {
     rotation: 0,
   };
 }
-async function strokeImage(src: string, strokeCm: number, wCm: number, color: string, fillGapsMm: number | "all" = 0) {
+async function strokeImage(src: string, strokeCm: number, wCm: number, color: string, fillGapsMm: number | "all" = 0, maxDimension = 900) {
   const cleaned = await removeBg(src),
     img = await getImage(cleaned),
-    s = Math.min(1, 900 / Math.max(img.naturalWidth, img.naturalHeight)),
+    s = Math.min(1, maxDimension / Math.max(img.naturalWidth, img.naturalHeight)),
     iw = Math.max(1, Math.round(img.naturalWidth * s)),
     ih = Math.max(1, Math.round(img.naturalHeight * s)),
     r = Math.max(0, Math.min(72, Math.round((strokeCm / Math.max(wCm, 0.1)) * iw))),
@@ -1905,6 +1902,8 @@ export default function Home() {
     [cycle, setCycle] = useState({ key: "", index: 0, x: -9999, y: -9999 }),
     [strokeDraft, setStrokeDraft] = useState(DEFAULT_OUTLINE_CM),
     [outlinePreview, setOutlinePreview] = useState<{ layerId: string; markup: string; box: {x:number;y:number;w:number;h:number} } | null>(null),
+    [outlineEditing, setOutlineEditing] = useState(false),
+    [outlinePreviewBusy, setOutlinePreviewBusy] = useState(false),
     [fillGapsDraft, setFillGapsDraft] = useState(0),
     [fillAllGapsDraft, setFillAllGapsDraft] = useState(false),
     [stickerBackgroundPromptId, setStickerBackgroundPromptId] = useState<string | null>(null),
@@ -2127,6 +2126,11 @@ export default function Home() {
     setSaveNameDraft(copy ? `${projectName} Copy` : /^(Untitled Project|Autosave(?:-| - ))/.test(projectName) ? "" : projectName);
     setSaveDialogOpen(true);
   };
+  const saveOrOpenDialog = () => {
+    const stored = currentProjectId ? projects.find(project => project.id === currentProjectId) : undefined;
+    if (currentProjectId && !currentProjectAutosave && stored?.name === projectName) void saveProject(false, undefined, projectName, false);
+    else requestSaveDialog();
+  };
   const landscape = pageMode === "landscape",
     selectedPaper = PAGE_SIZES[pageMode === "full" ? "full" : pageSize],
     A4 = pageMode === "full" ? { w: 100, h: 100 } : landscape ? { w: selectedPaper.h, h: selectedPaper.w } : { w: selectedPaper.w, h: selectedPaper.h },
@@ -2142,6 +2146,11 @@ export default function Home() {
     displayBox = drag?.mode === "move" ? bounds(layers.filter(layer=>drag.start.some(start=>start.id===layer.id))) : one && drag?.mode === "rotate" ? { x: one.x, y: one.y, w: one.w, h: one.h } : one && one.rotation ? rotatedBounds(one) : box,
     scale = PPCM * zoom * calibration,
     vectorsOnly = picked.length > 0 && picked.every((l) => ["stroke", "vector"].includes(l.kind));
+  const cancelOutlineDraft = () => {
+    setStrokeDraft(one?.kind === "stroke" ? one.strokeCm : 0);
+    setOutlineEditing(false); setOutlinePreview(null); setOutlinePreviewBusy(false);
+    outlinePreviewRequest.current++;
+  };
   useEffect(() => { setSelected(ids => { const next=ids.filter(id=>layers.some(layer=>layer.id===id&&isLayerVisible(layer))); return next.length===ids.length?ids:next; }); }, [layers]);
   const currentSignature = useMemo(() => projectSignature(layers, pageMode, safeMargin, cutSafetyEnabled, pageSize, unit, pageColor, customPageColor), [layers, pageMode, safeMargin, cutSafetyEnabled, pageSize, unit, pageColor, customPageColor]),
     projectDirty = currentSignature !== lastSavedSignature;
@@ -2197,7 +2206,7 @@ export default function Home() {
       if (raw) {
         const saved = JSON.parse(raw) as Partial<{ pageMode: PageMode; pageSize: PageSize; unit: Unit; pageColor: PageColor; customPageColor: string; safeMargin: number; gridVisible: boolean; controlMode: "touchpad" | "mouse" }>;
         if (["portrait", "landscape", "full"].includes(saved.pageMode || "")) setPageMode(saved.pageMode!);
-        if (["a4", "letter", "a5", "full"].includes(saved.pageSize || "")) setPageSize(saved.pageSize!);
+        if (["a4", "letter", "full"].includes(saved.pageSize || "")) setPageSize(saved.pageSize!);
         if (["cm", "in"].includes(saved.unit || "")) setUnit(saved.unit!);
         if (saved.pageColor && Object.hasOwn(PAGE_COLORS, saved.pageColor)) setPageColor(saved.pageColor);
         if (saved.customPageColor) setCustomPageColor(saved.customPageColor);
@@ -2428,7 +2437,7 @@ export default function Home() {
     setCurrentProjectAutosave(Boolean(full.is_autosave));
     setProjectName(full.name);
     const restoredMode = full.data.pageMode || (full.data.landscape ? "landscape" : "portrait");
-    const restoredSize = full.data.pageSize || "a4";
+    const restoredSize: PageSize = full.data.pageSize === ("a5" as PageSize) ? "a4" : full.data.pageSize || "a4";
     const restoredUnit = full.data.unit || "cm";
     setPageMode(restoredMode); setPageSize(restoredSize); setUnit(restoredUnit); setSafeMargin(full.data.safeMargin);
     if (full.data.pageColor && Object.hasOwn(PAGE_COLORS, full.data.pageColor)) setPageColor(full.data.pageColor);
@@ -2763,9 +2772,11 @@ export default function Home() {
   }, [layers]);
   useEffect(() => {
     const request = ++outlinePreviewRequest.current;
-    if (!one || !["vector", "stroke"].includes(one.kind) || strokeDraft <= 0 || (one.kind === "stroke" && Math.abs(strokeDraft - one.strokeCm) < .001)) { setOutlinePreview(null); return; }
+    setOutlinePreviewBusy(false);
+    if (!outlineEditing || !one || !["vector", "stroke"].includes(one.kind) || strokeDraft <= 0) { setOutlinePreview(null); return; }
     setOutlinePreview(current => current?.layerId === one.id ? current : null);
     const timer = window.setTimeout(() => {
+      setOutlinePreviewBusy(true);
       const parent = one.parentId ? layers.find(layer => layer.id === one.parentId) : undefined,
         base = parent || one,
         baseSrc = base.stickerOffset?.previewSrc || (one.kind === "stroke" && one.innerSrc ? one.innerSrc : base.src),
@@ -2773,14 +2784,14 @@ export default function Home() {
         delta = one.kind === "stroke" ? strokeDraft - one.strokeCm : strokeDraft,
         geometry = { x: one.x - delta, y: one.y - delta, w: one.w + delta * 2, h: one.h + delta * 2 };
       const previewColor = one.kind === "stroke" ? one.color : lighten(one.color);
-      void strokeImage(baseSrc, strokeDraft, baseWidth, previewColor, fillGapsDraft)
+      void strokeImage(baseSrc, strokeDraft, baseWidth, previewColor, fillGapsDraft, 420)
         .then(src => smoothVectorCutout(src, previewColor, true, "smooth"))
         .then(src => {
-          if (outlinePreviewRequest.current === request) setOutlinePreview({ layerId: one.id, markup: outlineComparisonMarkup(src, "#111715"), box: geometry });
-        }).catch(() => {});
+          if (outlinePreviewRequest.current === request) setOutlinePreview({ layerId: one.id, markup: outlineComparisonMarkup(src, "#1687d9"), box: geometry });
+        }).catch(() => {}).finally(() => { if (outlinePreviewRequest.current === request) setOutlinePreviewBusy(false); });
     }, 450);
     return () => { window.clearTimeout(timer); outlinePreviewRequest.current++; };
-  }, [one?.id, one?.src, one?.innerSrc, one?.strokeCm, strokeDraft, fillGapsDraft]);
+  }, [outlineEditing, one?.id, one?.src, one?.innerSrc, one?.strokeCm, strokeDraft, fillGapsDraft]);
   useEffect(() => {
     if (!notice) return;
     const timer = window.setTimeout(() => setNotice(""), /VTracer|Smooth Cutout/i.test(notice) ? 15000 : 5000);
@@ -2831,6 +2842,7 @@ export default function Home() {
       setStrokeDraft(one.kind === "stroke" ? one.strokeCm : 0);
       setFillGapsDraft(one.fillGapsMm || 0);
     }
+    setOutlineEditing(false); setOutlinePreview(null); setOutlinePreviewBusy(false);
   }, [one?.id, one?.strokeCm]);
   useEffect(() => {
     setWidthDraft((unit === "cm" ? box.w : box.w / 2.54).toFixed(unit === "cm" ? 1 : 2));
@@ -4455,6 +4467,7 @@ export default function Home() {
       setSelected([id]);
       setNotice(invalid ? "Outline extends outside the safe area" : "Outline added as a new Cut Shape below the artwork");
     } finally {
+      setOutlineEditing(false); setOutlinePreview(null); setOutlinePreviewBusy(false);
       setWorking(false);
     }
   };
@@ -4504,6 +4517,7 @@ export default function Home() {
       });
       setNotice(invalid ? "Outline extends outside the safe area" : "Outline updated");
     } finally {
+      setOutlineEditing(false); setOutlinePreview(null); setOutlinePreviewBusy(false);
       setWorking(false);
     }
   };
@@ -5184,6 +5198,7 @@ export default function Home() {
   };
   const canvasDown = async (e: RPointer) => {
     e.stopPropagation();
+    if (outlineEditing) { cancelOutlineDraft(); return; }
     if (shapeImageEditing) setShapeImageEditing(null);
     if (e.button === 1 && stageRef.current) {
       e.preventDefault();
@@ -5279,6 +5294,7 @@ export default function Home() {
   };
   const stageDown = (e: RPointer<HTMLDivElement>) => {
     if (!stageRef.current) return;
+    if (outlineEditing && !(e.target as HTMLElement).closest(".cut-properties-floating,.outline-apply-badge")) { cancelOutlineDraft(); return; }
     if (e.button === 1) {
       e.preventDefault();
       e.currentTarget.setPointerCapture(e.pointerId);
@@ -5772,7 +5788,7 @@ export default function Home() {
     labelBelow = box.y < 2.7;
   return (
     <main
-      className="app"
+      className={`app ${outlineEditing ? "outline-edit-mode" : ""}`}
       onDragOver={(e) => e.preventDefault()}
       onDrop={(e) => {
         e.preventDefault();
@@ -5803,7 +5819,7 @@ export default function Home() {
             <button type="button" disabled={one.rasterStatus === "background"} onClick={() => void openStickerBorder(one)}><Sparkles /> Add Sticker Border to Image</button>
             <button type="button" className={one.rasterStatus === "background" ? "" : "primary"} onClick={() => void addOutlineToPrintable()}><OutlineIcon /> Add Outline as Cut Shape</button>
           </>}
-          {one && ["vector", "stroke"].includes(one.kind) && <><button type="button" onClick={() => one.kind === "vector" ? setStrokeDraft(DEFAULT_OUTLINE_CM) : void addStroke(DEFAULT_OUTLINE_CM)}><OutlineIcon /> Add Outline</button><button type="button" onClick={() => void makeGapsPermanent()}><Sparkles /> Bake Cutout</button></>}
+          {one && ["vector", "stroke"].includes(one.kind) && <><button type="button" onClick={() => { setStrokeDraft(one.kind === "stroke" ? one.strokeCm : DEFAULT_OUTLINE_CM); setOutlineEditing(true); }}><OutlineIcon /> Add Outline</button><button type="button" onClick={() => void makeGapsPermanent()}><Sparkles /> Bake Cutout</button></>}
           {!one && <><button disabled><Sparkles/> Remove Background</button><button disabled><Scissors/> Convert to Cut Shape</button><button disabled><Sparkles/> Add Sticker Border to Image</button><button disabled><Scissors/> Add Outline as Cut Shape</button></>}
         </nav>
 
@@ -5852,7 +5868,7 @@ export default function Home() {
                     Page Size <small className="setting-current">{PAGE_SIZES[pageSize].label}</small><ChevronDown />
                   </button>
                   <div className={`setup-submenu ${settingsSection === "size" ? "open" : ""}`}>
-                    {(["a4", "letter", "a5", "full"] as PageSize[]).map((size) => (
+                    {(["full", "a4", "letter"] as PageSize[]).map((size) => (
                       <button
                         key={size}
                         className={pageSize === size ? "active" : ""}
@@ -6016,7 +6032,7 @@ export default function Home() {
           <button className="new-project" onClick={newProject} title="Start a new project">
             <Plus /> New Project
           </button>
-          <button className={currentProjectId ? "save-project save-update" : "save-project"} onClick={() => requestSaveDialog()} title="Save current project">
+          <button className={currentProjectId ? "save-project save-update" : "save-project"} onClick={saveOrOpenDialog} title="Save current project">
             <Download /> {currentProjectId ? "Save - Update" : "Save"}
           </button>
           <button
@@ -6183,9 +6199,9 @@ export default function Home() {
             <section className={`cut-properties-floating ${cutPropertiesCollapsed?"collapsed":""}`} aria-label="Cut Shape properties" onPointerDown={(event)=>event.stopPropagation()}>
               <header><span><Scissors/><b>Cut Shape</b></span><small>{one.kind === "stroke" ? "Editable outline" : "Cutting geometry"}</small><button className="collapse-cut-properties" onClick={()=>setCutPropertiesCollapsed(value=>!value)} aria-label={cutPropertiesCollapsed?"Expand Cut Shape properties":"Collapse Cut Shape properties"}><ChevronDown/></button></header><div className="cut-properties-content">
               {<div className="floating-property-block">
-                <label>Outline <b>{(unit === "cm" ? strokeDraft : strokeDraft / 2.54).toFixed(unit === "cm" ? 1 : 2)} {unit}</b></label>
-                <input type="range" min="0" max="3" step=".05" value={strokeDraft} onChange={(event)=>setStrokeDraft(+event.target.value)}/>
-                <div className="floating-property-actions outline-actions"><span className="outline-value"><input type="number" min="0" step={unit === "cm" ? ".1" : ".05"} value={(unit === "cm" ? strokeDraft : strokeDraft / 2.54).toFixed(unit === "cm" ? 1 : 2)} onChange={(event)=>setStrokeDraft(Math.max(0,+event.target.value)*(unit === "cm" ? 1 : 2.54))}/><em>{unit}</em></span><button className="danger compact" disabled={one.kind !== "stroke" || strokeDraft <= 0} onClick={()=>{setStrokeDraft(0);const index=one.steps.findIndex(step=>step.type==="stroke");if(index>=0)removeStep(one,index)}}>Remove</button><button className="primary-property" onClick={()=>one.kind === "stroke" ? void updateStroke() : void addStroke()}>Apply Outline</button></div>
+                <label>Outline {outlinePreviewBusy && <i className="outline-loading" aria-label="Updating outline"/>}<b>{(unit === "cm" ? strokeDraft : strokeDraft / 2.54).toFixed(unit === "cm" ? 1 : 2)} {unit}</b></label>
+                <input type="range" min="0" max="3" step=".05" value={strokeDraft} onChange={(event)=>{setStrokeDraft(+event.target.value);setOutlineEditing(true)}}/>
+                <div className="floating-property-actions outline-actions"><span className="outline-value"><input type="number" min="0" step={unit === "cm" ? ".1" : ".05"} value={(unit === "cm" ? strokeDraft : strokeDraft / 2.54).toFixed(unit === "cm" ? 1 : 2)} onChange={(event)=>{setStrokeDraft(Math.max(0,+event.target.value)*(unit === "cm" ? 1 : 2.54));setOutlineEditing(true)}}/><em>{unit}</em></span><button className="danger compact" disabled={!outlineEditing&&(one.kind!=="stroke"||strokeDraft<=0)} onClick={()=>outlineEditing?cancelOutlineDraft():(()=>{setStrokeDraft(0);const index=one.steps.findIndex(step=>step.type==="stroke");if(index>=0)removeStep(one,index)})()}>{outlineEditing?"Cancel":"Remove"}</button><button className={`primary-property ${outlineEditing?"attention":""}`} disabled={outlineEditing&&outlinePreviewBusy} onClick={()=>one.kind === "stroke" ? void updateStroke() : void addStroke()}>Apply Outline</button></div>
               </div>}
               <div className="floating-property-block">
                 <label>Fill Gaps <b>{fillGapsDraft.toFixed(fillGapsDraft < 5 ? 1 : 0)} mm²</b></label>
@@ -6255,7 +6271,8 @@ export default function Home() {
                       transform: `rotate(${l.rotation}deg)`,
                     }}
                   >
-                    <img className={["vector", "stroke"].includes(l.kind) ? "cutout-edge-preview" : ""} src={["vector", "stroke"].includes(l.kind) ? scalableSvgPreview(l.src) : l.stickerOffset?.previewSrc || l.src} alt="" draggable={false} style={{ opacity: l.acetateOn ? 0.8 : 1 }} />
+                    <img className={["vector", "stroke"].includes(l.kind) ? "cutout-edge-preview" : ""} src={l.stickerOffset?.previewSrc || l.src} alt="" draggable={false} style={{ opacity: l.acetateOn ? 0.8 : 1 }} />
+                    {["vector", "stroke"].includes(l.kind) && <div className="cut-shape-border" aria-hidden="true" dangerouslySetInnerHTML={{__html:cutShapeBorderMarkup(l.src)}}/>}
                   </div>
                 ))}
               {outlinePreview && layers.some(layer => layer.id === outlinePreview.layerId) &&
@@ -6321,8 +6338,7 @@ export default function Home() {
                   }
                 >
                   <div className={`measure ${labelBelow ? "below" : ""}`}>
-                    {fmt(displayBox.w)} × {fmt(displayBox.h)} cm
-                    {one && one.rotation !== 0 && ` · ${Math.round(one.rotation)}°`}
+                    {outlineEditing && one ? <><span>{(unit === "cm" ? strokeDraft : strokeDraft / 2.54).toFixed(unit === "cm" ? 1 : 2)} {unit} - </span><button className="outline-apply-badge" disabled={outlinePreviewBusy} onPointerDown={event=>event.stopPropagation()} onClick={()=>one.kind === "stroke" ? void updateStroke() : void addStroke()}>Apply Outline</button></> : <>{fmt(displayBox.w)} × {fmt(displayBox.h)} cm{one && one.rotation !== 0 && ` · ${Math.round(one.rotation)}°`}</>}
                     {cutSafetyEnabled && picked.some((layer) => layer.cutRisk) && (
                       <button
                         className="measure-warning"
@@ -7045,17 +7061,24 @@ export default function Home() {
           {generatedPreview && <div className={`generated-lightbox ${createImageMode === "text" ? "text-result" : "image-result"}`} onPointerDown={(e)=>{e.stopPropagation();setGeneratedPreview(null)}}><div onPointerDown={(e)=>e.stopPropagation()}><button className="add-new-close" onClick={()=>setGeneratedPreview(null)}><X/></button><img src={generatedPreview} alt="Generated cake topper preview"/><button className="add-generated" onClick={()=>{const item=aiLibrary.find((entry)=>entry.src===generatedPreview);void addGeneratedAsset(generatedPreview,item?.name,item?.mode)}}><Plus/>Add to Page</button></div></div>}
         </div>
       )}
-      {splashOpen && <div className="welcome-splash" role="dialog" aria-modal="true" aria-label="Welcome to Cake Topper Maker" onPointerDown={dismissSplash}>
+      {splashOpen && <div className="welcome-splash" role="dialog" aria-modal="true" aria-label="Welcome to Kreya" onPointerDown={dismissSplash}>
         <div onPointerDown={(event)=>event.stopPropagation()}>
           <button className="welcome-close" onClick={dismissSplash} aria-label="Close welcome screen"><X/></button>
           <div className="welcome-mark"><Sparkles/></div>
-          <h1>Welcome to Cake Topper Maker</h1>
+          <h1>Welcome to Kreya</h1>
           <p>Everything you need to turn an idea into a Cricut-ready design.</p>
           <div className="welcome-steps">
             <article><span>1</span><b>Bring your image from your computer or generate new image!</b></article>
             <article><span>2</span><b>Edit and make them best for Cricut</b></article>
             <article><span>3</span><b>Download ready to use images in Cricut projects</b></article>
           </div>
+          <section className="welcome-quick-settings" aria-label="Quick page setup">
+            <label><span>Units</span><select value={unit} onChange={event=>setUnit(event.target.value as Unit)}><option value="cm">CM</option><option value="in">INCH</option></select></label>
+            <label><span>Page</span><select value={pageSize} onChange={event=>{const value=event.target.value as PageSize;setPageSize(value);setPageMode(value==="full"?"full":"portrait")}}><option value="full">Endless</option><option value="a4">A4</option><option value="letter">Letter</option></select></label>
+            <label><span>Page color</span><select value={pageColor} onChange={event=>setPageColor(event.target.value as PageColor)}>{(Object.keys(PAGE_COLORS) as PageColor[]).filter(value=>value!=="custom").map(value=><option key={value} value={value}>{PAGE_COLORS[value].label}</option>)}</select></label>
+            <label className="welcome-toggle"><span>Grid</span><input type="checkbox" checked={gridVisible} onChange={event=>setGridVisible(event.target.checked)}/><b>{gridVisible?"On":"Off"}</b></label>
+            <label><span>Control</span><select value={controlMode} onChange={event=>setControlMode(event.target.value as "touchpad"|"mouse")}><option value="touchpad">Touchpad</option><option value="mouse">Mouse</option></select></label>
+          </section>
           <button className="welcome-start" onClick={dismissSplash}>Start Now</button>
           <label className="welcome-hide"><input type="checkbox" checked={hideSplashOnStartup} onChange={(event)=>setHideSplashOnStartup(event.target.checked)}/> Don&apos;t show this on Startup</label>
         </div>
