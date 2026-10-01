@@ -348,7 +348,7 @@ const scalableSvgPreview = (src: string) => {
     const doc = new DOMParser().parseFromString(decodeURIComponent(src.slice(src.indexOf(",") + 1)), "image/svg+xml");
     doc.querySelectorAll("path,rect,ellipse,circle,polygon").forEach((node) => {
       node.setAttribute("stroke", "#141715");
-      node.setAttribute("stroke-width", ".8");
+      node.setAttribute("stroke-width", "2.5");
       node.setAttribute("stroke-linecap", "round");
       node.setAttribute("stroke-linejoin", "round");
       node.setAttribute("vector-effect", "non-scaling-stroke");
@@ -369,7 +369,7 @@ const safeSvgData = (raw: string) => {
   root.setAttribute("preserveAspectRatio", "none"); root.setAttribute("shape-rendering", "geometricPrecision");
   return `data:image/svg+xml,${encodeURIComponent(new XMLSerializer().serializeToString(root))}`;
 };
-const outlineComparisonMarkup = (src: string, color: string, dashed = false) => {
+const outlineComparisonMarkup = (src: string, color: string) => {
   if (!src.startsWith("data:image/svg+xml")) return "";
   const doc = new DOMParser().parseFromString(decodeSvgData(src), "image/svg+xml"), root = doc.documentElement;
   root.querySelectorAll("script,foreignObject").forEach(node => node.remove());
@@ -377,9 +377,9 @@ const outlineComparisonMarkup = (src: string, color: string, dashed = false) => 
   root.setAttribute("preserveAspectRatio", "none"); root.setAttribute("overflow", "visible");
   root.querySelectorAll("path,rect,circle,ellipse,polygon,polyline").forEach(node => {
     node.setAttribute("fill", "none"); node.setAttribute("stroke", color);
-    node.setAttribute("stroke-width", "4.5"); node.setAttribute("stroke-linecap", "round");
+    node.setAttribute("stroke-width", "2.5"); node.setAttribute("stroke-linecap", "round");
     node.setAttribute("stroke-linejoin", "round"); node.setAttribute("vector-effect", "non-scaling-stroke");
-    if (dashed) node.setAttribute("stroke-dasharray", "11 8"); else node.removeAttribute("stroke-dasharray");
+    node.removeAttribute("stroke-dasharray");
   });
   return new XMLSerializer().serializeToString(root);
 };
@@ -1904,7 +1904,7 @@ export default function Home() {
     [drag, setDrag] = useState<Drag>(null),
     [cycle, setCycle] = useState({ key: "", index: 0, x: -9999, y: -9999 }),
     [strokeDraft, setStrokeDraft] = useState(DEFAULT_OUTLINE_CM),
-    [outlinePreview, setOutlinePreview] = useState<{ layerId: string; oldMarkup: string; newMarkup: string; oldBox: {x:number;y:number;w:number;h:number}; newBox: {x:number;y:number;w:number;h:number} } | null>(null),
+    [outlinePreview, setOutlinePreview] = useState<{ layerId: string; markup: string; box: {x:number;y:number;w:number;h:number} } | null>(null),
     [fillGapsDraft, setFillGapsDraft] = useState(0),
     [fillAllGapsDraft, setFillAllGapsDraft] = useState(false),
     [stickerBackgroundPromptId, setStickerBackgroundPromptId] = useState<string | null>(null),
@@ -2763,8 +2763,8 @@ export default function Home() {
   }, [layers]);
   useEffect(() => {
     const request = ++outlinePreviewRequest.current;
-    setOutlinePreview(null);
-    if (!one || !["vector", "stroke"].includes(one.kind) || strokeDraft <= 0 || (one.kind === "stroke" && Math.abs(strokeDraft - one.strokeCm) < .001)) return;
+    if (!one || !["vector", "stroke"].includes(one.kind) || strokeDraft <= 0 || (one.kind === "stroke" && Math.abs(strokeDraft - one.strokeCm) < .001)) { setOutlinePreview(null); return; }
+    setOutlinePreview(current => current?.layerId === one.id ? current : null);
     const timer = window.setTimeout(() => {
       const parent = one.parentId ? layers.find(layer => layer.id === one.parentId) : undefined,
         base = parent || one,
@@ -2776,9 +2776,9 @@ export default function Home() {
       void strokeImage(baseSrc, strokeDraft, baseWidth, previewColor, fillGapsDraft)
         .then(src => smoothVectorCutout(src, previewColor, true, "smooth"))
         .then(src => {
-          if (outlinePreviewRequest.current === request) setOutlinePreview({ layerId: one.id, oldMarkup: outlineComparisonMarkup(one.src, "#8b5b64", true), newMarkup: outlineComparisonMarkup(src, "#008f73"), oldBox: {x:one.x,y:one.y,w:one.w,h:one.h}, newBox: geometry });
+          if (outlinePreviewRequest.current === request) setOutlinePreview({ layerId: one.id, markup: outlineComparisonMarkup(src, "#111715"), box: geometry });
         }).catch(() => {});
-    }, 70);
+    }, 450);
     return () => { window.clearTimeout(timer); outlinePreviewRequest.current++; };
   }, [one?.id, one?.src, one?.innerSrc, one?.strokeCm, strokeDraft, fillGapsDraft]);
   useEffect(() => {
@@ -6258,10 +6258,8 @@ export default function Home() {
                     <img className={["vector", "stroke"].includes(l.kind) ? "cutout-edge-preview" : ""} src={["vector", "stroke"].includes(l.kind) ? scalableSvgPreview(l.src) : l.stickerOffset?.previewSrc || l.src} alt="" draggable={false} style={{ opacity: l.acetateOn ? 0.8 : 1 }} />
                   </div>
                 ))}
-              {outlinePreview && layers.some(layer => layer.id === outlinePreview.layerId) && <>
-                <div className="outline-live-preview old" aria-hidden="true" style={{left:outlinePreview.oldBox.x*scale,top:outlinePreview.oldBox.y*scale,width:outlinePreview.oldBox.w*scale,height:outlinePreview.oldBox.h*scale,zIndex:layers.length+3}} dangerouslySetInnerHTML={{__html:outlinePreview.oldMarkup}}/>
-                <div className="outline-live-preview next" aria-hidden="true" style={{left:outlinePreview.newBox.x*scale,top:outlinePreview.newBox.y*scale,width:outlinePreview.newBox.w*scale,height:outlinePreview.newBox.h*scale,zIndex:layers.length+4}} dangerouslySetInnerHTML={{__html:outlinePreview.newMarkup}}/>
-              </>}
+              {outlinePreview && layers.some(layer => layer.id === outlinePreview.layerId) &&
+                <div className="outline-live-preview next" aria-hidden="true" style={{left:outlinePreview.box.x*scale,top:outlinePreview.box.y*scale,width:outlinePreview.box.w*scale,height:outlinePreview.box.h*scale,zIndex:layers.length+4}} dangerouslySetInnerHTML={{__html:outlinePreview.markup}}/>}
               {shapeImageEditing &&
                 (() => {
                   const shape = layers.find((l) => l.id === shapeImageEditing),
