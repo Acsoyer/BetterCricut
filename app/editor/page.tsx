@@ -1614,7 +1614,7 @@ async function selectedEdgeOverlay(src: string, stroke: EditStroke, color: strin
   const img = await getImage(src),
     c = document.createElement("canvas"),
     mask = document.createElement("canvas");
-  const ratio = Math.min(1, 1000 / Math.max(img.naturalWidth, img.naturalHeight));
+  const ratio = Math.min(2, 2400 / Math.max(img.naturalWidth, img.naturalHeight));
   c.width = mask.width = Math.max(1, Math.round(img.naturalWidth * ratio));
   c.height = mask.height = Math.max(1, Math.round(img.naturalHeight * ratio));
   const cx = c.getContext("2d")!,
@@ -1632,7 +1632,7 @@ async function selectedEdgeOverlay(src: string, stroke: EditStroke, color: strin
     selection = mx.getImageData(0, 0, c.width, c.height),
     out = cx.createImageData(c.width, c.height),
     rgb = color === "green" ? [22, 163, 74] : [239, 43, 45],
-    radius = Math.max(1, Math.round(Math.min(c.width, c.height) / 350));
+    radius = 0;
   for (let y = 1; y < c.height - 1; y++)
     for (let x = 1; x < c.width - 1; x++) {
       const p = y * c.width + x,
@@ -2013,6 +2013,7 @@ export default function Home() {
     [imagePreset, setImagePreset] = useState<"image" | "rim" | "text">("image"),
     [imagePresetPreview, setImagePresetPreview] = useState("") ,
     [imagePresetResult, setImagePresetResult] = useState<Layer | null>(null),
+    [backgroundPickMode, setBackgroundPickMode] = useState<"text" | "image">("text"),
     [imageEditorSize, setImageEditorSize] = useState({ w: 0, h: 0 }),
     [imageCursor, setImageCursor] = useState({ x: 0, y: 0, visible: false }),
     [rulerOrigin, setRulerOrigin] = useState({ x: 0, y: 0 }),
@@ -3703,11 +3704,12 @@ export default function Home() {
   };
   const moveCutEdit = (e: RPointer<HTMLElement>) => {
     if (!cutEditor) return;
-    const cursor = cutPoint(e);
+    const latest = e.nativeEvent.getCoalescedEvents?.().at(-1) || e.nativeEvent,
+      pointerRect = e.currentTarget.getBoundingClientRect(),
+      cursor = {x:clamp(((latest.clientX-pointerRect.left)/pointerRect.width)*1.2-.1,-.1,1.1),y:clamp(((latest.clientY-pointerRect.top)/pointerRect.height)*1.2-.1,-.1,1.1)};
     if (cutCursorRef.current) {
-      const rect = e.currentTarget.getBoundingClientRect();
-      cutCursorRef.current.style.left = `${(e.clientX - rect.left) / cutEditor.zoom}px`;
-      cutCursorRef.current.style.top = `${(e.clientY - rect.top) / cutEditor.zoom}px`;
+      cutCursorRef.current.style.left = `${(latest.clientX - pointerRect.left) / cutEditor.zoom}px`;
+      cutCursorRef.current.style.top = `${(latest.clientY - pointerRect.top) / cutEditor.zoom}px`;
     }
     const draft = cutDraftStroke.current;
     if (!draft || !cutDrawing.current || e.buttons !== 1) return;
@@ -3965,18 +3967,18 @@ export default function Home() {
   const endImagePan = () => {
     imagePanDrag.current = null;
   };
-  const imageEditPoint = (e: RPointer<HTMLImageElement>) => {
+  const imageEditPoint = (e: RPointer<HTMLElement>) => {
     const r = e.currentTarget.getBoundingClientRect();
     return {
-      x: clamp((e.clientX - r.left) / r.width, 0, 1),
-      y: clamp((e.clientY - r.top) / r.height, 0, 1),
+      x: clamp(((e.clientX - r.left) / r.width) * 1.2 - .1, -.1, 1.1),
+      y: clamp(((e.clientY - r.top) / r.height) * 1.2 - .1, -.1, 1.1),
     };
   };
-  const startImageEdit = async (e: RPointer<HTMLImageElement>) => {
+  const startImageEdit = async (e: RPointer<HTMLElement>) => {
     if (!imageEditor || e.button !== 0) return;
     if (imageEditor.pickingColor) {
       e.preventDefault();
-      const point = imageEditPoint(e), img = await getImage(imageEditor.source), sample = document.createElement("canvas");
+      const raw = imageEditPoint(e), point={x:clamp(raw.x,0,1),y:clamp(raw.y,0,1)}, img = await getImage(imageEditor.source), sample = document.createElement("canvas");
       sample.width = img.naturalWidth; sample.height = img.naturalHeight;
       const context = sample.getContext("2d")!; context.drawImage(img, 0, 0);
       const pixel = context.getImageData(Math.min(sample.width - 1, Math.floor(point.x * sample.width)), Math.min(sample.height - 1, Math.floor(point.y * sample.height)), 1, 1).data;
@@ -4001,13 +4003,14 @@ export default function Home() {
       strokes: [...imageEditor.strokes, stroke],
     });
   };
-  const moveImageEdit = (e: RPointer<HTMLImageElement>) => {
+  const moveImageEdit = (e: RPointer<HTMLElement>) => {
     if (!imageEditor) return;
-    const cursor = imageEditPoint(e);
+    const latest = e.nativeEvent.getCoalescedEvents?.().at(-1) || e.nativeEvent,
+      rect = e.currentTarget.getBoundingClientRect(),
+      cursor = {x:clamp(((latest.clientX-rect.left)/rect.width)*1.2-.1,-.1,1.1),y:clamp(((latest.clientY-rect.top)/rect.height)*1.2-.1,-.1,1.1)};
     if (imageCursorRef.current) {
-      const rect = e.currentTarget.getBoundingClientRect();
-      imageCursorRef.current.style.left = `${(e.clientX - rect.left) / imageEditor.zoom}px`;
-      imageCursorRef.current.style.top = `${(e.clientY - rect.top) / imageEditor.zoom}px`;
+      imageCursorRef.current.style.left = `${(latest.clientX - rect.left) / imageEditor.zoom}px`;
+      imageCursorRef.current.style.top = `${(latest.clientY - rect.top) / imageEditor.zoom}px`;
     }
     if (!imageDrawing.current || e.buttons !== 1) return;
     const p = cursor,
@@ -4028,44 +4031,46 @@ export default function Home() {
   };
   const renderImageStage = async (editor: ImageEditor) => {
     const img = await getImage(editor.source),
-      work = document.createElement("canvas");
-    work.width = img.naturalWidth;
-    work.height = img.naturalHeight;
+      work = document.createElement("canvas"),
+      expand = editor.strokes.some(stroke=>stroke.tool==="add") ? .1 : 0,
+      padX = Math.round(img.naturalWidth*expand), padY = Math.round(img.naturalHeight*expand);
+    work.width = img.naturalWidth + padX*2;
+    work.height = img.naturalHeight + padY*2;
     const wx = work.getContext("2d")!;
-    wx.drawImage(img, 0, 0);
+    wx.drawImage(img, padX, padY);
     for (const stroke of editor.strokes) {
       if (!stroke.points.length) continue;
       wx.globalCompositeOperation = stroke.tool === "add" ? "source-over" : "destination-out";
       if (stroke.tool === "add") wx.strokeStyle = wx.fillStyle = stroke.color || editor.paintColor;
       wx.beginPath();
       if (stroke.tool === "lasso") {
-        stroke.points.forEach((p, i) => (i ? wx.lineTo(p.x * work.width, p.y * work.height) : wx.moveTo(p.x * work.width, p.y * work.height)));
+        stroke.points.forEach((p, i) => (i ? wx.lineTo(padX+p.x*img.naturalWidth,padY+p.y*img.naturalHeight) : wx.moveTo(padX+p.x*img.naturalWidth,padY+p.y*img.naturalHeight)));
         wx.closePath();
         wx.fill();
       } else {
-        wx.lineWidth = Math.max(2, (stroke.brush / 100) * Math.min(work.width, work.height));
+        wx.lineWidth = Math.max(2, (stroke.brush / 100) * Math.min(img.naturalWidth, img.naturalHeight));
         wx.lineCap = "round";
         wx.lineJoin = "round";
         const points = ["add", "erase"].includes(stroke.tool) ? smoothBrushPoints(stroke.points, editor.smoothing) : stroke.points;
-        points.forEach((p, i) => (i ? wx.lineTo(p.x * work.width, p.y * work.height) : wx.moveTo(p.x * work.width, p.y * work.height)));
+        points.forEach((p, i) => (i ? wx.lineTo(padX+p.x*img.naturalWidth,padY+p.y*img.naturalHeight) : wx.moveTo(padX+p.x*img.naturalWidth,padY+p.y*img.naturalHeight)));
         if (points.length === 1) {
           const p = points[0];
-          wx.arc(p.x * work.width, p.y * work.height, wx.lineWidth / 2, 0, Math.PI * 2);
+          wx.arc(padX+p.x*img.naturalWidth,padY+p.y*img.naturalHeight, wx.lineWidth / 2, 0, Math.PI * 2);
           wx.fill();
         } else wx.stroke();
       }
     }
     const c = editor.crop,
-      l = clamp(c.left / 100, -0.25, 0.9),
-      t = clamp(c.top / 100, -0.25, 0.9),
-      r = clamp(c.right / 100, -0.25, 0.9 - l),
-      b = clamp(c.bottom / 100, -0.25, 0.9 - t),
-      sw = Math.max(1, Math.round(work.width * (1 - l - r))),
-      sh = Math.max(1, Math.round(work.height * (1 - t - b))),
+      l = clamp(c.left / 100-expand, -0.25, 0.9),
+      t = clamp(c.top / 100-expand, -0.25, 0.9),
+      r = clamp(c.right / 100-expand, -0.25, 0.9 - l),
+      b = clamp(c.bottom / 100-expand, -0.25, 0.9 - t),
+      sw = Math.max(1, Math.round(img.naturalWidth * (1 - l - r))),
+      sh = Math.max(1, Math.round(img.naturalHeight * (1 - t - b))),
       out = document.createElement("canvas");
     out.width = sw;
     out.height = sh;
-    out.getContext("2d")!.drawImage(work, -Math.round(work.width * l), -Math.round(work.height * t));
+    out.getContext("2d")!.drawImage(work, -padX-Math.round(img.naturalWidth*l), -padY-Math.round(img.naturalHeight*t));
     return {
       src: out.toDataURL("image/png"),
       l,
@@ -5920,9 +5925,9 @@ export default function Home() {
                   </div>
                 </div>
                 <div className="setup-group">
-                  <button onClick={()=>setSettingsSection(settingsSection === "orientation" ? null : "orientation")}>Orientation <small className="setting-current orientation-mark">{pageMode === "landscape" ? "▭" : "▯"}</small><ChevronDown /></button>
+                  <button onClick={()=>setSettingsSection(settingsSection === "orientation" ? null : "orientation")}><i className={`paper-orientation-icon ${pageMode === "landscape" ? "landscape" : "portrait"}`}/> Orientation <ChevronDown /></button>
                   <div className={`setup-submenu ${settingsSection === "orientation" ? "open" : ""}`}>
-                    {(["portrait", "landscape"] as const).map((orientation) => <button key={orientation} disabled={pageSize === "full"} className={pageMode === orientation ? "active" : ""} onClick={() => { setPageMode(orientation); setPageSetupOpen(false); setSelected([]); }}><b>{orientation === "portrait" ? "Portrait" : "Landscape"}</b></button>)}
+                    {(["portrait", "landscape"] as const).map((orientation) => <button key={orientation} disabled={pageSize === "full"} className={pageMode === orientation ? "active" : ""} onClick={() => { setPageMode(orientation); setPageSetupOpen(false); setSelected([]); }}><i className={`paper-orientation-icon ${orientation}`}/><b>{orientation === "portrait" ? "Portrait Orientation" : "Landscape Orientation"}</b></button>)}
                   </div>
                 </div>
                 <div className="setup-group">
@@ -5933,7 +5938,7 @@ export default function Home() {
                 </div>
                 <div className="setup-group page-color-group">
                   <button onClick={()=>setSettingsSection(settingsSection === "color" ? null : "color")}>
-                    Page Color <i className="setting-color-dot" style={{background:pageColor==="custom"?customPageColor:PAGE_COLORS[pageColor].color}}/><ChevronDown />
+                    <i className="setting-color-dot" style={{background:pageColor==="custom"?customPageColor:PAGE_COLORS[pageColor].color}}/> Page Color <ChevronDown />
                   </button>
                   <div className={`setup-submenu page-color-submenu ${settingsSection === "color" ? "open" : ""}`}>
                     {(Object.keys(PAGE_COLORS) as PageColor[]).filter(value=>value!=="custom").map(value=><button key={value} className={pageColor===value?"active":""} onClick={()=>{setPageColor(value);setPageSetupOpen(false)}}><i style={{background:PAGE_COLORS[value].color}} className={value==="canson"?"paper-swatch":""}/><b>{PAGE_COLORS[value].label}</b></button>)}<div className="page-color-divider"/><label className={`custom-page-color ${pageColor==="custom"?"active":""}`}><i style={{background:customPageColor}}/><b>Choose Color</b><div className="custom-page-palette">{COLORS.map(color=><button key={color} type="button" style={{"--swatch":color,background:color} as React.CSSProperties} onClick={(event)=>{event.preventDefault();setCustomPageColor(color);setPageColor("custom");setPageSetupOpen(false)}} aria-label={`Use ${color} for page`}/>)}</div><input title="Choose a custom page color" type="color" value={customPageColor} onChange={(event)=>{setCustomPageColor(event.target.value);setPageColor("custom")}}/></label>
@@ -6643,9 +6648,7 @@ export default function Home() {
                 </>
               )}
             </span>
-            <button className="session-log-trigger" onClick={() => setSessionLogOpen(true)} title="Open this project's action history">
-              <File /> Session Log
-            </button>
+            <small className="workspace-version">Personal workspace · {EDITOR_VERSION}</small>
           </footer>
         </aside>
       </section>
@@ -7099,8 +7102,8 @@ export default function Home() {
       {splashOpen && <div className="welcome-splash" role="dialog" aria-modal="true" aria-label="Welcome to Kreya" onPointerDown={dismissSplash}>
         <div onPointerDown={(event)=>event.stopPropagation()}>
           <button className="welcome-close" onClick={dismissSplash} aria-label="Close welcome screen"><X/></button>
+          <small className="welcome-to">WELCOME TO</small>
           <span className="welcome-logo" role="img" aria-label="Kreya" />
-          <h1>Welcome to Kreya</h1>
           <p>Everything you need to turn an idea into a Cricut-ready design.</p>
           <div className="welcome-steps">
             <article><span>1</span><b>Bring your image from your computer or generate new image!</b></article>
@@ -7400,7 +7403,8 @@ export default function Home() {
                     <div className="bg-editor-body">
                       <div className={`bg-preview image-edit-preview ${bgEditor?.alphaView ? "alpha-view" : ""}`} onWheel={zoomImageEditor} onPointerDown={startImagePan} onPointerMove={moveImagePan} onPointerUp={endImagePan} onPointerCancel={endImagePan}>
                         <div
-                          className="image-edit-wrap"
+                          className={`image-edit-wrap ${imageEditor.tool==="add"||imageEditor.strokes.some(stroke=>stroke.tool==="add")?"paint-extended":""}`}
+                          onPointerDown={(event)=>void startImageEdit(event)} onPointerMove={moveImageEdit} onPointerUp={endImageEdit} onPointerCancel={endImageEdit} onPointerEnter={()=>setImageCursor((value)=>({...value,visible:true}))} onPointerLeave={()=>setImageCursor((value)=>({...value,visible:false}))}
                           style={
                             {
                               "--fit-w": imageEditorSize.w ? `${imageEditorSize.w}px` : "auto",
@@ -7410,11 +7414,11 @@ export default function Home() {
                             } as React.CSSProperties
                           }
                         >
-                          <img className={`image-tool-${imageEditor.tool}${imageEditor.pickingColor ? " eyedrop-active" : ""}`} src={imageEditor.source} draggable={false} alt="Image edit preview" onLoad={(e) => setImageEditorSize(fitEditorImage(e.currentTarget, e.currentTarget.closest(".bg-preview") as HTMLDivElement))} onPointerDown={(event)=>void startImageEdit(event)} onPointerMove={moveImageEdit} onPointerUp={endImageEdit} onPointerCancel={endImageEdit} onPointerEnter={()=>setImageCursor((value)=>({...value,visible:true}))} onPointerLeave={()=>setImageCursor((value)=>({...value,visible:false}))} />
-                          <svg className="image-edit-overlay" viewBox={`0 0 ${imageEditorSize.w || 100} ${imageEditorSize.h || 100}`} preserveAspectRatio="none">
+                          <img className={`image-tool-${imageEditor.tool}${imageEditor.pickingColor ? " eyedrop-active" : ""}`} src={imageEditor.source} draggable={false} alt="Image edit preview" onLoad={(e) => setImageEditorSize(fitEditorImage(e.currentTarget, e.currentTarget.closest(".bg-preview") as HTMLDivElement))} />
+                          <svg className="image-edit-overlay" viewBox={`0 0 ${(imageEditorSize.w || 100)*1.2} ${(imageEditorSize.h || 100)*1.2}`} preserveAspectRatio="none">
                             {imageEditor.strokes.map((s) => {
                               const shown = ["add","erase"].includes(s.tool) ? smoothBrushPoints(s.points,imageEditor.smoothing) : s.points;
-                              const pts = shown.map((p) => `${p.x * (imageEditorSize.w || 100)},${p.y * (imageEditorSize.h || 100)}`).join(" ");
+                              const pts = shown.map((p) => `${(p.x+.1) * (imageEditorSize.w || 100)},${(p.y+.1) * (imageEditorSize.h || 100)}`).join(" ");
                               return s.tool === "lasso" ? <polygon key={s.id} points={pts} className="image-lasso-mark" /> : <polyline key={s.id} points={pts} className={`image-brush-mark ${s.tool}`} style={{ stroke: s.tool === "add" ? s.color || imageEditor.paintColor : undefined, strokeWidth: (s.brush / 100) * Math.min(imageEditorSize.w || 100,imageEditorSize.h || 100) }} />;
                             })}
                           </svg>
@@ -7691,6 +7695,7 @@ export default function Home() {
                             }
                           />
                         </section>
+                        <div className="background-pick-mode"><span>Pick Color to remove on whole image</span><div><label><input type="radio" checked={backgroundPickMode==="text"} onChange={()=>{setBackgroundPickMode("text");setBgEditor(v=>v?{...v,edgeRefine:3,edgeSmooth:5}:v)}}/> Text</label><label><input type="radio" checked={backgroundPickMode==="image"} onChange={()=>{setBackgroundPickMode("image");setBgEditor(v=>v?{...v,edgeRefine:0,edgeSmooth:1}:v)}}/> Image</label></div></div>
                         <PickedColorControls entries={bgEditor.eraseColors} picking={bgEditor.pickingColor} onChange={(eraseColors) => setBgEditor((v) => v ? { ...v, eraseColors } : v)} onPick={(pickingColor) => setBgEditor((v) => v ? { ...v, pickingColor } : v)} />
                         <section>
                           <label className="edge-refine-label"><span>Edge Refine<small>&lt;Add edge - Carve edge&gt;</small></span><b>{bgEditor.edgeRefine > 0 ? "+" : ""}{bgEditor.edgeRefine}px</b></label>
@@ -8094,6 +8099,7 @@ export default function Home() {
                   </div>
                   <small>Each stroke keeps the size, color bleed and distance used when it was drawn. Distance limits connected-color spread; Full follows the complete connected area.</small>
                 </section>
+                <div className="background-pick-mode"><span>Pick Color to remove on whole image</span><div><label><input type="radio" checked={backgroundPickMode==="text"} onChange={()=>{setBackgroundPickMode("text");setBgEditor(v=>v?{...v,edgeRefine:3,edgeSmooth:5}:v)}}/> Text</label><label><input type="radio" checked={backgroundPickMode==="image"} onChange={()=>{setBackgroundPickMode("image");setBgEditor(v=>v?{...v,edgeRefine:0,edgeSmooth:1}:v)}}/> Image</label></div></div>
                 <PickedColorControls entries={bgEditor.eraseColors} picking={bgEditor.pickingColor} onChange={(eraseColors) => setBgEditor((v) => v ? { ...v, eraseColors } : v)} onPick={(pickingColor) => setBgEditor((v) => v ? { ...v, pickingColor } : v)} />
                 <section>
                   <label className="edge-refine-label"><span>Edge Refine<small>&lt;Add edge - Carve edge&gt;</small></span><b>{bgEditor.edgeRefine > 0 ? "+" : ""}{bgEditor.edgeRefine}px</b></label>
