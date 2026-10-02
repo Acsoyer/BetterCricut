@@ -30,8 +30,8 @@ import "./v33.css";
 import "./v35.css";
 const inter = Inter({ variable: "--font-inter", subsets: ["latin"] });
 export const metadata: Metadata = {
-  title: "Cake Topper Maker",
-  description: "Turn AI-generated artwork into clean, correctly sized Cricut cutouts, cake toppers, SVGs, PNGs and printable designs—without Photoshop or Illustrator.",
+  title: "Kreya — Cake Topper & Cricut Design Made Easier",
+  description: "Remove backgrounds, prepare printable cake decorations and create clean SVG cut shapes for Cricut workflows. Kreya's design tools are free to use.",
 };
 export default function RootLayout({
   children,
