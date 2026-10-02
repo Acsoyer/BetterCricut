@@ -34,6 +34,9 @@ const PAGE_SIZES = { a4: { label: "A4", w: 21, h: 29.7 }, letter: { label: "Lett
   DPI = 150,
   DEFAULT_OUTLINE_CM = 0.4,
   DARK = "#3c4144";
+const GUEST_ACCOUNT_TIP = "Create a free account to save projects and use your personal library. No card required.";
+const GUEST_EXPORT_TIP = "Create a free account to export your work. Kreya is free to use and no card is required.";
+const GUEST_AI_TIP = "Create a free account to use your complimentary Kreya creations. No card required.";
 const COLORS = ["#EF9999", "#CF93DA", "#9DA8DB", "#90CAF8", "#A5D6A7", "#FEF59C", "#FFCC80", "#F53636", "#9928B1", "#3F51B5", "#2296F3", "#4DAF50", "#FFEC3C", "#FF9702", "#B71B1B", "#49148B", "#1B237E", "#0E47A0", "#1D5E21", "#FAC02E", "#E65002", "#FFFFFF", "#CCCCCC", "#999999", "#666666", "#333333", "#000000", "#8E5609"];
 const CUSTOM_SHAPES = [
   ["Star", faStar],
@@ -5892,14 +5895,15 @@ export default function Home() {
         </nav>
 
       <div className="top-account-actions">
-            <button className="left-ai-library" onClick={()=>{if(!session){setNotice("Sign in to use Kreya creations and your AI Archive.");setAccountOpen(true);return}setAiLibraryOpen(true);setProjectsOpen(false);setAccountOpen(false)}}>
+            <button className={`left-ai-library ${!session ? "guest-locked" : ""}`} disabled={!session} data-guest-tip={!session ? GUEST_AI_TIP : undefined} onClick={()=>{setAiLibraryOpen(true);setProjectsOpen(false);setAccountOpen(false)}}>
               <Sparkles />
               <small>AI Archive</small>
             </button>
             <button
-              className="left-projects"
+              className={`left-projects ${!session ? "guest-locked" : ""}`}
+              disabled={!session}
+              data-guest-tip={!session ? GUEST_ACCOUNT_TIP : undefined}
               onClick={() => {
-                if(!session){setNotice("Create a free account to save and reopen projects.");setAccountOpen(true);return}
                 setProjectsOpen(true);
                 setAccountOpen(false);
                 void refreshProjects(projects.length === 0);
@@ -6097,16 +6101,17 @@ export default function Home() {
           </button>
         </div>
         <div className="save-actions">
-          <div className={`project-name-wrap ${projectDirty || (currentProjectId ? projects.find((project)=>project.id===currentProjectId)?.name !== projectName : projectName !== "Untitled Project") ? "dirty" : ""}`}><input className="top-project-name" value={projectName} readOnly onClick={() => requestSaveDialog()} aria-label="Project name" title="Name and save this project" /></div>
+          <div className={`project-name-wrap ${!session ? "guest-locked" : ""} ${projectDirty || (currentProjectId ? projects.find((project)=>project.id===currentProjectId)?.name !== projectName : projectName !== "Untitled Project") ? "dirty" : ""}`} data-guest-tip={!session ? GUEST_ACCOUNT_TIP : undefined}><input className="top-project-name" value={projectName} readOnly disabled={!session} onClick={() => requestSaveDialog()} aria-label="Project name" title="Name and save this project" /></div>
           <button className="new-project" onClick={newProject} title="Start a new project">
             <Plus /> New Project
           </button>
-          <button className={currentProjectId ? "save-project save-update" : "save-project"} onClick={saveOrOpenDialog} title="Save current project">
+          <button className={`${currentProjectId ? "save-project save-update" : "save-project"} ${!session ? "guest-locked" : ""}`} disabled={!session} data-guest-tip={!session ? GUEST_ACCOUNT_TIP : undefined} onClick={saveOrOpenDialog} title="Save current project">
             <Download /> {currentProjectId ? "Save - Update" : "Save"}
           </button>
           <button
-            className="save-as-project"
-            disabled={!currentProjectId}
+            className={`save-as-project ${!session ? "guest-locked" : ""}`}
+            disabled={!session || !currentProjectId}
+            data-guest-tip={!session ? GUEST_ACCOUNT_TIP : undefined}
             onClick={() => {
               requestSaveDialog(true);
             }}
@@ -6165,18 +6170,18 @@ export default function Home() {
 
 <div className="export-actions left-export-actions" aria-label="Export options"><span className="export-as-label">Export As:</span>
           {picked.length > 1 && canSVG && (
-            <button className="multiple-svg" onClick={() => void exportSVG()} title="Export every selected Cutout as a separate SVG file">
+            <button className={`multiple-svg ${!session ? "guest-locked" : ""}`} disabled={!session} data-guest-tip={!session ? GUEST_EXPORT_TIP : undefined} onClick={() => void exportSVG()} title="Export every selected Cutout as a separate SVG file">
               <Type /> Multiple SVG
             </button>
           )}
-          {picked.length > 1 && canExport && picked.every(layer => !["vector","stroke"].includes(layer.kind)) && <button className="multiple-png" onClick={()=>void exportPNG()}><FileImage/> Multiple PNG</button>}
-          <button disabled={picked.length !== 1 || !canSVG} onClick={() => void exportSVG()} title="Export selected Cutout as SVG">
+          {picked.length > 1 && canExport && picked.every(layer => !["vector","stroke"].includes(layer.kind)) && <button className={`multiple-png ${!session ? "guest-locked" : ""}`} disabled={!session} data-guest-tip={!session ? GUEST_EXPORT_TIP : undefined} onClick={()=>void exportPNG()}><FileImage/> Multiple PNG</button>}
+          <button className={!session ? "guest-locked" : ""} data-guest-tip={!session ? GUEST_EXPORT_TIP : undefined} disabled={!session || picked.length !== 1 || !canSVG} onClick={() => void exportSVG()} title="Export selected Cutout as SVG">
             <Type /> SVG
           </button>
-          <button disabled={!canExport} onClick={exportPNG} title="Export selected layers as separate PNG files">
+          <button className={!session ? "guest-locked" : ""} data-guest-tip={!session ? GUEST_EXPORT_TIP : undefined} disabled={!session || !canExport} onClick={exportPNG} title="Export selected layers as separate PNG files">
             <FileImage /> PNG
           </button>
-          <button disabled={invalid || !layers.some((l) => l.visible)} onClick={exportPDF} title="Export visible A4 canvas as PDF">
+          <button className={!session ? "guest-locked" : ""} data-guest-tip={!session ? GUEST_EXPORT_TIP : undefined} disabled={!session || invalid || !layers.some((l) => l.visible)} onClick={exportPDF} title="Export visible A4 canvas as PDF">
             <Download /> PDF
           </button>
         </div>
@@ -7062,7 +7067,7 @@ export default function Home() {
             {!createImageMode ? (
               <div className="add-new-source-grid">
                 <button onClick={() => { setAddNewOpen(false); fileRef.current?.click(); }}><i className="upload-combined-icon"><ImagePlus/><Laptop/></i><b>Upload From Your Computer</b><small>JPG, PNG, SVG or WebP</small></button>
-                <button onClick={() => setCreateImageMode("choose")}><i className="ai-combined-icon"><Sparkles/><img src="/openai-logo.svg" alt="OpenAI" /></i><b>Create your own Text / Image</b><small>Start with AI-ready cake topper options</small></button>
+                <button className={!session ? "guest-locked" : ""} disabled={!session} data-guest-tip={!session ? GUEST_AI_TIP : undefined} onClick={() => setCreateImageMode("choose")}><i className="ai-combined-icon"><Sparkles/><img src="/openai-logo.svg" alt="OpenAI" /></i><b>Create your own Text / Image</b><small>Start with AI-ready cake topper options</small></button>
               </div>
             ) : createImageMode === "choose" ? (
               <div className="add-new-source-grid create-kind-grid">
