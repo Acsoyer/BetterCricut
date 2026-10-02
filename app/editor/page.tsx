@@ -2180,7 +2180,8 @@ export default function Home() {
     projectDirty = currentSignature !== lastSavedSignature;
   const activeTextLines = textLines.slice(0, textLineCount).map((line) => line.trim()).filter(Boolean);
   const generateArtwork = async (mode: "text" | "image", variation = false) => {
-    if (!session || generationBusy) return;
+    if (!session) { setNotice("Sign in to use your complimentary Kreya creations."); setAccountOpen(true); return; }
+    if (generationBusy) return;
     const lines = activeTextLines.length ? activeTextLines : textPlaceholders(textLineCount);
     if (mode === "image" && !imagePrompt.trim()) {
       setNotice("Describe the image you want before generating it");
@@ -2332,6 +2333,7 @@ export default function Home() {
     }
     if (!session?.user) {
       setNotice("Sign in to save a project");
+      setAccountOpen(true);
       return false;
     }
     if ((asNew || !currentProjectId) && projects.filter((project) => !project.is_autosave).length >= PROJECT_LIMIT && !autosave) {
@@ -2561,6 +2563,11 @@ export default function Home() {
     } catch (error) { setExpandedProjectId(null); setNotice(projectSaveError(error instanceof Error ? error.message : "Assets unavailable")); }
   };
   const downloadProjectBackup = () => {
+    if (!session?.user) {
+      setNotice("Create a free account to save your work.");
+      setAccountOpen(true);
+      return;
+    }
     const packed = packLayers(layers);
     const backup = { format: "cake-topper-project", version: 1, name: projectName, data: { ...packed, pageMode, landscape, pageSize, unit, safeMargin, pageColor, customPageColor, cutSafetyEnabled, sessionLog } };
     save(URL.createObjectURL(new Blob([JSON.stringify(backup)], { type: "application/json" })), `${projectName.replace(/[\\/:*?"<>|]/g, "_")}.cakeproject`);
@@ -2681,6 +2688,10 @@ export default function Home() {
     return () => data.subscription.unsubscribe();
   }, []);
   useEffect(() => { if (session?.user) void refreshAIGenerations(); }, [session?.user.id]);
+  const signInWithGoogle = async () => {
+    const { error } = await supabase.auth.signInWithOAuth({ provider: "google", options: { redirectTo: `${window.location.origin}/editor` } });
+    if (error) setNotice(`Sign in could not be started: ${error.message}`);
+  };
   useEffect(() => {
     if (!session) return;
     const timer = window.setInterval(() => autosaveRunner.current(), 300000);
@@ -5717,6 +5728,7 @@ export default function Home() {
   const canExport = picked.length > 0 && picked.every((l) => !l.invalid),
     canSVG = picked.length > 0 && picked.every((l) => ["vector", "stroke"].includes(l.kind) && !l.invalid),
     exportPNG = async () => {
+      if (!session) { setNotice("Create a free account to export your work."); setAccountOpen(true); return; }
       if (!canExport) return;
       for (const layer of picked) {
         const c = await renderCanvas(layer, true, 3),
@@ -5725,6 +5737,7 @@ export default function Home() {
       }
     },
     exportSVG = async (confirmed = false) => {
+      if (!session) { setNotice("Create a free account to export your work."); setAccountOpen(true); return; }
       if (!canSVG) return;
       if (!confirmed && cutSafetyEnabled && picked.some((layer) => layer.cutRisk)) {
         setSvgWarningOpen(true);
@@ -5798,6 +5811,7 @@ export default function Home() {
       }
     };
   const exportPDF = async () => {
+    if (!session) { setNotice("Create a free account to export your work."); setAccountOpen(true); return; }
     if (layers.some((l) => l.visible && l.invalid)) return setNotice("Resolve the safe area issue before exporting");
     setWorking(true);
     try {
@@ -5878,13 +5892,14 @@ export default function Home() {
         </nav>
 
       <div className="top-account-actions">
-            <button className="left-ai-library" onClick={()=>{setAiLibraryOpen(true);setProjectsOpen(false);setAccountOpen(false)}}>
+            <button className="left-ai-library" onClick={()=>{if(!session){setNotice("Sign in to use Kreya creations and your AI Archive.");setAccountOpen(true);return}setAiLibraryOpen(true);setProjectsOpen(false);setAccountOpen(false)}}>
               <Sparkles />
               <small>AI Archive</small>
             </button>
             <button
               className="left-projects"
               onClick={() => {
+                if(!session){setNotice("Create a free account to save and reopen projects.");setAccountOpen(true);return}
                 setProjectsOpen(true);
                 setAccountOpen(false);
                 void refreshProjects(projects.length === 0);
@@ -5901,7 +5916,7 @@ export default function Home() {
               }}
             >
               <span className="profile-placeholder">{session?.user.user_metadata?.avatar_url || session?.user.user_metadata?.picture ? <img src={session.user.user_metadata.avatar_url || session.user.user_metadata.picture} alt="" /> : <User />}</span>
-              <small>My Account</small><ChevronDown className="account-chevron"/>
+              <small>{session?"My Account":"Sign In"}</small><ChevronDown className="account-chevron"/>
             </button>
           </div>
 </header>
@@ -6897,20 +6912,17 @@ export default function Home() {
               <X />
             </button>
             <span className="account-avatar">{session?.user.user_metadata?.avatar_url || session?.user.user_metadata?.picture ? <img src={session.user.user_metadata.avatar_url || session.user.user_metadata.picture} alt="Google profile" /> : <User />}</span>
-            <b>My Account</b>
-            <small>Signed in as</small>
-            <p>{session?.user.email || "Unknown account"}</p>
-            <div className="account-stat">
+            <b>{session?"My Account":"Save your work with a free account"}</b>
+            {session?<><small>Signed in as</small><p>{session.user.email || "Unknown account"}</p><div className="account-stat">
               <FolderOpen />
               <span>
                 <b>{projects.length}</b>
                 <small>Saved projects</small>
               </span>
               <span className="account-storage"><b>{(projectsStorageBytes/1048576).toFixed(1)} / 40 MB</b><small>Storage used</small></span>
-            </div>
-            <button className="sign-out" onClick={() => void supabase.auth.signOut()}>
+            </div><button className="sign-out" onClick={() => void supabase.auth.signOut()}>
               <LogOut /> Sign Out
-            </button>
+            </button></>:<><small>Keep editing now. Sign in only when you want to save a project, export a file or create new artwork.</small><button className="sign-out guest-sign-in" onClick={()=>void signInWithGoogle()}><User/> Continue with Google</button></>}
           </div>
         </>
       )}

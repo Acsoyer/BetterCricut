@@ -6,6 +6,7 @@ import { defineConfig, loadEnv } from 'vite';
 const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === 'seatbelt';
 
 const localBindingConfig = {
+  name: 'app',
   main: 'vinext/server/app-router-entry',
   compatibility_flags: ['nodejs_compat'],
 };
