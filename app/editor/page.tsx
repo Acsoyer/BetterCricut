@@ -6474,9 +6474,11 @@ export default function Home() {
                   <h2>Add your first design</h2>
                   <p>JPG, PNG, SVG or WebP</p>
                   <button onClick={() => fileRef.current?.click()}>Upload image from your Computer</button>
-                  <button className="generate-empty" onClick={() => { setAddNewOpen(true); setCreateImageMode("choose"); }}><Sparkles /> Generate Your Own Image</button>
+                  <button className={`generate-empty ${!session ? "guest-locked" : ""}`} disabled={!session} data-guest-tip={!session ? GUEST_AI_TIP : undefined} onClick={() => { setAddNewOpen(true); setCreateImageMode("choose"); }}><Sparkles /> Generate Your Own Image</button>
                   <button
-                    className="open-saved-empty"
+                    className={`open-saved-empty ${!session ? "guest-locked" : ""}`}
+                    disabled={!session}
+                    data-guest-tip={!session ? GUEST_ACCOUNT_TIP : undefined}
                     onClick={() => {
                       setProjectsOpen(true);
                       void refreshProjects(projects.length === 0);

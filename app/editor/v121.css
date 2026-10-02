@@ -7,6 +7,7 @@ button.guest-locked{pointer-events:auto!important}
 .project-name-wrap.guest-locked:hover:after{content:attr(data-guest-tip);position:absolute;z-index:1200;top:calc(100% + 9px);right:0;width:260px;padding:12px 14px;border-radius:10px;background:#17312c;color:#fff;box-shadow:0 12px 34px #10241d42;font-size:11px;font-weight:700;line-height:1.45;white-space:normal}
 .left-export-actions .guest-locked:after{left:calc(100% + 10px);bottom:0}
 .add-new-source-grid>.guest-locked:after{left:50%;top:50%;transform:translate(-50%,-50%);width:min(250px,calc(100% - 24px))}
+.empty>.guest-locked:after{left:calc(100% + 10px);top:50%;transform:translateY(-50%)}
 .preset-modal[aria-label="Remove Background"] .preset-image{height:auto!important;aspect-ratio:724/756!important;padding:0!important;overflow:hidden!important;background:transparent!important}
 .preset-modal[aria-label="Remove Background"] .preset-image img{display:block!important;width:100%!important;height:100%!important;object-fit:contain!important;object-position:center!important;margin:0!important}
 @media(max-width:760px){.guest-locked[data-guest-tip]:hover:after,.project-name-wrap.guest-locked:hover:after{width:210px}.left-export-actions .guest-locked:after{left:calc(100% + 7px)}}
